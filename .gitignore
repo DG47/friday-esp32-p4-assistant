@@ -1,0 +1,13 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+backend/data/
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+work/

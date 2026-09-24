@@ -1,0 +1,18 @@
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ASSISTANT_DATABASE_PATH: /app/data/friday.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+      - friday-data:/app/data
+
+volumes:
+  friday-data:
+

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Friday device simulator</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="workbench">
+      <section class="device" aria-label="Friday 720 by 720 device simulator">
+        <div class="screen" id="screen" data-state="idle">
+          <div class="ambient" aria-hidden="true">
+            <time id="clock">--:--</time>
+            <span id="date">—</span>
+          </div>
+
+          <div class="scene" id="scene" aria-live="polite">
+            <div class="scene-copy">
+              <p class="eyebrow" id="eyebrow">AMBIENT</p>
+              <h1 id="scene-title">Friday</h1>
+              <p id="scene-subtitle">Ready when needed.</p>
+            </div>
+            <div class="scene-items" id="scene-items"></div>
+          </div>
+
+          <button class="orb" id="orb" type="button" aria-label="Activate Friday">
+            <span class="orb-core"></span>
+            <span class="orb-ring ring-one"></span>
+            <span class="orb-ring ring-two"></span>
+          </button>
+
+          <div class="status" id="status">IDLE</div>
+          <div class="transcript" id="transcript" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <section class="console" aria-label="Simulator controls">
+        <div class="connection">
+          <span class="connection-dot" id="connection-dot"></span>
+          <span id="connection-label">Connecting</span>
+        </div>
+        <form id="utterance-form">
+          <label for="utterance">Say something to Friday</label>
+          <div class="input-row">
+            <input id="utterance" autocomplete="off" value="What's next?">
+            <button type="submit">Send</button>
+          </div>
+        </form>
+        <div class="suggestions" aria-label="Example requests">
+          <button type="button" data-utterance="What's next?">What’s next?</button>
+          <button type="button" data-utterance="With who?">With who?</button>
+          <button type="button" data-utterance="Remind me at noon to prepare">Set reminder</button>
+        </div>
+        <p class="hint" id="speech-hint">Tap the orb for speech input, or type a request.</p>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
+
