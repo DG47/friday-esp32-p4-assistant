@@ -2,10 +2,13 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent import FridayAgent
 from app.config import Settings
 from app.db import ReminderStore
+from app.providers.ollama_provider import OllamaProvider
+from app.providers.router import ProviderRouter
 
 
 class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
@@ -51,6 +54,42 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reminder.text, "stretch")
         self.assertGreater(reminder.due_at.timestamp(), before.timestamp() + 9 * 60)
+
+    async def test_router_selects_ollama_without_api_key(self):
+        settings = Settings(
+            assistant_provider="ollama",
+            ollama_model="local-test-model",
+        )
+
+        provider = ProviderRouter(settings).select("Good morning")
+
+        self.assertIsInstance(provider, OllamaProvider)
+        self.assertEqual(provider.model, "local-test-model")
+
+    async def test_ollama_provider_sends_personality_and_prompt(self):
+        response = MagicMock()
+        response.json.return_value = {
+            "message": {"role": "assistant", "content": "At your service."}
+        }
+        client = MagicMock()
+        client.post = AsyncMock(return_value=response)
+        context = MagicMock()
+        context.__aenter__ = AsyncMock(return_value=client)
+        context.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "app.providers.ollama_provider.httpx.AsyncClient",
+            return_value=context,
+        ):
+            provider = OllamaProvider("http://127.0.0.1:11434/", "local-test-model")
+            answer = await provider.respond("Good morning", "Be concise.")
+
+        self.assertEqual(answer, "At your service.")
+        response.raise_for_status.assert_called_once()
+        payload = client.post.await_args.kwargs["json"]
+        self.assertEqual(payload["messages"][0]["role"], "system")
+        self.assertEqual(payload["messages"][1]["content"], "Good morning")
+        self.assertFalse(payload["stream"])
 
 
 if __name__ == "__main__":

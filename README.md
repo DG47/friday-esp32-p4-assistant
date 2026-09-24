@@ -13,7 +13,7 @@ scene generation.
 - deterministic mock agent for the complete acceptance flow
 - SQLite-backed reminders that survive backend restarts
 - mock calendar and contextual follow-up handling
-- pluggable GPT/Claude provider boundary with automatic routing
+- pluggable local Ollama and cloud GPT/Claude provider boundary
 - ESP-IDF firmware for P3A with the native animated Friday scene, ST7703
   display initialization, GT911 touch input, and protocol state machine
 - onboard ES7210 microphone capture at 24 kHz with live peak/RMS diagnostics
@@ -35,9 +35,20 @@ next device-audio milestone. TTS playback still requires the external speaker.
 4. Continue with: `With who?`
 5. Then: `Remind me at noon to prepare.`
 
-The mock path needs no API keys. To enable model-backed fallback responses,
-copy `.env.example` to `.env`, add your keys locally, and keep
-`ASSISTANT_PROVIDER=auto`.
+The mock path needs no API keys. For fully local responses, install and start
+Ollama, pull a model, and set these values in `.env`:
+
+```env
+ASSISTANT_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen3.6:latest
+```
+
+`make dev-local` uses the loopback URL above. Docker Compose automatically uses
+`host.docker.internal` to reach Ollama on the Mac.
+
+Cloud GPT and Claude adapters remain available by adding their keys locally and
+choosing `openai`, `anthropic`, or `auto`. Never commit `.env`.
 
 ## Verify
 

@@ -6,6 +6,7 @@ services:
         required: false
     environment:
       ASSISTANT_DATABASE_PATH: /app/data/friday.db
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     ports:
       - "8000:8000"
     volumes:
@@ -15,4 +16,3 @@ services:
 
 volumes:
   friday-data:
-

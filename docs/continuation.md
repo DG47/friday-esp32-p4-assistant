@@ -55,8 +55,9 @@ Backend and simulator:
   endpoint was reachable there. This is also a DHCP address and may change.
 - The browser simulator supports typed interaction plus browser speech APIs.
 - The JSON WebSocket protocol is implemented at `/ws/device/{device_id}`.
-- Mock calendar, contextual follow-ups, and SQLite reminders work. OpenAI and
-  Anthropic text adapters exist and activate only when local API keys are set.
+- Mock calendar, contextual follow-ups, and SQLite reminders work. Ollama is the
+  selected keyless provider on the development Mac, using `qwen3.6:latest` at
+  `http://127.0.0.1:11434`. OpenAI and Anthropic remain optional adapters.
 - Personality instructions live in `backend/app/agent.py`.
 - Verification passed: three backend unit tests, the HTTP/WebSocket smoke test,
   ESP-IDF build, flash, boot, display, touch, Wi-Fi, and microphone capture.
@@ -111,8 +112,9 @@ build outputs, toolchains, or factory backup images.
 
 ## Product decisions already made
 
-- Start with mock tools and providers so the full UX can be tested without API
-  keys; choose real providers automatically when keys are present.
+- Start with mock tools so the full UX can be tested without credentials. Use
+  local Ollama for general responses without API charges; keep cloud providers
+  optional.
 - Prefer OpenAI Realtime or another true streaming STT service for latency.
   Wispr Flow, the desktop dictation product, is not a device dependency.
 - Keep the UI scene-based and transient. Do not turn it into an app grid.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -19,27 +20,29 @@ class ReminderStore:
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS reminders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    text TEXT NOT NULL,
-                    due_at TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    completed INTEGER NOT NULL DEFAULT 0
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS reminders (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        text TEXT NOT NULL,
+                        due_at TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        completed INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
                 )
-                """
-            )
 
     def create(self, text: str, due_at: datetime) -> Reminder:
         created_at = datetime.now(tz=due_at.tzinfo)
-        with self._connect() as connection:
-            cursor = connection.execute(
-                "INSERT INTO reminders (text, due_at, created_at) VALUES (?, ?, ?)",
-                (text, due_at.isoformat(), created_at.isoformat()),
-            )
-            reminder_id = int(cursor.lastrowid)
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "INSERT INTO reminders (text, due_at, created_at) VALUES (?, ?, ?)",
+                    (text, due_at.isoformat(), created_at.isoformat()),
+                )
+                reminder_id = int(cursor.lastrowid)
         return Reminder(
             id=reminder_id,
             text=text,
@@ -48,7 +51,7 @@ class ReminderStore:
         )
 
     def pending(self) -> list[Reminder]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT * FROM reminders WHERE completed = 0 ORDER BY due_at"
             ).fetchall()
@@ -62,4 +65,3 @@ class ReminderStore:
             )
             for row in rows
         ]
-

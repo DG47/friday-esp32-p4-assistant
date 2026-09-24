@@ -13,11 +13,13 @@ class Settings(BaseSettings):
     assistant_env: str = "development"
     assistant_timezone: str = "America/New_York"
     assistant_user_name: str = "Dhruv"
-    assistant_provider: Literal["auto", "mock", "openai", "anthropic"] = "auto"
+    assistant_provider: Literal["auto", "mock", "ollama", "openai", "anthropic"] = "auto"
     assistant_database_path: Path = Path("data/friday.db")
 
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "qwen3.6:latest"
     openai_text_model: str = "gpt-5.4-mini"
     anthropic_text_model: str = "claude-sonnet-4-5"
     openai_realtime_model: str = "gpt-realtime-2.1"
@@ -26,4 +28,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

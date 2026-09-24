@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .anthropic_provider import AnthropicProvider
 from .base import TextProvider
+from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
 from ..config import Settings
 
@@ -14,6 +15,12 @@ class ProviderRouter:
         requested = self.settings.assistant_provider
         if requested == "mock":
             return None
+
+        if requested == "ollama":
+            return OllamaProvider(
+                self.settings.ollama_base_url,
+                self.settings.ollama_model,
+            )
 
         wants_long_form = len(prompt) > 800 or any(
             word in prompt.lower() for word in ("document", "analyze", "architecture")
@@ -38,4 +45,3 @@ class ProviderRouter:
                 self.settings.anthropic_text_model,
             )
         return None
-
