@@ -6,6 +6,7 @@
 
 #include "board_p3a.h"
 #include "friday_audio.h"
+#include "friday_backend.h"
 #include "friday_state.h"
 #include "friday_ui.h"
 #include "friday_wifi.h"
@@ -39,8 +40,10 @@ void app_main(void)
     friday_ui_create();
     bsp_display_unlock();
 
-    ESP_LOGI(TAG, "Friday display online; touch the orb to cycle states");
+    ESP_LOGI(TAG, "Friday display online; touch the orb to activate the backend");
     ESP_ERROR_CHECK(friday_wifi_start());
+    friday_ui_set_activation_callback(friday_backend_activate);
+    ESP_ERROR_CHECK(friday_backend_start());
 
     esp_err_t audio_result = friday_audio_start();
     if (audio_result != ESP_OK) {

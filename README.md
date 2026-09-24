@@ -18,6 +18,9 @@ scene generation.
   display initialization, GT911 touch input, and protocol state machine
 - onboard ES7210 microphone capture at 24 kHz with live peak/RMS diagnostics
 - first-boot Wi-Fi provisioning with host libraries matched to the factory C6
+- physical-device WebSocket connection with automatic reconnect, touch
+  activation, and server-driven states, surfaces, and Ollama responses
+- synchronized browser and P3A display sessions using the `friday-p3a` device ID
 - reproducible local ESP-IDF 5.5.5 toolchain and a verified ESP32-P4 build
 
 The browser simulator uses the browser's speech recognition and speech
@@ -34,6 +37,9 @@ next device-audio milestone. TTS playback still requires the external speaker.
 3. Tap the orb and say or type: `What's next?`
 4. Continue with: `With who?`
 5. Then: `Remind me at noon to prepare.`
+
+When the P3A is online, the browser and physical display share the same session;
+browser text or speech drives the scenes shown on both displays.
 
 The mock path needs no API keys. For fully local responses, install and start
 Ollama, pull a model, and set these values in `.env`:

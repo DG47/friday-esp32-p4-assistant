@@ -12,6 +12,8 @@ static const char *TAG = "friday_ui";
 typedef struct {
     lv_obj_t *orb;
     lv_obj_t *core;
+    lv_obj_t *eyebrow;
+    lv_obj_t *title;
     lv_obj_t *status;
     lv_obj_t *message;
     lv_obj_t *network;
@@ -20,6 +22,7 @@ typedef struct {
 } friday_ui_t;
 
 static friday_ui_t ui;
+static friday_ui_activation_callback_t activation_callback;
 
 static lv_color_t color_hex(uint32_t value)
 {
@@ -38,7 +41,7 @@ static void apply_state(friday_state_t state)
     int32_t pulse_min = 100;
     int32_t pulse_max = 126;
     uint32_t duration = 1500;
-    const char *message = "Touch the orb to test the interface";
+    const char *message = NULL;
 
     switch (state) {
     case FRIDAY_STATE_LISTENING:
@@ -63,7 +66,6 @@ static void apply_state(friday_state_t state)
         pulse_min = 108;
         pulse_max = 140;
         duration = 320;
-        message = "Speaking mode - awaiting the external speaker";
         break;
     case FRIDAY_STATE_ALERT:
         core_color = 0xFFCC75;
@@ -80,7 +82,9 @@ static void apply_state(friday_state_t state)
 
     friday_state_set(state);
     lv_label_set_text(ui.status, friday_state_name(state));
-    lv_label_set_text(ui.message, message);
+    if (message != NULL) {
+        lv_label_set_text(ui.message, message);
+    }
     lv_obj_set_style_bg_color(ui.core, color_hex(core_color), 0);
     lv_obj_set_style_shadow_color(ui.core, color_hex(glow_color), 0);
     lv_obj_set_style_border_color(ui.orb, color_hex(core_color), 0);
@@ -105,8 +109,10 @@ static void orb_event_cb(lv_event_t *event)
         return;
     }
 
-    friday_state_t next = (friday_state_get() + 1) % (FRIDAY_STATE_ALERT + 1);
-    apply_state(next);
+    apply_state(FRIDAY_STATE_LISTENING);
+    if (activation_callback != NULL) {
+        activation_callback();
+    }
 }
 
 static lv_obj_t *make_label(lv_obj_t *parent, const char *text, const lv_font_t *font,
@@ -129,12 +135,11 @@ void friday_ui_create(void)
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *eyebrow = make_label(screen, "PERSONAL INTELLIGENCE", &lv_font_montserrat_18,
-                                   0x7D9696);
-    lv_obj_align(eyebrow, LV_ALIGN_TOP_MID, 0, 54);
+    ui.eyebrow = make_label(screen, "AMBIENT", &lv_font_montserrat_18, 0x7D9696);
+    lv_obj_align(ui.eyebrow, LV_ALIGN_TOP_MID, 0, 54);
 
-    lv_obj_t *title = make_label(screen, "FRIDAY", &lv_font_montserrat_32, 0xEDF8F7);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 88);
+    ui.title = make_label(screen, "FRIDAY", &lv_font_montserrat_32, 0xEDF8F7);
+    lv_obj_align(ui.title, LV_ALIGN_TOP_MID, 0, 88);
 
     ui.orb = lv_obj_create(screen);
     lv_obj_remove_style_all(ui.orb);
@@ -184,7 +189,61 @@ void friday_ui_create(void)
     ui.network = make_label(screen, "WI-FI STARTING", &lv_font_montserrat_18, 0x36504F);
     lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
 
+    lv_label_set_text(ui.message, "Touch the orb to wake Friday");
     apply_state(FRIDAY_STATE_IDLE);
+}
+
+void friday_ui_set_activation_callback(friday_ui_activation_callback_t callback)
+{
+    activation_callback = callback;
+}
+
+void friday_ui_set_state(friday_state_t state)
+{
+    if (ui.status == NULL || !bsp_display_lock(1000)) {
+        return;
+    }
+    apply_state(state);
+    bsp_display_unlock();
+}
+
+void friday_ui_set_surface(const char *kind, const char *title, const char *subtitle)
+{
+    if (ui.title == NULL || !bsp_display_lock(1000)) {
+        return;
+    }
+    if (kind != NULL && kind[0] != '\0') {
+        lv_label_set_text(ui.eyebrow, kind);
+    }
+    if (title != NULL && title[0] != '\0') {
+        lv_label_set_text(ui.title, title);
+    }
+    if (subtitle != NULL && subtitle[0] != '\0') {
+        lv_label_set_text(ui.message, subtitle);
+    }
+    bsp_display_unlock();
+}
+
+void friday_ui_set_response(const char *text)
+{
+    friday_ui_set_surface("RESPONSE", "FRIDAY", text);
+}
+
+void friday_ui_set_tool(const char *name, const char *status)
+{
+    char detail[96];
+    lv_snprintf(detail, sizeof(detail), "%s  %s",
+                name != NULL ? name : "tool", status != NULL ? status : "working");
+    friday_ui_set_surface("TOOL", "FRIDAY", detail);
+}
+
+void friday_ui_set_backend(const char *status)
+{
+    if (ui.network == NULL || !bsp_display_lock(1000)) {
+        return;
+    }
+    lv_label_set_text(ui.network, status != NULL ? status : "FRIDAY OFFLINE");
+    bsp_display_unlock();
 }
 
 void friday_ui_set_network(const char *status, const char *detail)

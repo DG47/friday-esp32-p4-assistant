@@ -218,6 +218,16 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.1.2
+  espressif/esp_websocket_client:
+    component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.8.0
   espressif/esp_wifi_remote:
     component_hash: 0418b6c490eacf2cdfdfdc1fde9c41a89600949fd9e12b650e678fddefc56883
     dependencies:
@@ -368,10 +378,11 @@ dependencies:
 direct_dependencies:
 - espressif/esp_hosted
 - espressif/esp_lvgl_adapter
+- espressif/esp_websocket_client
 - espressif/esp_wifi_remote
 - idf
 - lvgl/lvgl
 - waveshare/esp32_p4_wifi6_touch_lcd_4b
-manifest_hash: 8780d9c4291ff19c228e571eb8e07c47a9ebf4907b516900e95a2dc3434ef290
+manifest_hash: 19dccfe247b7cad09ccc473165d000906602b49b310f1bb7a5cbd435f8a42365
 target: esp32p4
 version: 2.0.0

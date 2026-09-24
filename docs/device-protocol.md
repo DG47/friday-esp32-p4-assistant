@@ -4,6 +4,11 @@ Transport: WebSocket at `/ws/device/{device_id}`. JSON messages are UTF-8.
 Future PCM audio frames use binary WebSocket messages and are associated with
 the current turn.
 
+Multiple clients may join the same `device_id`. Server messages are broadcast
+to every connected peer for that device, allowing the browser input/debug view
+and the physical display to stay synchronized. The default physical device ID
+is `friday-p3a`.
+
 ## Client messages
 
 ```json
@@ -27,4 +32,3 @@ the current turn.
 States are `idle`, `listening`, `thinking`, `speaking`, and `alert`. Surface
 kinds currently implemented by the simulator are `ambient`, `timeline`,
 `reminder`, and `message`.
-

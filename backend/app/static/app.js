@@ -18,7 +18,8 @@ let lastAssistantText = "";
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  socket = new WebSocket(`${scheme}://${location.host}/ws/device/simulator`);
+  const deviceId = new URLSearchParams(location.search).get("device") || "friday-p3a";
+  socket = new WebSocket(`${scheme}://${location.host}/ws/device/${encodeURIComponent(deviceId)}`);
   socket.addEventListener("open", () => {
     dot.classList.add("online");
     connectionLabel.textContent = "Backend connected";
@@ -155,4 +156,3 @@ function updateClock() {
 updateClock();
 setInterval(updateClock, 1000);
 connect();
-

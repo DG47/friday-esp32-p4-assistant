@@ -45,6 +45,10 @@ Firmware and networking:
   address and must not be treated as permanent.
 - A local factory flash backup exists only in ignored `work/`; it is intentionally
   not uploaded because it may contain device-specific state.
+- The physical firmware now connects to
+  `ws://192.168.4.60:8000/ws/device/friday-p3a`, retries automatically, sends
+  touch activation, and renders backend state, surface, tool, error, and
+  assistant-text messages. This was flashed and verified on the real board.
 
 Backend and simulator:
 
@@ -55,6 +59,8 @@ Backend and simulator:
   endpoint was reachable there. This is also a DHCP address and may change.
 - The browser simulator supports typed interaction plus browser speech APIs.
 - The JSON WebSocket protocol is implemented at `/ws/device/{device_id}`.
+  Multiple peers sharing an ID receive the same server messages; the browser
+  and P3A use `friday-p3a` and were verified to stay synchronized.
 - Mock calendar, contextual follow-ups, and SQLite reminders work. Ollama is the
   selected keyless provider on the development Mac, using `qwen3.6:latest` at
   `http://127.0.0.1:11434`. OpenAI and Anthropic remain optional adapters.
@@ -67,17 +73,16 @@ Backend and simulator:
 Do not confuse working microphone capture with a complete voice assistant. The
 following remain:
 
-1. Connect the physical device to the backend WebSocket.
-2. Stream captured PCM frames after activation.
-3. Add local WakeNet9 wake-word detection and VAD/endpointing.
-4. Add streaming STT, initially OpenAI Realtime/transcription; keep a
+1. Stream captured PCM frames after activation.
+2. Add local WakeNet9 wake-word detection and VAD/endpointing.
+3. Add streaming STT, preferably local Whisper for the keyless configuration;
+   keep OpenAI Realtime/transcription as an optional cloud adapter and a
    WhisperFlow-compatible or local Whisper adapter as a fallback.
-5. Render server-generated surfaces and conversation states on the physical
-   display rather than only the local touch demo.
-6. Add TTS and interruption/barge-in after a speaker is attached.
-7. Replace mock calendar data with an authorized calendar integration.
-8. Add reminder scheduling/notifications rather than storage alone.
-9. Add authentication and transport security before using the service outside
+4. Add TTS and interruption/barge-in after a speaker is attached.
+5. Replace mock calendar data with an authorized calendar integration.
+6. Add reminder scheduling/notifications rather than storage alone.
+7. Move the compile-time backend address into provisioning or local discovery.
+8. Add authentication and transport security before using the service outside
    a trusted LAN.
 
 ## Resume commands

@@ -38,9 +38,11 @@ PORT=/dev/cu.usbmodem5AE60376951 make firmware-monitor
 3. Done: native idle/listening/thinking/speaking/alert scene and touch cycling.
 4. Done: hosted Wi-Fi and a first-boot setup portal using `esp_wifi_remote`
    1.2.5 and `esp_hosted` 2.9.0, matched to the factory ESP32-C6 firmware.
-5. Done: ES7210 microphone capture at 24 kHz, with live peak/RMS levels on
+5. Done: backend WebSocket connection with automatic reconnect, touch
+   activation, and JSON-driven states/surfaces on the LCD.
+6. Done: ES7210 microphone capture at 24 kHz, with live peak/RMS levels on
    screen and in the serial log.
-6. Next: stream microphone frames to the backend JSON WebSocket protocol and
+7. Next: stream microphone frames over the existing WebSocket and
    add WakeNet9/VAD plus cloud STT.
 7. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
 
@@ -65,3 +67,8 @@ without obtaining the matching board-specific image.
 
 The browser simulator is the source of truth for interaction behavior; the
 firmware renderer consumes the same scene/state protocol.
+
+The development backend URI is configured through `FRIDAY_BACKEND_WS_URI` and
+currently defaults to `ws://192.168.4.60:8000/ws/device/friday-p3a`. Rebuild and
+flash if the Mac's DHCP address changes. A later provisioning milestone should
+replace this compile-time address with discovery or an editable device setting.

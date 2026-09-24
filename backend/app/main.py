@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from .agent import FridayAgent
 from .config import get_settings
 from .db import ReminderStore
+from .device_hub import DeviceHub
 
 
 settings = get_settings()
@@ -19,6 +20,9 @@ static_dir = Path(__file__).parent / "static"
 
 app = FastAPI(title="Friday Assistant", version="0.1.0")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+hub = DeviceHub()
 
 
 @app.get("/")
@@ -43,7 +47,7 @@ async def reminders() -> list[dict]:
 
 @app.websocket("/ws/device/{device_id}")
 async def device_socket(websocket: WebSocket, device_id: str) -> None:
-    await websocket.accept()
+    await hub.connect(device_id, websocket)
     await websocket.send_json(
         {
             "type": "ready",
@@ -60,9 +64,9 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             message_type = message.get("type")
 
             if message_type == "hello":
-                await websocket.send_json({"type": "state", "state": "idle"})
+                await hub.broadcast(device_id, {"type": "state", "state": "idle"})
             elif message_type == "activate":
-                await websocket.send_json({"type": "state", "state": "listening"})
+                await hub.broadcast(device_id, {"type": "state", "state": "listening"})
             elif message_type == "utterance":
                 text = str(message.get("text", "")).strip()
                 if not text:
@@ -71,29 +75,33 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     )
                     continue
 
-                await websocket.send_json({"type": "state", "state": "thinking"})
+                await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
                 reply = await agent.handle(device_id, text)
                 if reply.tool:
-                    await websocket.send_json(
+                    await hub.broadcast(
+                        device_id,
                         {"type": "tool.activity", "name": reply.tool, "status": "complete"}
                     )
-                await websocket.send_json(
+                await hub.broadcast(
+                    device_id,
                     {"type": "surface", "surface": reply.surface.model_dump(mode="json")}
                 )
-                await websocket.send_json(
+                await hub.broadcast(
+                    device_id,
                     {
                         "type": "assistant.text",
                         "text": reply.text,
                         "provider": reply.provider,
                     }
                 )
-                await websocket.send_json({"type": "state", "state": "speaking"})
+                await hub.broadcast(device_id, {"type": "state", "state": "speaking"})
                 await asyncio.sleep(min(0.9, max(0.25, len(reply.text) / 180)))
-                await websocket.send_json({"type": "state", "state": "idle"})
+                await hub.broadcast(device_id, {"type": "state", "state": "idle"})
             else:
                 await websocket.send_json(
                     {"type": "error", "code": "bad_message", "message": f"Unsupported message type: {message_type}"}
                 )
     except WebSocketDisconnect:
-        return
-
+        pass
+    finally:
+        hub.disconnect(device_id, websocket)
