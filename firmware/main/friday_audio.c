@@ -13,6 +13,7 @@
 
 #include "friday_backend.h"
 #include "friday_ui.h"
+#include "friday_vad.h"
 
 #define FRIDAY_AUDIO_SAMPLE_RATE 24000
 #define FRIDAY_AUDIO_FRAME_MS 20
@@ -42,6 +43,9 @@ static void microphone_task(void *argument)
 
     uint32_t frames = 0;
     uint32_t recording_frames = 0;
+    bool was_recording = false;
+    friday_vad_t vad;
+    friday_vad_init(&vad, FRIDAY_AUDIO_FRAME_MS);
     ESP_LOGI(TAG, "ES7210 capture active: %d Hz, FL+FR", FRIDAY_AUDIO_SAMPLE_RATE);
     while (true) {
         int result = esp_codec_dev_read(
@@ -64,27 +68,50 @@ static void microphone_task(void *argument)
             sum_squares += (uint64_t)(sample * sample);
         }
 
+        uint64_t mono_sum_squares = 0;
         for (size_t index = 0; index < FRIDAY_AUDIO_SAMPLES_PER_CHANNEL; ++index) {
             int32_t left = samples[index * FRIDAY_AUDIO_CHANNELS];
             int32_t right = samples[index * FRIDAY_AUDIO_CHANNELS + 1];
             mono[index] = (int16_t)((left + right) / 2);
+            int32_t sample = mono[index];
+            mono_sum_squares += (uint64_t)(sample * sample);
         }
+        int32_t mono_rms = (int32_t)sqrt(
+            (double)mono_sum_squares / (double)FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
 
-        if (friday_backend_audio_active()) {
+        bool recording = friday_backend_audio_active();
+        if (recording) {
+            if (!was_recording) {
+                friday_vad_begin_turn(&vad);
+                ESP_LOGI(TAG, "VAD armed: speech=%ld silence=%ld noise=%.1f",
+                         (long)friday_vad_speech_threshold(&vad),
+                         (long)friday_vad_silence_threshold(&vad),
+                         (double)vad.noise_floor_rms);
+            }
             esp_err_t send_result = friday_backend_send_audio(
                 mono, FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
             if (send_result != ESP_OK) {
                 ESP_LOGW(TAG, "Audio frame send failed: %s", esp_err_to_name(send_result));
             }
             recording_frames++;
-            if (recording_frames >= FRIDAY_AUDIO_MAX_RECORDING_FRAMES) {
+            friday_vad_event_t vad_event = friday_vad_process(&vad, mono_rms);
+            if (vad_event == FRIDAY_VAD_EVENT_SPEECH_STARTED) {
+                ESP_LOGI(TAG, "VAD speech started: rms=%ld", (long)mono_rms);
+            } else if (vad_event == FRIDAY_VAD_EVENT_SPEECH_ENDED) {
+                ESP_LOGI(TAG, "VAD speech ended after %d ms silence",
+                         CONFIG_FRIDAY_VAD_SILENCE_END_MS);
+                friday_backend_end_audio();
+                recording_frames = 0;
+            } else if (recording_frames >= FRIDAY_AUDIO_MAX_RECORDING_FRAMES) {
                 ESP_LOGI(TAG, "Ending audio turn at 12 second safety limit");
                 friday_backend_end_audio();
                 recording_frames = 0;
             }
         } else {
             recording_frames = 0;
+            friday_vad_observe_idle(&vad, mono_rms);
         }
+        was_recording = recording;
         int32_t rms = (int32_t)sqrt(
             (double)sum_squares / (double)FRIDAY_AUDIO_FRAME_SAMPLES);
 

@@ -8,4 +8,39 @@ config FRIDAY_BACKEND_WS_URI
         LAN-accessible interface. Plain ws:// is acceptable only on a trusted
         development network; production firmware must use authenticated wss://.
 
+config FRIDAY_VAD_INITIAL_NOISE_RMS
+    int "Initial microphone noise-floor RMS"
+    range 1 1000
+    default 30
+
+config FRIDAY_VAD_MIN_SPEECH_RMS
+    int "Minimum speech-start RMS"
+    range 1 32767
+    default 60
+
+config FRIDAY_VAD_SPEECH_RATIO_PERCENT
+    int "Speech threshold as percent of ambient noise"
+    range 100 1000
+    default 200
+
+config FRIDAY_VAD_SPEECH_START_MS
+    int "Continuous speech required to start a turn (ms)"
+    range 20 1000
+    default 60
+
+config FRIDAY_VAD_MIN_SILENCE_RMS
+    int "Minimum trailing-silence RMS threshold"
+    range 1 32767
+    default 45
+
+config FRIDAY_VAD_SILENCE_RATIO_PERCENT
+    int "Silence threshold as percent of ambient noise"
+    range 100 500
+    default 135
+
+config FRIDAY_VAD_SILENCE_END_MS
+    int "Trailing silence required to submit a turn (ms)"
+    range 200 3000
+    default 800
+
 endmenu

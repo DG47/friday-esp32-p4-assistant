@@ -25,9 +25,11 @@ For a voice turn, send `audio.start`, one or more binary PCM frames, then
 audio turn may be active per connection; turns shorter than 200 ms or longer
 than `STT_MAX_SECONDS` are rejected. Binary data outside a turn is rejected.
 
-The P3A interaction is tap once to start and tap again to submit, with an
-automatic 12-second cutoff. This capture boundary is intentionally separate
-from STT so a later WakeNet9/VAD path can use the same wire protocol.
+The P3A interaction is tap once to start. Its adaptive energy VAD detects
+sustained speech and sends `audio.end` after 800 ms of trailing silence. A
+second tap can still submit manually, and a 12-second cutoff prevents abandoned
+turns from streaming forever. The capture boundary remains separate from STT
+so future WakeNet9 activation can use the same wire protocol.
 
 ## Server messages
 

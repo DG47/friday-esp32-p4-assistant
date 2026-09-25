@@ -19,6 +19,8 @@ scene generation.
 - onboard ES7210 microphone capture at 24 kHz with live peak/RMS diagnostics
 - tap-to-talk PCM streaming from the P3A to the backend, with a 12-second
   recording safety limit
+- adaptive on-device energy VAD that submits a turn after 800 ms of trailing
+  silence; a second tap remains available as a manual fallback
 - provider-neutral speech transcription with local faster-whisper `base.en`
   as the default keyless adapter
 - first-boot Wi-Fi provisioning with host libraries matched to the factory C6
@@ -28,10 +30,10 @@ scene generation.
 - reproducible local ESP-IDF 5.5.5 toolchain and a verified ESP32-P4 build
 
 The browser simulator uses the browser's speech recognition and speech
-synthesis when available. Typed input always works. On the P3A, tap the orb,
-speak, then tap it again to transcribe and submit the turn. Wake-word/VAD remain
-the next device-audio milestone. TTS playback still requires the external
-speaker.
+synthesis when available. Typed input always works. On the P3A, tap the orb and
+speak; Friday submits after you pause. Tap again only when you want to force an
+early submission. Wake-word activation is the next device-audio milestone. TTS
+playback still requires the external speaker.
 
 ## Run the MVP
 
@@ -82,9 +84,9 @@ The connected serial device is expected to look like
 [`firmware/README.md`](firmware/README.md). The native display/touch firmware
 has been flashed and boot-verified on the connected ESP32-P4 revision 1.0. The
 current board joined Wi-Fi successfully and its microphone capture was verified
-with continuously changing, nonzero audio samples. The tap-to-talk build has
-also been flashed and booted; the remaining hardware check is one observed
-touch-triggered transcription and on-display response.
+with continuously changing, nonzero audio samples. The tap-to-talk → local
+Whisper → Ollama → display loop was confirmed by the user on the physical P3A.
+The newer automatic VAD endpoint requires its own physical tuning check.
 
 ## Repository map
 

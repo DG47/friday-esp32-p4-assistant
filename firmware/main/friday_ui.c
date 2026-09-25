@@ -115,7 +115,7 @@ static void orb_event_cb(lv_event_t *event)
         bool recording = activation_callback();
         apply_state(recording ? FRIDAY_STATE_LISTENING : FRIDAY_STATE_THINKING);
         if (recording) {
-            lv_label_set_text(ui.message, "Listening - tap the orb again to send");
+            lv_label_set_text(ui.message, "Listening - pause when you are finished");
             lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
         }
     }

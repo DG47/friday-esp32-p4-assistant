@@ -76,8 +76,13 @@ Voice-loop implementation added on 2026-09-25:
 
 - The firmware now downmixes the verified FL+FR capture to mono and streams
   20 ms, 24 kHz signed 16-bit PCM frames between `audio.start` and `audio.end`.
-- Tap the orb once to record and again to submit. A 12-second device cutoff
-  prevents abandoned turns from streaming forever.
+- The first physical tap-to-talk → local Whisper → Ollama → display loop was
+  confirmed by the user after the initial manual-endpointing build.
+- The follow-up firmware adds adaptive on-device energy VAD. Tap once to start;
+  60 ms of sustained speech arms endpointing, and 800 ms of trailing silence
+  submits automatically. A second tap and a 12-second cutoff remain fallbacks.
+  The VAD maintains an idle noise-floor estimate and derives speech/silence
+  thresholds from configurable Kconfig ratios and minimums.
 - The backend buffers one bounded audio turn per WebSocket connection and
   routes it through a provider-neutral `SpeechTranscriber` interface.
 - The default keyless adapter is faster-whisper `base.en`, loaded lazily on the
@@ -90,18 +95,19 @@ Voice-loop implementation added on 2026-09-25:
 - Ten backend tests, the HTTP smoke test, and the ESP-IDF build pass. The new
   firmware was flashed to the physical P3A and serial logs confirmed boot,
   Wi-Fi at `192.168.4.33`, backend reconnection, and live microphone levels.
-  A touch-triggered physical audio turn and on-display response have not yet
-  been observed; do not treat the first real device voice loop as verified
-  until serial logs and display behavior confirm both.
+  The user subsequently confirmed the touch-triggered physical audio turn and
+  on-display response. The automatic VAD build was also flashed and booted;
+  its one-tap/pause endpointing still needs a physical tuning check before it
+  is considered verified.
 
 ## Not implemented yet
 
 Do not confuse working microphone capture with a complete voice assistant. The
 following remain:
 
-1. Flash and physically verify the tap-to-talk → local Whisper → Ollama →
-   display loop on the P3A.
-2. Add local WakeNet9 wake-word detection and VAD/endpointing.
+1. Physically verify and, if necessary, tune the automatic VAD endpointing on
+   the P3A.
+2. Add local WakeNet9 wake-word detection.
 3. Add a true streaming/cloud STT adapter if lower latency is needed.
 4. Add TTS and interruption/barge-in after a speaker is attached.
 5. Replace mock calendar data with an authorized calendar integration.
@@ -135,6 +141,7 @@ build outputs, toolchains, or factory backup images.
 - `docs/device-protocol.md`: device/backend WebSocket protocol.
 - `firmware/README.md`: hardware build, flash, and provisioning notes.
 - `firmware/main/friday_audio.c`: ES7210 capture and live diagnostics.
+- `firmware/main/friday_vad.c`: adaptive energy VAD and endpointing state.
 - `firmware/main/friday_wifi.c`: provisioning and station connection.
 - `firmware/main/friday_ui.c`: native display scene.
 - `backend/app/main.py`: FastAPI and WebSocket gateway.

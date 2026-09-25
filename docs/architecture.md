@@ -20,8 +20,8 @@ FastAPI realtime gateway
 - Tools return structured data. The scene composer decides how to visualize it.
 - Consequential tools will require confirmation. Mock read-only tools do not.
 - Audio, STT, LLM, TTS, and tools are independent provider interfaces.
-- Local wake word and VAD remain on the ESP32. Raw audio streams only after an
-  intentional activation.
+- VAD endpointing runs on the ESP32, and the future wake word belongs there as
+  well. Raw audio streams only after an intentional activation.
 
 ## MVP sequence
 
