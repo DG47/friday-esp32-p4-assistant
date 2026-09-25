@@ -50,6 +50,9 @@ Firmware and networking:
   touch activation, and renders backend state, surface, tool, error, and
   assistant-text messages. It reconnects after both transport failures and a
   clean backend shutdown. This was flashed and verified on the real board.
+- Dynamic labels are re-anchored after every text change. This matters in LVGL:
+  labels resize to their content and otherwise retain coordinates calculated
+  for the previous size, which can place response text partly off-screen.
 
 Backend and simulator:
 

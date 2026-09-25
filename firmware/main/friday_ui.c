@@ -82,8 +82,10 @@ static void apply_state(friday_state_t state)
 
     friday_state_set(state);
     lv_label_set_text(ui.status, friday_state_name(state));
+    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, -154);
     if (message != NULL) {
         lv_label_set_text(ui.message, message);
+        lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
     }
     lv_obj_set_style_bg_color(ui.core, color_hex(core_color), 0);
     lv_obj_set_style_shadow_color(ui.core, color_hex(glow_color), 0);
@@ -175,13 +177,13 @@ void friday_ui_create(void)
 
     ui.status = make_label(screen, "idle", &lv_font_montserrat_18, 0x79F5DD);
     lv_obj_set_style_text_letter_space(ui.status, 6, 0);
-    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, -116);
+    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, -154);
 
-    ui.message = make_label(screen, "", &lv_font_montserrat_18, 0x7D9696);
-    lv_obj_set_width(ui.message, 600);
+    ui.message = make_label(screen, "", &lv_font_montserrat_24, 0xEDF8F7);
+    lv_obj_set_width(ui.message, 620);
     lv_obj_set_style_text_align(ui.message, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.message, LV_LABEL_LONG_MODE_WRAP);
-    lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -62);
+    lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
 
     ui.microphone = make_label(screen, "MICS STARTING", &lv_font_montserrat_18, 0x36504F);
     lv_obj_align(ui.microphone, LV_ALIGN_BOTTOM_MID, 0, -20);
@@ -190,6 +192,7 @@ void friday_ui_create(void)
     lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
 
     lv_label_set_text(ui.message, "Touch the orb to wake Friday");
+    lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
     apply_state(FRIDAY_STATE_IDLE);
 }
 
@@ -214,12 +217,15 @@ void friday_ui_set_surface(const char *kind, const char *title, const char *subt
     }
     if (kind != NULL && kind[0] != '\0') {
         lv_label_set_text(ui.eyebrow, kind);
+        lv_obj_align(ui.eyebrow, LV_ALIGN_TOP_MID, 0, 54);
     }
     if (title != NULL && title[0] != '\0') {
         lv_label_set_text(ui.title, title);
+        lv_obj_align(ui.title, LV_ALIGN_TOP_MID, 0, 88);
     }
     if (subtitle != NULL && subtitle[0] != '\0') {
         lv_label_set_text(ui.message, subtitle);
+        lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
     }
     bsp_display_unlock();
 }
@@ -243,6 +249,7 @@ void friday_ui_set_backend(const char *status)
         return;
     }
     lv_label_set_text(ui.network, status != NULL ? status : "FRIDAY OFFLINE");
+    lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
     bsp_display_unlock();
 }
 
@@ -253,8 +260,10 @@ void friday_ui_set_network(const char *status, const char *detail)
     }
 
     lv_label_set_text(ui.network, status);
+    lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
     if (detail != NULL && detail[0] != '\0') {
         lv_label_set_text(ui.message, detail);
+        lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
     }
     bsp_display_unlock();
 }
@@ -273,5 +282,6 @@ void friday_ui_set_microphone(const char *status, int32_t peak, int32_t rms)
         lv_snprintf(text, sizeof(text), "%s", status);
     }
     lv_label_set_text(ui.microphone, text);
+    lv_obj_align(ui.microphone, LV_ALIGN_BOTTOM_MID, 0, -20);
     bsp_display_unlock();
 }

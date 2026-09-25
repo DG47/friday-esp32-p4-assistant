@@ -67,6 +67,7 @@ static void handle_message(const char *payload)
         cJSON_Delete(root);
         return;
     }
+    ESP_LOGI(TAG, "Received backend message: %s", type);
 
     if (strcmp(type, "ready") == 0) {
         friday_ui_set_backend("FRIDAY ONLINE");
@@ -77,7 +78,10 @@ static void handle_message(const char *payload)
     } else if (strcmp(type, "surface") == 0) {
         handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
     } else if (strcmp(type, "assistant.text") == 0) {
-        friday_ui_set_response(json_string(root, "text"));
+        const char *text = json_string(root, "text");
+        ESP_LOGI(TAG, "Rendering assistant response (%u bytes)",
+                 text != NULL ? (unsigned int)strlen(text) : 0);
+        friday_ui_set_response(text);
     } else if (strcmp(type, "tool.activity") == 0) {
         friday_ui_set_tool(json_string(root, "name"), json_string(root, "status"));
     } else if (strcmp(type, "error") == 0) {
