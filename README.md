@@ -17,6 +17,10 @@ scene generation.
 - ESP-IDF firmware for P3A with the native animated Friday scene, ST7703
   display initialization, GT911 touch input, and protocol state machine
 - onboard ES7210 microphone capture at 24 kHz with live peak/RMS diagnostics
+- tap-to-talk PCM streaming from the P3A to the backend, with a 12-second
+  recording safety limit
+- provider-neutral speech transcription with local faster-whisper `base.en`
+  as the default keyless adapter
 - first-boot Wi-Fi provisioning with host libraries matched to the factory C6
 - physical-device WebSocket connection with automatic reconnect, touch
   activation, and server-driven states, surfaces, and Ollama responses
@@ -24,9 +28,10 @@ scene generation.
 - reproducible local ESP-IDF 5.5.5 toolchain and a verified ESP32-P4 build
 
 The browser simulator uses the browser's speech recognition and speech
-synthesis when available. Typed input always works. The physical microphones
-are now verified; wake-word/VAD, audio streaming, and STT integration are the
-next device-audio milestone. TTS playback still requires the external speaker.
+synthesis when available. Typed input always works. On the P3A, tap the orb,
+speak, then tap it again to transcribe and submit the turn. Wake-word/VAD remain
+the next device-audio milestone. TTS playback still requires the external
+speaker.
 
 ## Run the MVP
 
@@ -53,6 +58,13 @@ OLLAMA_MODEL=qwen3.6:latest
 `make dev-local` uses the loopback URL above. Docker Compose automatically uses
 `host.docker.internal` to reach Ollama on the Mac.
 
+Local device speech uses faster-whisper and downloads the `base.en` model on
+the first voice turn. Its settings are `STT_PROVIDER`, `STT_MODEL`,
+`STT_DEVICE`, `STT_COMPUTE_TYPE`, `STT_LANGUAGE`, and `STT_MAX_SECONDS`.
+Set `STT_PROVIDER=none` to disable speech transcription without affecting typed
+input. The STT interface is independent of the agent provider so another local
+or cloud transcriber can be added without changing the device protocol.
+
 Cloud GPT and Claude adapters remain available by adding their keys locally and
 choosing `openai`, `anthropic`, or `auto`. Never commit `.env`.
 
@@ -60,7 +72,8 @@ choosing `openai`, `anthropic`, or `auto`. Never commit `.env`.
 
 Run `make test-local` (or `make test` with Docker). With the service running,
 run `make smoke`. Run `make firmware-build` to reproduce the verified P4
-firmware build using the repository-local toolchain.
+firmware build using the repository-local toolchain. A fresh local environment
+must first install `backend/requirements.txt` into `.venv`.
 
 ## Hardware status
 
@@ -69,7 +82,9 @@ The connected serial device is expected to look like
 [`firmware/README.md`](firmware/README.md). The native display/touch firmware
 has been flashed and boot-verified on the connected ESP32-P4 revision 1.0. The
 current board joined Wi-Fi successfully and its microphone capture was verified
-with continuously changing, nonzero audio samples.
+with continuously changing, nonzero audio samples. The tap-to-talk build has
+also been flashed and booted; the remaining hardware check is one observed
+touch-triggered transcription and on-display response.
 
 ## Repository map
 

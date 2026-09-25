@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "friday_backend.h"
 #include "friday_ui.h"
 
 #define FRIDAY_AUDIO_SAMPLE_RATE 24000
@@ -20,6 +21,7 @@
     (FRIDAY_AUDIO_SAMPLE_RATE * FRIDAY_AUDIO_FRAME_MS / 1000)
 #define FRIDAY_AUDIO_FRAME_SAMPLES \
     (FRIDAY_AUDIO_SAMPLES_PER_CHANNEL * FRIDAY_AUDIO_CHANNELS)
+#define FRIDAY_AUDIO_MAX_RECORDING_FRAMES (12000 / FRIDAY_AUDIO_FRAME_MS)
 
 static const char *TAG = "friday_audio";
 static esp_codec_dev_handle_t microphone;
@@ -28,14 +30,18 @@ static void microphone_task(void *argument)
 {
     (void)argument;
     int16_t *samples = malloc(FRIDAY_AUDIO_FRAME_SAMPLES * sizeof(*samples));
-    if (samples == NULL) {
+    int16_t *mono = malloc(FRIDAY_AUDIO_SAMPLES_PER_CHANNEL * sizeof(*mono));
+    if (samples == NULL || mono == NULL) {
         ESP_LOGE(TAG, "Could not allocate microphone frame");
         friday_ui_set_microphone("MIC ERROR", 0, 0);
+        free(samples);
+        free(mono);
         vTaskDelete(NULL);
         return;
     }
 
     uint32_t frames = 0;
+    uint32_t recording_frames = 0;
     ESP_LOGI(TAG, "ES7210 capture active: %d Hz, FL+FR", FRIDAY_AUDIO_SAMPLE_RATE);
     while (true) {
         int result = esp_codec_dev_read(
@@ -56,6 +62,28 @@ static void microphone_task(void *argument)
                 peak = magnitude;
             }
             sum_squares += (uint64_t)(sample * sample);
+        }
+
+        for (size_t index = 0; index < FRIDAY_AUDIO_SAMPLES_PER_CHANNEL; ++index) {
+            int32_t left = samples[index * FRIDAY_AUDIO_CHANNELS];
+            int32_t right = samples[index * FRIDAY_AUDIO_CHANNELS + 1];
+            mono[index] = (int16_t)((left + right) / 2);
+        }
+
+        if (friday_backend_audio_active()) {
+            esp_err_t send_result = friday_backend_send_audio(
+                mono, FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
+            if (send_result != ESP_OK) {
+                ESP_LOGW(TAG, "Audio frame send failed: %s", esp_err_to_name(send_result));
+            }
+            recording_frames++;
+            if (recording_frames >= FRIDAY_AUDIO_MAX_RECORDING_FRAMES) {
+                ESP_LOGI(TAG, "Ending audio turn at 12 second safety limit");
+                friday_backend_end_audio();
+                recording_frames = 0;
+            }
+        } else {
+            recording_frames = 0;
         }
         int32_t rms = (int32_t)sqrt(
             (double)sum_squares / (double)FRIDAY_AUDIO_FRAME_SAMPLES);
@@ -99,4 +127,3 @@ esp_err_t friday_audio_start(void)
                         "Could not start microphone task");
     return ESP_OK;
 }
-

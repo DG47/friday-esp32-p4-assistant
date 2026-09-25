@@ -1,10 +1,11 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "friday_state.h"
 
-typedef void (*friday_ui_activation_callback_t)(void);
+typedef bool (*friday_ui_activation_callback_t)(void);
 
 void friday_ui_create(void);
 void friday_ui_set_activation_callback(friday_ui_activation_callback_t callback);

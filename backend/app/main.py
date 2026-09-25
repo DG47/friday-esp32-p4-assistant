@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -8,14 +9,17 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import FridayAgent
+from .audio_session import AudioSession, AudioSessionError
 from .config import get_settings
 from .db import ReminderStore
 from .device_hub import DeviceHub
+from .stt import TranscriptionError, create_transcriber
 
 
 settings = get_settings()
 store = ReminderStore(settings.assistant_database_path)
 agent = FridayAgent(settings, store)
+transcriber = create_transcriber(settings)
 static_dir = Path(__file__).parent / "static"
 
 app = FastAPI(title="Friday Assistant", version="0.1.0")
@@ -23,6 +27,35 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 hub = DeviceHub()
+
+
+async def handle_utterance(device_id: str, text: str) -> None:
+    await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
+    reply = await agent.handle(device_id, text)
+    if reply.tool:
+        await hub.broadcast(
+            device_id,
+            {"type": "tool.activity", "name": reply.tool, "status": "complete"},
+        )
+    await hub.broadcast(
+        device_id,
+        {"type": "surface", "surface": reply.surface.model_dump(mode="json")},
+    )
+    await hub.broadcast(
+        device_id,
+        {
+            "type": "assistant.text",
+            "text": reply.text,
+            "provider": reply.provider,
+        },
+    )
+    await hub.broadcast(device_id, {"type": "state", "state": "speaking"})
+    await asyncio.sleep(min(0.9, max(0.25, len(reply.text) / 180)))
+    await hub.broadcast(device_id, {"type": "state", "state": "idle"})
+
+
+async def send_error(websocket: WebSocket, code: str, message: str) -> None:
+    await websocket.send_json({"type": "error", "code": code, "message": message})
 
 
 @app.get("/")
@@ -47,6 +80,7 @@ async def reminders() -> list[dict]:
 
 @app.websocket("/ws/device/{device_id}")
 async def device_socket(websocket: WebSocket, device_id: str) -> None:
+    audio = AudioSession(max_seconds=settings.stt_max_seconds)
     await hub.connect(device_id, websocket)
     await websocket.send_json(
         {
@@ -60,7 +94,27 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
 
     try:
         while True:
-            message = await websocket.receive_json()
+            event = await websocket.receive()
+            if event["type"] == "websocket.disconnect":
+                raise WebSocketDisconnect(event.get("code", 1000))
+
+            binary = event.get("bytes")
+            if binary is not None:
+                try:
+                    audio.append(binary)
+                except AudioSessionError as error:
+                    await send_error(websocket, "bad_audio", str(error))
+                    await hub.broadcast(device_id, {"type": "state", "state": "idle"})
+                continue
+
+            try:
+                message = json.loads(event.get("text") or "")
+            except (json.JSONDecodeError, TypeError):
+                await send_error(websocket, "bad_message", "Expected a JSON control message")
+                continue
+            if not isinstance(message, dict):
+                await send_error(websocket, "bad_message", "Expected a JSON object")
+                continue
             message_type = message.get("type")
 
             if message_type == "hello":
@@ -70,36 +124,44 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             elif message_type == "utterance":
                 text = str(message.get("text", "")).strip()
                 if not text:
-                    await websocket.send_json(
-                        {"type": "error", "code": "empty_utterance", "message": "I heard a truly immaculate silence."}
-                    )
+                    await send_error(websocket, "empty_utterance", "I heard a truly immaculate silence.")
                     continue
-
-                await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
-                reply = await agent.handle(device_id, text)
-                if reply.tool:
-                    await hub.broadcast(
-                        device_id,
-                        {"type": "tool.activity", "name": reply.tool, "status": "complete"}
+                await handle_utterance(device_id, text)
+            elif message_type == "audio.start":
+                try:
+                    audio.start(
+                        str(message.get("format", "")),
+                        int(message.get("sample_rate", 0)),
+                        int(message.get("channels", 0)),
                     )
+                except (AudioSessionError, TypeError, ValueError) as error:
+                    await send_error(websocket, "bad_audio", str(error))
+                    continue
+                await hub.broadcast(device_id, {"type": "state", "state": "listening"})
+            elif message_type == "audio.end":
+                try:
+                    pcm, audio_format = audio.finish()
+                    minimum_bytes = audio_format.sample_rate * audio_format.channels * 2 // 5
+                    if len(pcm) < minimum_bytes:
+                        raise AudioSessionError("Audio turn was too short")
+                    if transcriber is None:
+                        raise TranscriptionError("Speech transcription is disabled")
+                    await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
+                    text = (await transcriber.transcribe(pcm, audio_format)).strip()
+                    if not text:
+                        raise TranscriptionError("No speech was recognized")
+                except (AudioSessionError, TranscriptionError) as error:
+                    await send_error(websocket, "transcription_failed", str(error))
+                    await hub.broadcast(device_id, {"type": "state", "state": "idle"})
+                    continue
                 await hub.broadcast(
                     device_id,
-                    {"type": "surface", "surface": reply.surface.model_dump(mode="json")}
+                    {"type": "transcript", "text": text, "provider": transcriber.name},
                 )
-                await hub.broadcast(
-                    device_id,
-                    {
-                        "type": "assistant.text",
-                        "text": reply.text,
-                        "provider": reply.provider,
-                    }
-                )
-                await hub.broadcast(device_id, {"type": "state", "state": "speaking"})
-                await asyncio.sleep(min(0.9, max(0.25, len(reply.text) / 180)))
-                await hub.broadcast(device_id, {"type": "state", "state": "idle"})
+                await handle_utterance(device_id, text)
             else:
-                await websocket.send_json(
-                    {"type": "error", "code": "bad_message", "message": f"Unsupported message type: {message_type}"}
+                await send_error(
+                    websocket, "bad_message", f"Unsupported message type: {message_type}"
                 )
     except WebSocketDisconnect:
         pass

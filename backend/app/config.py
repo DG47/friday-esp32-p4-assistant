@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     anthropic_text_model: str = "claude-sonnet-4-5"
     openai_realtime_model: str = "gpt-realtime-2.1"
 
+    stt_provider: Literal["none", "faster-whisper"] = "faster-whisper"
+    stt_model: str = "base.en"
+    stt_device: str = "cpu"
+    stt_compute_type: str = "int8"
+    stt_language: str = "en"
+    stt_max_seconds: int = 15
+
 
 @lru_cache
 def get_settings() -> Settings:

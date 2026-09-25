@@ -16,7 +16,7 @@ The architecture is deliberately provider-neutral. Audio, STT, LLM, TTS, and
 tools should remain replaceable adapters. Wake-word detection and basic VAD
 belong on the device. Raw audio should leave it only after activation.
 
-## Verified state on 2026-09-24
+## Verified state through 2026-09-25
 
 Hardware:
 
@@ -72,16 +72,37 @@ Backend and simulator:
 - Verification passed: three backend unit tests, the HTTP/WebSocket smoke test,
   ESP-IDF build, flash, boot, display, touch, Wi-Fi, and microphone capture.
 
+Voice-loop implementation added on 2026-09-25:
+
+- The firmware now downmixes the verified FL+FR capture to mono and streams
+  20 ms, 24 kHz signed 16-bit PCM frames between `audio.start` and `audio.end`.
+- Tap the orb once to record and again to submit. A 12-second device cutoff
+  prevents abandoned turns from streaming forever.
+- The backend buffers one bounded audio turn per WebSocket connection and
+  routes it through a provider-neutral `SpeechTranscriber` interface.
+- The default keyless adapter is faster-whisper `base.en`, loaded lazily on the
+  Mac. The runtime and model download were verified. A synthesized speech turn
+  produced the exact transcript `Give me a brief greeting.` and the local
+  Ollama response `Good day, Dhruv. I am at your disposal.` through the live
+  WebSocket service.
+- The recognized transcript is broadcast to browser peers, then enters the
+  same Friday/Ollama agent path as a typed utterance.
+- Ten backend tests, the HTTP smoke test, and the ESP-IDF build pass. The new
+  firmware was flashed to the physical P3A and serial logs confirmed boot,
+  Wi-Fi at `192.168.4.33`, backend reconnection, and live microphone levels.
+  A touch-triggered physical audio turn and on-display response have not yet
+  been observed; do not treat the first real device voice loop as verified
+  until serial logs and display behavior confirm both.
+
 ## Not implemented yet
 
 Do not confuse working microphone capture with a complete voice assistant. The
 following remain:
 
-1. Stream captured PCM frames after activation.
+1. Flash and physically verify the tap-to-talk → local Whisper → Ollama →
+   display loop on the P3A.
 2. Add local WakeNet9 wake-word detection and VAD/endpointing.
-3. Add streaming STT, preferably local Whisper for the keyless configuration;
-   keep OpenAI Realtime/transcription as an optional cloud adapter and a
-   WhisperFlow-compatible or local Whisper adapter as a fallback.
+3. Add a true streaming/cloud STT adapter if lower latency is needed.
 4. Add TTS and interruption/barge-in after a speaker is attached.
 5. Replace mock calendar data with an authorized calendar integration.
 6. Add reminder scheduling/notifications rather than storage alone.

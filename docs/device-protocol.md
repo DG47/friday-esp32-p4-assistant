@@ -1,8 +1,8 @@
 # Device protocol v1
 
-Transport: WebSocket at `/ws/device/{device_id}`. JSON messages are UTF-8.
-Future PCM audio frames use binary WebSocket messages and are associated with
-the current turn.
+Transport: WebSocket at `/ws/device/{device_id}`. Control messages are UTF-8
+JSON. PCM audio frames are binary WebSocket messages associated with the active
+turn on that same connection.
 
 Multiple clients may join the same `device_id`. Server messages are broadcast
 to every connected peer for that device, allowing the browser input/debug view
@@ -19,10 +19,21 @@ is `friday-p3a`.
 {"type":"audio.end"}
 ```
 
+For a voice turn, send `audio.start`, one or more binary PCM frames, then
+`audio.end`. The current device sends mono signed 16-bit little-endian PCM at
+24 kHz in 20 ms frames. The backend also accepts mono 16 kHz PCM. Only one
+audio turn may be active per connection; turns shorter than 200 ms or longer
+than `STT_MAX_SECONDS` are rejected. Binary data outside a turn is rejected.
+
+The P3A interaction is tap once to start and tap again to submit, with an
+automatic 12-second cutoff. This capture boundary is intentionally separate
+from STT so a later WakeNet9/VAD path can use the same wire protocol.
+
 ## Server messages
 
 ```json
 {"type":"state","state":"thinking"}
+{"type":"transcript","text":"What's next?","provider":"faster-whisper"}
 {"type":"assistant.text","text":"Your interview is at two."}
 {"type":"surface","surface":{"kind":"timeline","title":"Today","items":[]}}
 {"type":"tool.activity","name":"calendar","status":"working"}

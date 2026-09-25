@@ -42,7 +42,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Friday display online; touch the orb to activate the backend");
     ESP_ERROR_CHECK(friday_wifi_start());
-    friday_ui_set_activation_callback(friday_backend_activate);
+    friday_ui_set_activation_callback(friday_backend_toggle_audio);
     ESP_ERROR_CHECK(friday_backend_start());
 
     esp_err_t audio_result = friday_audio_start();

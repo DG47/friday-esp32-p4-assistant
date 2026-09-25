@@ -46,6 +46,9 @@ function handleMessage(message) {
   } else if (message.type === "assistant.text") {
     lastAssistantText = message.text;
     transcript.textContent = message.text;
+  } else if (message.type === "transcript") {
+    input.value = message.text;
+    transcript.textContent = `“${message.text}”`;
   } else if (message.type === "tool.activity") {
     status.textContent = `${message.name.toUpperCase()} · ${message.status.toUpperCase()}`;
   } else if (message.type === "error") {

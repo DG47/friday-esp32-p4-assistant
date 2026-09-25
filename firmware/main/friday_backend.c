@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 #include "friday_state.h"
 #include "friday_ui.h"
@@ -16,6 +17,19 @@ static const char *TAG = "friday_backend";
 static esp_websocket_client_handle_t client;
 static char *message_buffer;
 static size_t message_size;
+static SemaphoreHandle_t send_lock;
+static volatile bool audio_active;
+
+static int send_text(const char *message, TickType_t timeout)
+{
+    if (client == NULL || !esp_websocket_client_is_connected(client) ||
+        send_lock == NULL || xSemaphoreTake(send_lock, timeout) != pdTRUE) {
+        return -1;
+    }
+    int sent = esp_websocket_client_send_text(client, message, strlen(message), timeout);
+    xSemaphoreGive(send_lock);
+    return sent;
+}
 
 static friday_state_t parse_state(const char *name)
 {
@@ -132,10 +146,11 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             "\"capabilities\":[\"display\",\"touch\",\"microphone\"]}";
         ESP_LOGI(TAG, "Connected to Friday backend");
         friday_ui_set_backend("FRIDAY ONLINE");
-        esp_websocket_client_send_text(client, hello, strlen(hello), pdMS_TO_TICKS(1000));
+        send_text(hello, pdMS_TO_TICKS(1000));
         break;
     }
     case WEBSOCKET_EVENT_DISCONNECTED:
+        audio_active = false;
         ESP_LOGW(TAG, "Backend disconnected; automatic reconnect pending");
         friday_ui_set_backend("FRIDAY RECONNECTING");
         break;
@@ -165,6 +180,10 @@ esp_err_t friday_backend_start(void)
         .keep_alive_enable = true,
     };
 
+    send_lock = xSemaphoreCreateMutex();
+    ESP_RETURN_ON_FALSE(send_lock != NULL, ESP_ERR_NO_MEM, TAG,
+                        "Could not create WebSocket send lock");
+
     ESP_LOGI(TAG, "Backend endpoint: %s", CONFIG_FRIDAY_BACKEND_WS_URI);
     client = esp_websocket_client_init(&config);
     ESP_RETURN_ON_FALSE(client != NULL, ESP_ERR_NO_MEM, TAG,
@@ -176,17 +195,62 @@ esp_err_t friday_backend_start(void)
     return esp_websocket_client_start(client);
 }
 
-void friday_backend_activate(void)
+bool friday_backend_toggle_audio(void)
 {
     if (client == NULL || !esp_websocket_client_is_connected(client)) {
         ESP_LOGW(TAG, "Touch activation ignored while backend is offline");
-        return;
+        return false;
+    }
+
+    if (audio_active) {
+        friday_backend_end_audio();
+        return false;
     }
 
     const char activation[] = "{\"type\":\"activate\",\"source\":\"touch\"}";
-    int sent = esp_websocket_client_send_text(
-        client, activation, strlen(activation), pdMS_TO_TICKS(250));
-    if (sent < 0) {
+    const char audio_start[] =
+        "{\"type\":\"audio.start\",\"format\":\"pcm_s16le\","
+        "\"sample_rate\":24000,\"channels\":1}";
+    if (send_text(activation, pdMS_TO_TICKS(250)) < 0 ||
+        send_text(audio_start, pdMS_TO_TICKS(250)) < 0) {
         ESP_LOGW(TAG, "Could not send touch activation");
+        return false;
     }
+    audio_active = true;
+    ESP_LOGI(TAG, "Audio turn started");
+    return true;
+}
+
+bool friday_backend_audio_active(void)
+{
+    return audio_active;
+}
+
+esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count)
+{
+    if (!audio_active || client == NULL || !esp_websocket_client_is_connected(client)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (send_lock == NULL || xSemaphoreTake(send_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    int sent = esp_websocket_client_send_bin(
+        client, (const char *)samples, sample_count * sizeof(*samples),
+        pdMS_TO_TICKS(100));
+    xSemaphoreGive(send_lock);
+    return sent < 0 ? ESP_FAIL : ESP_OK;
+}
+
+void friday_backend_end_audio(void)
+{
+    if (!audio_active) {
+        return;
+    }
+    audio_active = false;
+    const char audio_end[] = "{\"type\":\"audio.end\"}";
+    if (send_text(audio_end, pdMS_TO_TICKS(500)) < 0) {
+        ESP_LOGW(TAG, "Could not finish audio turn");
+        return;
+    }
+    ESP_LOGI(TAG, "Audio turn finished");
 }

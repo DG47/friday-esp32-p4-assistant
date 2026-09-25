@@ -7,14 +7,10 @@ P3A device / 720×720 simulator
                  │ WebSocket: control JSON + PCM audio frames
                  ▼
 FastAPI realtime gateway
-  session state ─ scene composer ─ tool router
-          │              │              │
-          ▼              ▼              ▼
-   GPT / Claude      UI protocol    calendar/reminders
-          │
-          ├── OpenAI Realtime (primary conversational voice)
-          ├── streaming STT adapter (OpenAI first)
-          └── WhisperFlow-compatible adapter (later fallback)
+  audio-turn buffer ─ STT adapter ─ session state ─ scene composer ─ tools
+                         │               │
+                         ▼               ▼
+               local faster-whisper   Ollama / GPT / Claude
 ```
 
 ## Design boundaries
@@ -30,8 +26,9 @@ FastAPI realtime gateway
 ## MVP sequence
 
 1. Client sends `hello`; server sends ambient state and capabilities.
-2. Client sends a recognized text utterance.
-3. Server sends `thinking`, tool activity, a dynamic surface, assistant text,
+2. Client either sends a recognized text utterance or brackets binary PCM
+   frames with `audio.start` and `audio.end`. The STT adapter emits the same
+   text-utterance boundary used by typed input.
+3. Server sends `thinking`, an optional transcript, tool activity, a dynamic surface, assistant text,
    and `speaking`/`idle` state transitions.
 4. Reminder writes are committed to SQLite before success is announced.
-

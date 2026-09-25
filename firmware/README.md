@@ -4,8 +4,9 @@ This is the ESP-IDF firmware for the Waveshare
 ESP32-P4-WIFI6-Touch-LCD-4B/P3A. It uses Waveshare's published 3.0.1 BSP for
 the ST7703 MIPI display, GT911 touch controller, and board pin definitions.
 The current hardware milestone renders Friday's native animated state scene,
-supports touch interaction, provides first-boot Wi-Fi provisioning, and captures
-live audio from the board's ES7210 microphone array.
+supports touch interaction, provides first-boot Wi-Fi provisioning, captures
+live audio from the board's ES7210 microphone array, and streams tap-delimited
+voice turns to the backend.
 
 ## Install the macOS toolchain
 
@@ -42,9 +43,13 @@ PORT=/dev/cu.usbmodem5AE60376951 make firmware-monitor
    activation, and JSON-driven states/surfaces on the LCD.
 6. Done: ES7210 microphone capture at 24 kHz, with live peak/RMS levels on
    screen and in the serial log.
-7. Next: stream microphone frames over the existing WebSocket and
-   add WakeNet9/VAD plus cloud STT.
-7. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
+7. Built: tap-to-talk streams 24 kHz mono PCM over the existing WebSocket;
+   tap again to submit, or recording stops automatically after 12 seconds.
+8. Done: the streaming build was flashed and booted on the physical P3A; Wi-Fi,
+   backend reconnection, and microphone capture were confirmed in serial logs.
+9. Next: observe a touch-triggered physical audio turn and display response,
+   then add WakeNet9/VAD using the same audio-turn boundary.
+10. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
 
 ## First-boot Wi-Fi setup
 

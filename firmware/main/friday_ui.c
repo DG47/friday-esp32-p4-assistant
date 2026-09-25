@@ -111,9 +111,13 @@ static void orb_event_cb(lv_event_t *event)
         return;
     }
 
-    apply_state(FRIDAY_STATE_LISTENING);
     if (activation_callback != NULL) {
-        activation_callback();
+        bool recording = activation_callback();
+        apply_state(recording ? FRIDAY_STATE_LISTENING : FRIDAY_STATE_THINKING);
+        if (recording) {
+            lv_label_set_text(ui.message, "Listening - tap the orb again to send");
+            lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
+        }
     }
 }
 
@@ -191,7 +195,7 @@ void friday_ui_create(void)
     ui.network = make_label(screen, "WI-FI STARTING", &lv_font_montserrat_18, 0x36504F);
     lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
 
-    lv_label_set_text(ui.message, "Touch the orb to wake Friday");
+    lv_label_set_text(ui.message, "Tap the orb to talk to Friday");
     lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
     apply_state(FRIDAY_STATE_IDLE);
 }
