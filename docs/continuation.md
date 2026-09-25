@@ -115,24 +115,22 @@ Voice-loop implementation added on 2026-09-25:
   firmware was flashed to the physical P3A and serial logs confirmed boot,
   Wi-Fi at `192.168.4.33`, backend reconnection, and live microphone levels.
   The user subsequently confirmed the touch-triggered physical audio turn and
-  on-display response. The automatic VAD build was also flashed and booted;
-  its one-tap/pause endpointing still needs a physical tuning check before it
-  is considered verified.
+  on-display response. The automatic VAD build also completed a physical
+  one-tap/pause turn through transcription, response rendering, and return to
+  idle without a WebSocket drop.
 
 ## Not implemented yet
 
 Do not confuse working microphone capture with a complete voice assistant. The
 following remain:
 
-1. Physically verify and, if necessary, tune the automatic VAD endpointing on
-   the P3A.
-2. Add local WakeNet9 wake-word detection.
-3. Add a true streaming/cloud STT adapter if lower latency is needed.
-4. Add TTS and interruption/barge-in after a speaker is attached.
-5. Replace mock calendar data with an authorized calendar integration.
-6. Add reminder scheduling/notifications rather than storage alone.
-7. Move the compile-time backend address into provisioning or local discovery.
-8. Add authentication and transport security before using the service outside
+1. Add local WakeNet9 wake-word detection.
+2. Add a true streaming/cloud STT adapter if lower latency is needed.
+3. Add TTS and interruption/barge-in after a speaker is attached.
+4. Replace mock calendar data with an authorized calendar integration.
+5. Add reminder scheduling/notifications rather than storage alone.
+6. Move the compile-time backend address into provisioning or local discovery.
+7. Add authentication and transport security before using the service outside
    a trusted LAN.
 
 ## Resume commands

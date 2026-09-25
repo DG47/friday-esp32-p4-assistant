@@ -88,7 +88,8 @@ has been flashed and boot-verified on the connected ESP32-P4 revision 1.0. The
 current board joined Wi-Fi successfully and its microphone capture was verified
 with continuously changing, nonzero audio samples. The tap-to-talk → local
 Whisper → Ollama → display loop was confirmed by the user on the physical P3A.
-The newer automatic VAD endpoint requires its own physical tuning check.
+The automatic VAD endpoint was also confirmed on the physical P3A through a
+complete one-tap voice turn without a WebSocket drop.
 
 ## Repository map
 
