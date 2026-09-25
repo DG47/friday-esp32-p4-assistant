@@ -15,13 +15,13 @@ is `friday-p3a`.
 {"type":"hello","protocol":1,"capabilities":["display","touch"]}
 {"type":"activate","source":"touch"}
 {"type":"utterance","text":"What's next?"}
-{"type":"audio.start","format":"pcm_s16le","sample_rate":24000,"channels":1}
+{"type":"audio.start","format":"pcm_s16le","sample_rate":12000,"channels":1}
 {"type":"audio.end"}
 ```
 
 For a voice turn, send `audio.start`, one or more binary PCM frames, then
 `audio.end`. The current device sends mono signed 16-bit little-endian PCM at
-24 kHz in 20 ms frames. The backend also accepts mono 16 kHz PCM. Only one
+12 kHz in 20 ms frames, decimated from its 24 kHz capture path. Only one
 audio turn may be active per connection; turns shorter than 200 ms or longer
 than `STT_MAX_SECONDS` are rejected. Binary data outside a turn is rejected.
 

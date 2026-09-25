@@ -17,10 +17,12 @@ scene generation.
 - ESP-IDF firmware for P3A with the native animated Friday scene, ST7703
   display initialization, GT911 touch input, and protocol state machine
 - onboard ES7210 microphone capture at 24 kHz with live peak/RMS diagnostics
-- tap-to-talk PCM streaming from the P3A to the backend, with a 12-second
-  recording safety limit
+- tap-to-talk 12 kHz PCM streaming from the P3A's 24 kHz capture path to the
+  backend, with a 12-second recording safety limit
 - adaptive on-device energy VAD that submits a turn after 800 ms of trailing
   silence; a second tap remains available as a manual fallback
+- WebSocket audio writes tolerate brief hosted-Wi-Fi backpressure and serialize
+  with client keepalive pings
 - provider-neutral speech transcription with local faster-whisper `base.en`
   as the default keyless adapter
 - first-boot Wi-Fi provisioning with host libraries matched to the factory C6

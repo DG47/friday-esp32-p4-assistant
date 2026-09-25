@@ -43,16 +43,18 @@ PORT=/dev/cu.usbmodem5AE60376951 make firmware-monitor
    activation, and JSON-driven states/surfaces on the LCD.
 6. Done: ES7210 microphone capture at 24 kHz, with live peak/RMS levels on
    screen and in the serial log.
-7. Built: tap-to-talk streams 24 kHz mono PCM over the existing WebSocket.
-   Adaptive energy VAD submits after 800 ms of trailing silence; tap again to
-   force submission, or recording stops automatically after 12 seconds.
+7. Done: tap-to-talk captures at 24 kHz and streams decimated 12 kHz mono PCM
+   over the existing WebSocket to avoid hosted Wi-Fi backpressure. Adaptive
+   energy VAD submits after 800 ms of trailing silence; tap again to force
+   submission, or recording stops automatically after 12 seconds.
 8. Done: the streaming build was flashed and booted on the physical P3A; Wi-Fi,
    backend reconnection, and microphone capture were confirmed in serial logs.
 9. Done: the user confirmed a touch-triggered physical transcription and
    on-display response with the manual endpointing build.
-10. The automatic VAD build was flashed and booted; next, verify its one-tap
-    endpointing and tune the thresholds if needed, then add WakeNet9 using the
-    same audio-turn boundary.
+10. Done: the automatic VAD build completed a physical one-tap voice turn from
+    speech detection through transcription, response rendering, and return to
+    idle without dropping the WebSocket. Next, add WakeNet9 using the same
+    audio-turn boundary.
 11. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
 
 ## First-boot Wi-Fi setup

@@ -4,7 +4,7 @@ dev:
 	docker compose up --build
 
 dev-local:
-	PYTHONPATH=backend .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	PYTHONPATH=backend .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --ws-ping-timeout 60
 
 test:
 	docker compose run --rm backend python -m unittest discover -s tests -v

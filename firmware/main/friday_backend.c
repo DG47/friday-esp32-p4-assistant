@@ -14,6 +14,8 @@
 #include "friday_ui.h"
 
 static const char *TAG = "friday_backend";
+#define FRIDAY_AUDIO_SEND_TIMEOUT_MS 1000
+
 static esp_websocket_client_handle_t client;
 static char *message_buffer;
 static size_t message_size;
@@ -210,7 +212,7 @@ bool friday_backend_toggle_audio(void)
     const char activation[] = "{\"type\":\"activate\",\"source\":\"touch\"}";
     const char audio_start[] =
         "{\"type\":\"audio.start\",\"format\":\"pcm_s16le\","
-        "\"sample_rate\":24000,\"channels\":1}";
+        "\"sample_rate\":12000,\"channels\":1}";
     if (send_text(activation, pdMS_TO_TICKS(250)) < 0 ||
         send_text(audio_start, pdMS_TO_TICKS(250)) < 0) {
         ESP_LOGW(TAG, "Could not send touch activation");
@@ -231,12 +233,13 @@ esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count)
     if (!audio_active || client == NULL || !esp_websocket_client_is_connected(client)) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (send_lock == NULL || xSemaphoreTake(send_lock, pdMS_TO_TICKS(100)) != pdTRUE) {
+    if (send_lock == NULL ||
+        xSemaphoreTake(send_lock, pdMS_TO_TICKS(FRIDAY_AUDIO_SEND_TIMEOUT_MS)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     int sent = esp_websocket_client_send_bin(
         client, (const char *)samples, sample_count * sizeof(*samples),
-        pdMS_TO_TICKS(100));
+        pdMS_TO_TICKS(FRIDAY_AUDIO_SEND_TIMEOUT_MS));
     xSemaphoreGive(send_lock);
     return sent < 0 ? ESP_FAIL : ESP_OK;
 }

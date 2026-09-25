@@ -1,5 +1,6 @@
 #include "friday_audio.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -16,12 +17,15 @@
 #include "friday_vad.h"
 
 #define FRIDAY_AUDIO_SAMPLE_RATE 24000
+#define FRIDAY_AUDIO_STREAM_SAMPLE_RATE 12000
 #define FRIDAY_AUDIO_FRAME_MS 20
 #define FRIDAY_AUDIO_CHANNELS 2
 #define FRIDAY_AUDIO_SAMPLES_PER_CHANNEL \
     (FRIDAY_AUDIO_SAMPLE_RATE * FRIDAY_AUDIO_FRAME_MS / 1000)
 #define FRIDAY_AUDIO_FRAME_SAMPLES \
     (FRIDAY_AUDIO_SAMPLES_PER_CHANNEL * FRIDAY_AUDIO_CHANNELS)
+#define FRIDAY_AUDIO_STREAM_SAMPLES \
+    (FRIDAY_AUDIO_STREAM_SAMPLE_RATE * FRIDAY_AUDIO_FRAME_MS / 1000)
 #define FRIDAY_AUDIO_MAX_RECORDING_FRAMES (12000 / FRIDAY_AUDIO_FRAME_MS)
 
 static const char *TAG = "friday_audio";
@@ -72,12 +76,25 @@ static void microphone_task(void *argument)
         for (size_t index = 0; index < FRIDAY_AUDIO_SAMPLES_PER_CHANNEL; ++index) {
             int32_t left = samples[index * FRIDAY_AUDIO_CHANNELS];
             int32_t right = samples[index * FRIDAY_AUDIO_CHANNELS + 1];
-            mono[index] = (int16_t)((left + right) / 2);
-            int32_t sample = mono[index];
-            mono_sum_squares += (uint64_t)(sample * sample);
+            int32_t raw_mono = (left + right) / 2;
+            mono_sum_squares += (uint64_t)(raw_mono * raw_mono);
+
+            int32_t amplified = raw_mono * CONFIG_FRIDAY_AUDIO_DIGITAL_GAIN;
+            if (amplified > INT16_MAX) {
+                amplified = INT16_MAX;
+            } else if (amplified < INT16_MIN) {
+                amplified = INT16_MIN;
+            }
+            mono[index] = (int16_t)amplified;
         }
         int32_t mono_rms = (int32_t)sqrt(
             (double)mono_sum_squares / (double)FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
+
+        for (size_t index = 0; index < FRIDAY_AUDIO_STREAM_SAMPLES; ++index) {
+            int32_t filtered =
+                ((int32_t)mono[index * 2] + (int32_t)mono[index * 2 + 1]) / 2;
+            mono[index] = (int16_t)filtered;
+        }
 
         bool recording = friday_backend_audio_active();
         if (recording) {
@@ -89,7 +106,7 @@ static void microphone_task(void *argument)
                          (double)vad.noise_floor_rms);
             }
             esp_err_t send_result = friday_backend_send_audio(
-                mono, FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
+                mono, FRIDAY_AUDIO_STREAM_SAMPLES);
             if (send_result != ESP_OK) {
                 ESP_LOGW(TAG, "Audio frame send failed: %s", esp_err_to_name(send_result));
             }

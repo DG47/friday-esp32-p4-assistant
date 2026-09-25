@@ -22,8 +22,8 @@ class AudioSession:
     def start(self, encoding: str, sample_rate: int, channels: int) -> None:
         if self.active:
             raise AudioSessionError("An audio turn is already active")
-        if encoding != "pcm_s16le" or sample_rate not in (16000, 24000) or channels != 1:
-            raise AudioSessionError("Expected mono pcm_s16le audio at 16 or 24 kHz")
+        if encoding != "pcm_s16le" or sample_rate not in (12000, 16000, 24000) or channels != 1:
+            raise AudioSessionError("Expected mono pcm_s16le audio at 12, 16, or 24 kHz")
         self.audio_format = AudioFormat(encoding, sample_rate, channels)
         self.data.clear()
 

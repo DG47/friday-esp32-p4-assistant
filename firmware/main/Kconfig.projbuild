@@ -8,6 +8,11 @@ config FRIDAY_BACKEND_WS_URI
         LAN-accessible interface. Plain ws:// is acceptable only on a trusted
         development network; production firmware must use authenticated wss://.
 
+config FRIDAY_AUDIO_DIGITAL_GAIN
+    int "Digital gain applied to streamed microphone PCM"
+    range 1 32
+    default 8
+
 config FRIDAY_VAD_INITIAL_NOISE_RMS
     int "Initial microphone noise-floor RMS"
     range 1 1000
@@ -16,12 +21,12 @@ config FRIDAY_VAD_INITIAL_NOISE_RMS
 config FRIDAY_VAD_MIN_SPEECH_RMS
     int "Minimum speech-start RMS"
     range 1 32767
-    default 60
+    default 50
 
 config FRIDAY_VAD_SPEECH_RATIO_PERCENT
     int "Speech threshold as percent of ambient noise"
     range 100 1000
-    default 200
+    default 150
 
 config FRIDAY_VAD_SPEECH_START_MS
     int "Continuous speech required to start a turn (ms)"

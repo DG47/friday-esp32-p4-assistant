@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -21,6 +22,7 @@ store = ReminderStore(settings.assistant_database_path)
 agent = FridayAgent(settings, store)
 transcriber = create_transcriber(settings)
 static_dir = Path(__file__).parent / "static"
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Friday Assistant", version="0.1.0")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -55,6 +57,7 @@ async def handle_utterance(device_id: str, text: str) -> None:
 
 
 async def send_error(websocket: WebSocket, code: str, message: str) -> None:
+    logger.warning("Device request failed [%s]: %s", code, message)
     await websocket.send_json({"type": "error", "code": code, "message": message})
 
 

@@ -74,8 +74,9 @@ Backend and simulator:
 
 Voice-loop implementation added on 2026-09-25:
 
-- The firmware now downmixes the verified FL+FR capture to mono and streams
-  20 ms, 24 kHz signed 16-bit PCM frames between `audio.start` and `audio.end`.
+- The firmware downmixes the verified 24 kHz FL+FR capture to mono, applies a
+  simple low-pass/2:1 decimation, and streams 20 ms, 12 kHz signed 16-bit PCM
+  frames between `audio.start` and `audio.end`.
 - The first physical tap-to-talk → local Whisper → Ollama → display loop was
   confirmed by the user after the initial manual-endpointing build.
 - The follow-up firmware adds adaptive on-device energy VAD. Tap once to start;
@@ -83,6 +84,24 @@ Voice-loop implementation added on 2026-09-25:
   submits automatically. A second tap and a 12-second cutoff remain fallbacks.
   The VAD maintains an idle noise-floor estimate and derives speech/silence
   thresholds from configurable Kconfig ratios and minimums.
+- The first VAD hardware attempt exposed two tuning issues: the observed speech
+  level did not cross the original start threshold, and a server keepalive
+  timeout closed the WebSocket during audio streaming. The speech ratio was
+  reduced from 200% to 150% of ambient noise (with a 50 RMS floor), and the
+  server ping timeout was raised to 60 seconds before the next physical test.
+- That retest confirmed speech start and automatic 800 ms endpointing, but the
+  raw microphone signal peaked near 145 RMS and Whisper returned no usable
+  transcript. Streamed PCM now receives a saturating 8x digital boost while
+  VAD continues to measure the unamplified signal.
+- Sustained PCM streaming exposed transient hosted-Wi-Fi backpressure. The
+  WebSocket client treated a frame that could not be written within 100 ms as
+  a fatal transport error. Audio writes now allow up to one second for that
+  congestion to clear. The component's separate transmit lock is also enabled
+  so application frames and scheduled pings serialize safely, and the stream is
+  decimated to 12 kHz to halve bandwidth while retaining speech-band content.
+- The final physical retest completed without a transport drop: one tap led to
+  VAD speech detection, automatic endpointing after 800 ms of silence,
+  transcription, assistant response rendering, speaking, and return to idle.
 - The backend buffers one bounded audio turn per WebSocket connection and
   routes it through a provider-neutral `SpeechTranscriber` interface.
 - The default keyless adapter is faster-whisper `base.en`, loaded lazily on the

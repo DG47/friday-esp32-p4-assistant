@@ -4,6 +4,16 @@ from app.audio_session import AudioSession, AudioSessionError
 
 
 class AudioSessionTests(unittest.TestCase):
+    def test_accepts_device_stream_rate(self):
+        session = AudioSession(max_seconds=2)
+        session.start("pcm_s16le", 12000, 1)
+        session.append(b"\x00\x00" * 240)
+
+        pcm, audio_format = session.finish()
+
+        self.assertEqual(audio_format.sample_rate, 12000)
+        self.assertEqual(pcm, b"\x00\x00" * 240)
+
     def test_collects_one_pcm_turn(self):
         session = AudioSession(max_seconds=1)
         session.start("pcm_s16le", 24000, 1)
