@@ -21,6 +21,8 @@ scene generation.
   backend, with a 12-second recording safety limit
 - adaptive on-device energy VAD that submits a turn after 800 ms of trailing
   silence; a second tap remains available as a manual fallback
+- local-backend `Friday` wake detection using faster-whisper, with touch
+  retained as a fallback
 - WebSocket audio writes tolerate brief hosted-Wi-Fi backpressure and serialize
   with client keepalive pings
 - provider-neutral speech transcription with local faster-whisper `base.en`
@@ -32,9 +34,9 @@ scene generation.
 - reproducible local ESP-IDF 5.5.5 toolchain and a verified ESP32-P4 build
 
 The browser simulator uses the browser's speech recognition and speech
-synthesis when available. Typed input always works. On the P3A, tap the orb and
-speak; Friday submits after you pause. Tap again only when you want to force an
-early submission. Wake-word activation is the next device-audio milestone. TTS
+synthesis when available. Typed input always works. On the P3A, say `Friday`,
+pause briefly, then speak; Friday submits after you pause. Tapping
+the orb remains available as a fallback or to force an early submission. TTS
 playback still requires the external speaker.
 
 ## Run the MVP

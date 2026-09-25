@@ -47,9 +47,10 @@ Firmware and networking:
   not uploaded because it may contain device-specific state.
 - The physical firmware now connects to
   `ws://192.168.4.60:8000/ws/device/friday-p3a`, retries automatically, sends
-  touch activation, and renders backend state, surface, tool, error, and
-  assistant-text messages. It reconnects after both transport failures and a
-  clean backend shutdown. This was flashed and verified on the real board.
+  touch or wake-word activation, and renders backend state, surface, tool,
+  error, and assistant-text messages. It reconnects after both transport
+  failures and a clean backend shutdown. This was flashed and verified on the
+  real board.
 - Dynamic labels are re-anchored after every text change. This matters in LVGL:
   labels resize to their content and otherwise retain coordinates calculated
   for the previous size, which can place response text partly off-screen.
@@ -111,7 +112,14 @@ Voice-loop implementation added on 2026-09-25:
   WebSocket service.
 - The recognized transcript is broadcast to browser peers, then enters the
   same Friday/Ollama agent path as a typed utterance.
-- Ten backend tests, the HTTP smoke test, and the ESP-IDF build pass. The new
+- While idle, the P3A batches its 12 kHz microphone stream to the local backend.
+  A rolling faster-whisper probe detects the exact word `Friday` and tells the
+  device to start the normal audio-turn path, with a short VAD guard so the
+  keyword tail is not mistaken for the request. Touch remains a fallback.
+- The exact-name build was flashed and verified on the physical P3A. Serial
+  logs confirmed `wake.detected`, wake-word activation, speech start, automatic
+  endpointing after 800 ms of silence, transcription, and the assistant path.
+- Sixteen backend tests, the HTTP smoke test, and the ESP-IDF build pass. The new
   firmware was flashed to the physical P3A and serial logs confirmed boot,
   Wi-Fi at `192.168.4.33`, backend reconnection, and live microphone levels.
   The user subsequently confirmed the touch-triggered physical audio turn and
@@ -124,7 +132,8 @@ Voice-loop implementation added on 2026-09-25:
 Do not confuse working microphone capture with a complete voice assistant. The
 following remain:
 
-1. Add local WakeNet9 wake-word detection.
+1. Optimize wake-word latency or replace the rolling transcription probe with
+   a dedicated on-device wake model if needed.
 2. Add a true streaming/cloud STT adapter if lower latency is needed.
 3. Add TTS and interruption/barge-in after a speaker is attached.
 4. Replace mock calendar data with an authorized calendar integration.
@@ -158,6 +167,8 @@ build outputs, toolchains, or factory backup images.
 - `docs/device-protocol.md`: device/backend WebSocket protocol.
 - `firmware/README.md`: hardware build, flash, and provisioning notes.
 - `firmware/main/friday_audio.c`: ES7210 capture and live diagnostics.
+- `backend/app/wake_session.py`: rolling idle-audio window and exact-word
+  matching.
 - `firmware/main/friday_vad.c`: adaptive energy VAD and endpointing state.
 - `firmware/main/friday_wifi.c`: provisioning and station connection.
 - `firmware/main/friday_ui.c`: native display scene.

@@ -15,7 +15,30 @@ class FakeTranscriber:
         return "What's next?"
 
 
+class FakeWakeTranscriber(FakeTranscriber):
+    async def transcribe(self, pcm, audio_format):
+        self.pcm = pcm
+        self.audio_format = audio_format
+        return "Friday"
+
+
 class DeviceSocketTests(unittest.TestCase):
+    def test_idle_audio_can_trigger_friday(self):
+        transcriber = FakeWakeTranscriber()
+        with patch("app.main.transcriber", transcriber):
+            with TestClient(app).websocket_connect("/ws/device/wake-test") as socket:
+                self.assertEqual(socket.receive_json()["type"], "ready")
+                socket.send_json({"type": "wake.start"})
+                sample = (5000).to_bytes(2, "little", signed=True)
+                socket.send_bytes(sample * 36000)
+
+                self.assertEqual(
+                    socket.receive_json(),
+                    {"type": "wake.detected", "wake_word": "Friday"},
+                )
+
+        self.assertEqual(transcriber.audio_format.sample_rate, 12000)
+
     def test_audio_turn_is_transcribed_and_sent_to_agent(self):
         transcriber = FakeTranscriber()
         with patch("app.main.transcriber", transcriber):

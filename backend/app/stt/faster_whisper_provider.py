@@ -33,6 +33,26 @@ class FasterWhisperTranscriber:
         except Exception as error:
             raise TranscriptionError(f"Could not load the local Whisper model: {error}") from error
 
+    async def transcribe_wake(self, pcm: bytes, audio_format: AudioFormat) -> str:
+        if audio_format.encoding != "pcm_s16le" or audio_format.channels != 1:
+            raise TranscriptionError("Wake detection requires mono pcm_s16le audio")
+        try:
+            model = await self._get_model()
+            return await asyncio.to_thread(
+                self._transcribe_sync,
+                model,
+                pcm,
+                audio_format,
+                "Friday",
+                "The wake word is Friday.",
+                False,
+                1,
+            )
+        except TranscriptionError:
+            raise
+        except Exception as error:
+            raise TranscriptionError(f"Local wake detection failed: {error}") from error
+
     async def _get_model(self):
         if self._model is not None:
             return self._model
@@ -49,10 +69,21 @@ class FasterWhisperTranscriber:
                     self.model_name,
                     device=self.device,
                     compute_type=self.compute_type,
+                    cpu_threads=2,
+                    num_workers=1,
                 )
         return self._model
 
-    def _transcribe_sync(self, model, pcm: bytes, audio_format: AudioFormat) -> str:
+    def _transcribe_sync(
+        self,
+        model,
+        pcm: bytes,
+        audio_format: AudioFormat,
+        hotwords: str | None = None,
+        initial_prompt: str | None = None,
+        vad_filter: bool = True,
+        beam_size: int = 5,
+    ) -> str:
         path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as audio_file:
@@ -66,9 +97,11 @@ class FasterWhisperTranscriber:
             segments, _ = model.transcribe(
                 str(path),
                 language=self.language,
-                beam_size=5,
+                beam_size=beam_size,
                 condition_on_previous_text=False,
-                vad_filter=True,
+                vad_filter=vad_filter,
+                hotwords=hotwords,
+                initial_prompt=initial_prompt,
             )
             return " ".join(segment.text.strip() for segment in segments).strip()
         except TranscriptionError:

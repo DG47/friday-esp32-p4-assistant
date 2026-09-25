@@ -21,6 +21,7 @@ static char *message_buffer;
 static size_t message_size;
 static SemaphoreHandle_t send_lock;
 static volatile bool audio_active;
+static volatile bool wake_requested;
 
 static int send_text(const char *message, TickType_t timeout)
 {
@@ -91,6 +92,8 @@ static void handle_message(const char *payload)
         handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
     } else if (strcmp(type, "state") == 0) {
         friday_ui_set_state(parse_state(json_string(root, "state")));
+    } else if (strcmp(type, "wake.detected") == 0) {
+        wake_requested = true;
     } else if (strcmp(type, "surface") == 0) {
         handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
     } else if (strcmp(type, "assistant.text") == 0) {
@@ -149,10 +152,12 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         ESP_LOGI(TAG, "Connected to Friday backend");
         friday_ui_set_backend("FRIDAY ONLINE");
         send_text(hello, pdMS_TO_TICKS(1000));
+        send_text("{\"type\":\"wake.start\"}", pdMS_TO_TICKS(1000));
         break;
     }
     case WEBSOCKET_EVENT_DISCONNECTED:
         audio_active = false;
+        wake_requested = false;
         ESP_LOGW(TAG, "Backend disconnected; automatic reconnect pending");
         friday_ui_set_backend("FRIDAY RECONNECTING");
         break;
@@ -199,27 +204,39 @@ esp_err_t friday_backend_start(void)
 
 bool friday_backend_toggle_audio(void)
 {
-    if (client == NULL || !esp_websocket_client_is_connected(client)) {
-        ESP_LOGW(TAG, "Touch activation ignored while backend is offline");
-        return false;
-    }
-
     if (audio_active) {
         friday_backend_end_audio();
         return false;
     }
 
-    const char activation[] = "{\"type\":\"activate\",\"source\":\"touch\"}";
+    return friday_backend_begin_audio("touch");
+}
+
+bool friday_backend_begin_audio(const char *source)
+{
+    if (client == NULL || !esp_websocket_client_is_connected(client)) {
+        ESP_LOGW(TAG, "Activation ignored while backend is offline");
+        return false;
+    }
+    if (audio_active) {
+        return false;
+    }
+
+    const char *activation =
+        source != NULL && strcmp(source, "wake_word") == 0
+            ? "{\"type\":\"activate\",\"source\":\"wake_word\"}"
+            : "{\"type\":\"activate\",\"source\":\"touch\"}";
     const char audio_start[] =
         "{\"type\":\"audio.start\",\"format\":\"pcm_s16le\","
         "\"sample_rate\":12000,\"channels\":1}";
     if (send_text(activation, pdMS_TO_TICKS(250)) < 0 ||
         send_text(audio_start, pdMS_TO_TICKS(250)) < 0) {
-        ESP_LOGW(TAG, "Could not send touch activation");
+        ESP_LOGW(TAG, "Could not send %s activation",
+                 source != NULL ? source : "touch");
         return false;
     }
     audio_active = true;
-    ESP_LOGI(TAG, "Audio turn started");
+    ESP_LOGI(TAG, "Audio turn started by %s", source != NULL ? source : "touch");
     return true;
 }
 
@@ -228,9 +245,16 @@ bool friday_backend_audio_active(void)
     return audio_active;
 }
 
-esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count)
+bool friday_backend_take_wake_request(void)
 {
-    if (!audio_active || client == NULL || !esp_websocket_client_is_connected(client)) {
+    bool requested = wake_requested;
+    wake_requested = false;
+    return requested;
+}
+
+static esp_err_t send_audio_binary(const int16_t *samples, size_t sample_count)
+{
+    if (client == NULL || !esp_websocket_client_is_connected(client)) {
         return ESP_ERR_INVALID_STATE;
     }
     if (send_lock == NULL ||
@@ -244,6 +268,22 @@ esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count)
     return sent < 0 ? ESP_FAIL : ESP_OK;
 }
 
+esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count)
+{
+    if (!audio_active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return send_audio_binary(samples, sample_count);
+}
+
+esp_err_t friday_backend_send_idle_audio(const int16_t *samples, size_t sample_count)
+{
+    if (audio_active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return send_audio_binary(samples, sample_count);
+}
+
 void friday_backend_end_audio(void)
 {
     if (!audio_active) {
@@ -254,6 +294,9 @@ void friday_backend_end_audio(void)
     if (send_text(audio_end, pdMS_TO_TICKS(500)) < 0) {
         ESP_LOGW(TAG, "Could not finish audio turn");
         return;
+    }
+    if (send_text("{\"type\":\"wake.start\"}", pdMS_TO_TICKS(500)) < 0) {
+        ESP_LOGW(TAG, "Could not resume Friday wake detection");
     }
     ESP_LOGI(TAG, "Audio turn finished");
 }

@@ -1,5 +1,8 @@
 #include "friday_ui.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
@@ -8,6 +11,11 @@
 #include "friday_state.h"
 
 static const char *TAG = "friday_ui";
+
+#define FRIDAY_STATUS_BOTTOM_OFFSET -166
+#define FRIDAY_MESSAGE_TOP 570
+#define FRIDAY_MESSAGE_WIDTH 620
+#define FRIDAY_MESSAGE_HEIGHT 96
 
 typedef struct {
     lv_obj_t *orb;
@@ -32,6 +40,47 @@ static lv_color_t color_hex(uint32_t value)
 static void set_circle_size(void *object, int32_t size)
 {
     lv_obj_set_size((lv_obj_t *)object, size, size);
+}
+
+static void position_message(void)
+{
+    lv_obj_set_size(ui.message, FRIDAY_MESSAGE_WIDTH, FRIDAY_MESSAGE_HEIGHT);
+    lv_obj_align(ui.message, LV_ALIGN_TOP_MID, 0, FRIDAY_MESSAGE_TOP);
+}
+
+static void set_message_text(const char *text)
+{
+    if (text == NULL) {
+        lv_label_set_text(ui.message, "");
+        position_message();
+        return;
+    }
+
+    size_t length = strlen(text);
+    char *normalized = malloc(length + 1);
+    if (normalized == NULL) {
+        lv_label_set_text(ui.message, text);
+        position_message();
+        return;
+    }
+
+    size_t input = 0;
+    size_t output = 0;
+    while (input < length) {
+        const unsigned char *current = (const unsigned char *)&text[input];
+        if (input + 2 < length && current[0] == 0xE2 && current[1] == 0x80 &&
+            (current[2] == 0x98 || current[2] == 0x99)) {
+            normalized[output++] = '\'';
+            input += 3;
+        } else {
+            normalized[output++] = text[input++];
+        }
+    }
+    normalized[output] = '\0';
+
+    lv_label_set_text(ui.message, normalized);
+    free(normalized);
+    position_message();
 }
 
 static void apply_state(friday_state_t state)
@@ -82,10 +131,9 @@ static void apply_state(friday_state_t state)
 
     friday_state_set(state);
     lv_label_set_text(ui.status, friday_state_name(state));
-    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, -154);
+    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, FRIDAY_STATUS_BOTTOM_OFFSET);
     if (message != NULL) {
-        lv_label_set_text(ui.message, message);
-        lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
+        set_message_text(message);
     }
     lv_obj_set_style_bg_color(ui.core, color_hex(core_color), 0);
     lv_obj_set_style_shadow_color(ui.core, color_hex(glow_color), 0);
@@ -115,8 +163,7 @@ static void orb_event_cb(lv_event_t *event)
         bool recording = activation_callback();
         apply_state(recording ? FRIDAY_STATE_LISTENING : FRIDAY_STATE_THINKING);
         if (recording) {
-            lv_label_set_text(ui.message, "Listening - pause when you are finished");
-            lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
+            set_message_text("Listening - pause when you are finished");
         }
     }
 }
@@ -181,13 +228,12 @@ void friday_ui_create(void)
 
     ui.status = make_label(screen, "idle", &lv_font_montserrat_18, 0x79F5DD);
     lv_obj_set_style_text_letter_space(ui.status, 6, 0);
-    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, -154);
+    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, FRIDAY_STATUS_BOTTOM_OFFSET);
 
     ui.message = make_label(screen, "", &lv_font_montserrat_24, 0xEDF8F7);
-    lv_obj_set_width(ui.message, 620);
     lv_obj_set_style_text_align(ui.message, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(ui.message, LV_LABEL_LONG_MODE_WRAP);
-    lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
+    lv_label_set_long_mode(ui.message, LV_LABEL_LONG_MODE_DOTS);
+    position_message();
 
     ui.microphone = make_label(screen, "MICS STARTING", &lv_font_montserrat_18, 0x36504F);
     lv_obj_align(ui.microphone, LV_ALIGN_BOTTOM_MID, 0, -20);
@@ -195,8 +241,7 @@ void friday_ui_create(void)
     ui.network = make_label(screen, "WI-FI STARTING", &lv_font_montserrat_18, 0x36504F);
     lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
 
-    lv_label_set_text(ui.message, "Tap the orb to talk to Friday");
-    lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
+    set_message_text("Tap the orb to talk to Friday");
     apply_state(FRIDAY_STATE_IDLE);
 }
 
@@ -228,8 +273,7 @@ void friday_ui_set_surface(const char *kind, const char *title, const char *subt
         lv_obj_align(ui.title, LV_ALIGN_TOP_MID, 0, 88);
     }
     if (subtitle != NULL && subtitle[0] != '\0') {
-        lv_label_set_text(ui.message, subtitle);
-        lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
+        set_message_text(subtitle);
     }
     bsp_display_unlock();
 }
@@ -266,8 +310,7 @@ void friday_ui_set_network(const char *status, const char *detail)
     lv_label_set_text(ui.network, status);
     lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
     if (detail != NULL && detail[0] != '\0') {
-        lv_label_set_text(ui.message, detail);
-        lv_obj_align(ui.message, LV_ALIGN_BOTTOM_MID, 0, -58);
+        set_message_text(detail);
     }
     bsp_display_unlock();
 }

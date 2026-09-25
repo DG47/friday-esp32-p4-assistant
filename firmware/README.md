@@ -5,8 +5,8 @@ ESP32-P4-WIFI6-Touch-LCD-4B/P3A. It uses Waveshare's published 3.0.1 BSP for
 the ST7703 MIPI display, GT911 touch controller, and board pin definitions.
 The current hardware milestone renders Friday's native animated state scene,
 supports touch interaction, provides first-boot Wi-Fi provisioning, captures
-live audio from the board's ES7210 microphone array, and streams tap-delimited
-voice turns to the backend.
+live audio from the board's ES7210 microphone array, detects `Friday` through
+the local backend, and streams voice turns for transcription and response.
 
 ## Install the macOS toolchain
 
@@ -53,9 +53,12 @@ PORT=/dev/cu.usbmodem5AE60376951 make firmware-monitor
    on-display response with the manual endpointing build.
 10. Done: the automatic VAD build completed a physical one-tap voice turn from
     speech detection through transcription, response rendering, and return to
-    idle without dropping the WebSocket. Next, add WakeNet9 using the same
-    audio-turn boundary.
-11. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
+    idle without dropping the WebSocket.
+11. Done: while idle, the device streams batched 12 kHz audio to the local
+    faster-whisper backend for exact `Friday` detection. A physical test
+    completed wake detection, speech capture, automatic endpointing,
+    transcription, and the assistant path. Touch remains a fallback.
+12. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
 
 ## First-boot Wi-Fi setup
 

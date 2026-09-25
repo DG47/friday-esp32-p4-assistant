@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "bsp/esp-bsp.h"
 #include "esp_check.h"
@@ -26,27 +27,50 @@
     (FRIDAY_AUDIO_SAMPLES_PER_CHANNEL * FRIDAY_AUDIO_CHANNELS)
 #define FRIDAY_AUDIO_STREAM_SAMPLES \
     (FRIDAY_AUDIO_STREAM_SAMPLE_RATE * FRIDAY_AUDIO_FRAME_MS / 1000)
+#define FRIDAY_WAKE_STREAM_FRAMES 5
+#define FRIDAY_WAKE_STREAM_SAMPLES \
+    (FRIDAY_AUDIO_STREAM_SAMPLES * FRIDAY_WAKE_STREAM_FRAMES)
+#define FRIDAY_WAKE_VAD_GUARD_FRAMES (300 / FRIDAY_AUDIO_FRAME_MS)
 #define FRIDAY_AUDIO_MAX_RECORDING_FRAMES (12000 / FRIDAY_AUDIO_FRAME_MS)
 
 static const char *TAG = "friday_audio";
 static esp_codec_dev_handle_t microphone;
+
+static int16_t amplify_sample(int32_t sample)
+{
+    int32_t amplified = sample * CONFIG_FRIDAY_AUDIO_DIGITAL_GAIN;
+    if (amplified > INT16_MAX) {
+        return INT16_MAX;
+    }
+    if (amplified < INT16_MIN) {
+        return INT16_MIN;
+    }
+    return (int16_t)amplified;
+}
 
 static void microphone_task(void *argument)
 {
     (void)argument;
     int16_t *samples = malloc(FRIDAY_AUDIO_FRAME_SAMPLES * sizeof(*samples));
     int16_t *mono = malloc(FRIDAY_AUDIO_SAMPLES_PER_CHANNEL * sizeof(*mono));
-    if (samples == NULL || mono == NULL) {
+    int16_t *idle_audio = malloc(FRIDAY_WAKE_STREAM_SAMPLES * sizeof(*idle_audio));
+    if (samples == NULL || mono == NULL || idle_audio == NULL) {
         ESP_LOGE(TAG, "Could not allocate microphone frame");
         friday_ui_set_microphone("MIC ERROR", 0, 0);
         free(samples);
         free(mono);
+        free(idle_audio);
         vTaskDelete(NULL);
         return;
     }
 
+    friday_ui_set_surface("AMBIENT", "FRIDAY", "Say \"Friday\" or tap the orb");
+
     uint32_t frames = 0;
     uint32_t recording_frames = 0;
+    uint32_t wake_vad_guard_frames = 0;
+    size_t idle_audio_used = 0;
+    int32_t interval_peak = 0;
     bool was_recording = false;
     friday_vad_t vad;
     friday_vad_init(&vad, FRIDAY_AUDIO_FRAME_MS);
@@ -79,13 +103,7 @@ static void microphone_task(void *argument)
             int32_t raw_mono = (left + right) / 2;
             mono_sum_squares += (uint64_t)(raw_mono * raw_mono);
 
-            int32_t amplified = raw_mono * CONFIG_FRIDAY_AUDIO_DIGITAL_GAIN;
-            if (amplified > INT16_MAX) {
-                amplified = INT16_MAX;
-            } else if (amplified < INT16_MIN) {
-                amplified = INT16_MIN;
-            }
-            mono[index] = (int16_t)amplified;
+            mono[index] = amplify_sample(raw_mono);
         }
         int32_t mono_rms = (int32_t)sqrt(
             (double)mono_sum_squares / (double)FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
@@ -98,6 +116,7 @@ static void microphone_task(void *argument)
 
         bool recording = friday_backend_audio_active();
         if (recording) {
+            idle_audio_used = 0;
             if (!was_recording) {
                 friday_vad_begin_turn(&vad);
                 ESP_LOGI(TAG, "VAD armed: speech=%ld silence=%ld noise=%.1f",
@@ -111,7 +130,12 @@ static void microphone_task(void *argument)
                 ESP_LOGW(TAG, "Audio frame send failed: %s", esp_err_to_name(send_result));
             }
             recording_frames++;
-            friday_vad_event_t vad_event = friday_vad_process(&vad, mono_rms);
+            friday_vad_event_t vad_event = FRIDAY_VAD_EVENT_NONE;
+            if (wake_vad_guard_frames > 0) {
+                wake_vad_guard_frames--;
+            } else {
+                vad_event = friday_vad_process(&vad, mono_rms);
+            }
             if (vad_event == FRIDAY_VAD_EVENT_SPEECH_STARTED) {
                 ESP_LOGI(TAG, "VAD speech started: rms=%ld", (long)mono_rms);
             } else if (vad_event == FRIDAY_VAD_EVENT_SPEECH_ENDED) {
@@ -126,18 +150,44 @@ static void microphone_task(void *argument)
             }
         } else {
             recording_frames = 0;
+            wake_vad_guard_frames = 0;
             friday_vad_observe_idle(&vad, mono_rms);
+            if (friday_backend_take_wake_request()) {
+                idle_audio_used = 0;
+                if (friday_backend_begin_audio("wake_word")) {
+                    friday_ui_set_state(FRIDAY_STATE_LISTENING);
+                    wake_vad_guard_frames = FRIDAY_WAKE_VAD_GUARD_FRAMES;
+                }
+            } else {
+                memcpy(idle_audio + idle_audio_used, mono,
+                       FRIDAY_AUDIO_STREAM_SAMPLES * sizeof(*mono));
+                idle_audio_used += FRIDAY_AUDIO_STREAM_SAMPLES;
+                if (idle_audio_used == FRIDAY_WAKE_STREAM_SAMPLES) {
+                    esp_err_t wake_send_result = friday_backend_send_idle_audio(
+                        idle_audio, idle_audio_used);
+                    idle_audio_used = 0;
+                    if (wake_send_result != ESP_OK &&
+                        wake_send_result != ESP_ERR_INVALID_STATE) {
+                        ESP_LOGW(TAG, "Wake audio send failed: %s",
+                                 esp_err_to_name(wake_send_result));
+                    }
+                }
+            }
         }
         was_recording = recording;
         int32_t rms = (int32_t)sqrt(
             (double)sum_squares / (double)FRIDAY_AUDIO_FRAME_SAMPLES);
+        if (peak > interval_peak) {
+            interval_peak = peak;
+        }
 
         if ((frames % 12U) == 0U) {
             friday_ui_set_microphone("MICS ONLINE", peak, rms);
         }
         if ((frames % 50U) == 0U) {
-            ESP_LOGI(TAG, "Microphone level peak=%ld rms=%ld",
-                     (long)peak, (long)rms);
+            ESP_LOGI(TAG, "Microphone 1s max=%ld current_rms=%ld",
+                     (long)interval_peak, (long)rms);
+            interval_peak = 0;
         }
         frames++;
     }
@@ -162,11 +212,11 @@ esp_err_t friday_audio_start(void)
                         "Could not open ES7210 capture");
     ESP_RETURN_ON_ERROR(
         esp_codec_dev_set_in_channel_gain(
-            microphone, BSP_AUDIO_ES7210_MIC_MASK_FL_FR, 30.0f),
+            microphone, BSP_AUDIO_ES7210_MIC_MASK_FL_FR, 37.5f),
         TAG, "Could not set microphone gain");
 
     BaseType_t created = xTaskCreatePinnedToCore(
-        microphone_task, "friday_mics", 4096, NULL, 6, NULL, 1);
+        microphone_task, "friday_mics", 8192, NULL, 6, NULL, 1);
     ESP_RETURN_ON_FALSE(created == pdPASS, ESP_ERR_NO_MEM, TAG,
                         "Could not start microphone task");
     return ESP_OK;

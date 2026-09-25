@@ -15,6 +15,7 @@ from .config import get_settings
 from .db import ReminderStore
 from .device_hub import DeviceHub
 from .stt import TranscriptionError, create_transcriber
+from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
 
 
 settings = get_settings()
@@ -84,6 +85,29 @@ async def reminders() -> list[dict]:
 @app.websocket("/ws/device/{device_id}")
 async def device_socket(websocket: WebSocket, device_id: str) -> None:
     audio = AudioSession(max_seconds=settings.stt_max_seconds)
+    wake_audio = WakeAudioSession()
+    wake_enabled = False
+    wake_probe_task: asyncio.Task[None] | None = None
+
+    async def detect_wake_word(pcm: bytes) -> None:
+        nonlocal wake_enabled
+        if transcriber is None or pcm_peak(pcm) < 1000:
+            return
+        try:
+            wake_transcribe = getattr(transcriber, "transcribe_wake", transcriber.transcribe)
+            text = (await wake_transcribe(pcm, wake_audio.audio_format)).strip()
+        except TranscriptionError as error:
+            logger.debug("Wake-word transcription failed: %s", error)
+            return
+        logger.debug("Wake-word probe for %s: %r", device_id, text)
+        if wake_enabled and contains_wake_word(text):
+            wake_enabled = False
+            wake_audio.reset()
+            logger.info("Wake word detected for %s: %s", device_id, text)
+            await hub.broadcast(
+                device_id, {"type": "wake.detected", "wake_word": "Friday"}
+            )
+
     await hub.connect(device_id, websocket)
     await websocket.send_json(
         {
@@ -103,11 +127,22 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
 
             binary = event.get("bytes")
             if binary is not None:
-                try:
-                    audio.append(binary)
-                except AudioSessionError as error:
-                    await send_error(websocket, "bad_audio", str(error))
-                    await hub.broadcast(device_id, {"type": "state", "state": "idle"})
+                if audio.active:
+                    try:
+                        audio.append(binary)
+                    except AudioSessionError as error:
+                        await send_error(websocket, "bad_audio", str(error))
+                        await hub.broadcast(device_id, {"type": "state", "state": "idle"})
+                elif wake_enabled:
+                    wake_audio.append(binary)
+                    if wake_probe_task is None or wake_probe_task.done():
+                        probe = wake_audio.take_probe()
+                        if probe is not None:
+                            wake_probe_task = asyncio.create_task(detect_wake_word(probe))
+                else:
+                    # A few idle frames can race with connection setup or a wake event.
+                    # They are safe to discard until the next explicit audio mode begins.
+                    pass
                 continue
 
             try:
@@ -121,9 +156,21 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             message_type = message.get("type")
 
             if message_type == "hello":
+                wake_audio.reset()
+                wake_enabled = transcriber is not None
                 await hub.broadcast(device_id, {"type": "state", "state": "idle"})
             elif message_type == "activate":
+                wake_enabled = False
+                wake_audio.reset()
                 await hub.broadcast(device_id, {"type": "state", "state": "listening"})
+            elif message_type == "wake.start":
+                if transcriber is None:
+                    await send_error(
+                        websocket, "wake_unavailable", "Local speech transcription is disabled"
+                    )
+                    continue
+                wake_audio.reset()
+                wake_enabled = True
             elif message_type == "utterance":
                 text = str(message.get("text", "")).strip()
                 if not text:
@@ -132,6 +179,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                 await handle_utterance(device_id, text)
             elif message_type == "audio.start":
                 try:
+                    wake_enabled = False
+                    wake_audio.reset()
                     audio.start(
                         str(message.get("format", "")),
                         int(message.get("sample_rate", 0)),
@@ -169,4 +218,6 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        if wake_probe_task is not None and not wake_probe_task.done():
+            wake_probe_task.cancel()
         hub.disconnect(device_id, websocket)
