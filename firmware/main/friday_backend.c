@@ -154,6 +154,7 @@ esp_err_t friday_backend_start(void)
     const esp_websocket_client_config_t config = {
         .uri = CONFIG_FRIDAY_BACKEND_WS_URI,
         .buffer_size = 2048,
+        .enable_close_reconnect = true,
         .reconnect_timeout_ms = 3000,
         .network_timeout_ms = 5000,
         .ping_interval_sec = 15,

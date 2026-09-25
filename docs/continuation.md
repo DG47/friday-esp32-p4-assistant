@@ -48,7 +48,8 @@ Firmware and networking:
 - The physical firmware now connects to
   `ws://192.168.4.60:8000/ws/device/friday-p3a`, retries automatically, sends
   touch activation, and renders backend state, surface, tool, error, and
-  assistant-text messages. This was flashed and verified on the real board.
+  assistant-text messages. It reconnects after both transport failures and a
+  clean backend shutdown. This was flashed and verified on the real board.
 
 Backend and simulator:
 
