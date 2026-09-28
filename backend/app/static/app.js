@@ -10,11 +10,18 @@ const input = document.getElementById("utterance");
 const form = document.getElementById("utterance-form");
 const dot = document.getElementById("connection-dot");
 const connectionLabel = document.getElementById("connection-label");
+const simulatorToken = document.getElementById("simulator-token");
 
 let socket;
 let reconnectTimer;
 let surfaceTimer;
 let lastAssistantText = "";
+
+simulatorToken.value = localStorage.getItem("friday-simulator-token") || "";
+simulatorToken.addEventListener("change", () => {
+  localStorage.setItem("friday-simulator-token", simulatorToken.value.trim());
+  socket?.close();
+});
 
 function connect() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -23,7 +30,12 @@ function connect() {
   socket.addEventListener("open", () => {
     dot.classList.add("online");
     connectionLabel.textContent = "Backend connected";
-    socket.send(JSON.stringify({ type: "hello", protocol: 1, capabilities: ["display", "touch", "speech"] }));
+    socket.send(JSON.stringify({
+      type: "hello",
+      protocol: 1,
+      device_token: simulatorToken.value.trim(),
+      capabilities: ["display", "touch", "speech"],
+    }));
   });
   socket.addEventListener("close", () => {
     dot.classList.remove("online");

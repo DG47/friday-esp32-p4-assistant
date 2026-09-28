@@ -5,7 +5,14 @@
 
 #include "friday_state.h"
 
-typedef bool (*friday_ui_activation_callback_t)(void);
+typedef enum {
+    FRIDAY_UI_ACTIVATION_IDLE = 0,
+    FRIDAY_UI_ACTIVATION_RECORDING = 1,
+    FRIDAY_UI_ACTIVATION_ACKNOWLEDGED = 2,
+    FRIDAY_UI_ACTIVATION_UNCHANGED = 3,
+} friday_ui_activation_result_t;
+
+typedef friday_ui_activation_result_t (*friday_ui_activation_callback_t)(void);
 
 void friday_ui_create(void);
 void friday_ui_set_activation_callback(friday_ui_activation_callback_t callback);

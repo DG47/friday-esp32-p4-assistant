@@ -18,10 +18,14 @@ class ReminderScheduler:
         store: ReminderStore,
         hub: DeviceHub,
         poll_seconds: float = 1.0,
+        retry_seconds: float = 90.0,
+        max_attempts: int = 10,
     ) -> None:
         self.store = store
         self.hub = hub
         self.poll_seconds = max(0.1, poll_seconds)
+        self.retry_seconds = max(10.0, retry_seconds)
+        self.max_attempts = max(1, max_attempts)
 
     @staticmethod
     def _surface(reminder: Reminder) -> Surface:
@@ -30,6 +34,7 @@ class ReminderScheduler:
             title="Reminder",
             subtitle=reminder.text,
             items=[{"time": reminder.due_at.strftime("%-I:%M %p")}],
+            expires_ms=60000,
         )
 
     async def deliver_due_once(self, now: datetime | None = None) -> int:
@@ -38,7 +43,12 @@ class ReminderScheduler:
         for reminder in self.store.due(check_time):
             if not self.hub.has_capability(reminder.device_id, "reminder_ack"):
                 continue
-            if not self.store.claim_delivery(reminder.id, check_time):
+            if not self.store.claim_delivery(
+                reminder.id,
+                check_time,
+                retry_seconds=self.retry_seconds,
+                max_attempts=self.max_attempts,
+            ):
                 continue
             recipients = await self.hub.broadcast(
                 reminder.device_id,

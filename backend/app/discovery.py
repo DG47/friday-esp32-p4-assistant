@@ -22,9 +22,11 @@ class FridayDiscoveryProtocol(asyncio.DatagramProtocol):
     def __init__(
         self,
         public_port: int,
+        public_scheme: str = "wss",
         resolver: Callable[[str], str] = local_ip_for_peer,
     ) -> None:
         self.public_port = public_port
+        self.public_scheme = public_scheme
         self.resolver = resolver
         self.transport: asyncio.DatagramTransport | None = None
 
@@ -49,7 +51,7 @@ class FridayDiscoveryProtocol(asyncio.DatagramProtocol):
             {
                 "protocol": 1,
                 "ws_url": (
-                    f"ws://{host}:{self.public_port}/ws/device/"
+                    f"{self.public_scheme}://{host}:{self.public_port}/ws/device/"
                     f"{quote(device_id, safe='')}"
                 ),
             },

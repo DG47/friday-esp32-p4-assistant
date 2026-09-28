@@ -160,7 +160,16 @@ static void orb_event_cb(lv_event_t *event)
     }
 
     if (activation_callback != NULL) {
-        bool recording = activation_callback();
+        friday_ui_activation_result_t result = activation_callback();
+        if (result == FRIDAY_UI_ACTIVATION_ACKNOWLEDGED) {
+            apply_state(FRIDAY_STATE_IDLE);
+            set_message_text("Reminder acknowledged");
+            return;
+        }
+        if (result == FRIDAY_UI_ACTIVATION_UNCHANGED) {
+            return;
+        }
+        bool recording = result == FRIDAY_UI_ACTIVATION_RECORDING;
         apply_state(recording ? FRIDAY_STATE_LISTENING : FRIDAY_STATE_THINKING);
         if (recording) {
             set_message_text("Listening - pause when you are finished");

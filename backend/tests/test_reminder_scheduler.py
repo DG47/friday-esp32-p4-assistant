@@ -50,6 +50,7 @@ class ReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "reminder.alert",
         ])
         self.assertEqual(socket.messages[0]["surface"]["subtitle"], "join the interview")
+        self.assertEqual(socket.messages[0]["surface"]["expires_ms"], 60000)
         reminder_id = socket.messages[0]["reminder_id"]
         self.store.mark_delivered(reminder_id, "device-1", now)
         self.assertEqual([item.text for item in self.store.pending()], ["future item"])
@@ -79,6 +80,45 @@ class ReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(self.store.mark_delivered(reminder.id, "device-2", now))
         self.assertTrue(self.store.mark_delivered(reminder.id, "device-1", now))
+
+    async def test_unacknowledged_delivery_stops_after_attempt_limit(self):
+        now = datetime.now(timezone.utc)
+        self.store.create("bounded retry", now, device_id="device-1")
+        socket = FakeWebSocket()
+        await self.hub.connect("device-1", socket)
+        self.hub.set_capabilities("device-1", socket, {"reminder_ack"})
+        scheduler = ReminderScheduler(
+            self.store,
+            self.hub,
+            poll_seconds=0.1,
+            retry_seconds=10,
+            max_attempts=2,
+        )
+
+        self.assertEqual(await scheduler.deliver_due_once(now), 1)
+        self.assertEqual(await scheduler.deliver_due_once(now + timedelta(seconds=11)), 1)
+        self.assertEqual(await scheduler.deliver_due_once(now + timedelta(seconds=22)), 0)
+        self.assertEqual(len(socket.messages), 2)
+
+    async def test_legacy_naive_utc_due_at_does_not_stop_scheduler(self):
+        now = datetime.now(timezone.utc)
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                "INSERT INTO reminders (text, due_at, created_at, device_id) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    "legacy naive timestamp",
+                    (now - timedelta(seconds=1)).replace(tzinfo=None).isoformat(),
+                    now.replace(tzinfo=None).isoformat(),
+                    "device-1",
+                ),
+            )
+        socket = FakeWebSocket()
+        await self.hub.connect("device-1", socket)
+        self.hub.set_capabilities("device-1", socket, {"reminder_ack"})
+
+        self.assertEqual(await self.scheduler.deliver_due_once(now), 1)
+        self.assertEqual(socket.messages[0]["surface"]["subtitle"], "legacy naive timestamp")
 
     async def test_migrates_existing_reminder_database(self):
         legacy_path = Path(self.tempdir.name) / "legacy.db"

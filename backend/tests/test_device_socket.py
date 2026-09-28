@@ -1,14 +1,14 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 from app.agent_jobs import AgentJob, AgentJobStore
 from app.db import ReminderStore
 from app.device_auth import DeviceCredentialStore
-from app.main import app
+from app.main import app, settings
 
 
 class FakeTranscriber:
@@ -52,9 +52,10 @@ class DeviceSocketTests(unittest.TestCase):
 
     def authenticate(self, socket, capabilities=None, token=None):
         self.assertEqual(socket.receive_json()["type"], "hello.required")
+        token = token or "a" * 64
+        self.credential_store.open_pairing_window()
         message = {"type": "hello", "capabilities": capabilities or []}
-        if token is not None:
-            message["device_token"] = token
+        message["device_token"] = token
         socket.send_json(message)
         self.assertEqual(socket.receive_json()["type"], "ready")
         self.assertEqual(
@@ -154,35 +155,115 @@ class DeviceSocketTests(unittest.TestCase):
     def test_physical_device_requires_pairing_then_reuses_its_identity(self):
         token = "e" * 64
         self.credential_store.open_pairing_window()
-        with patch("app.main.is_local_host", return_value=False):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/device/friday-p3a") as socket:
+                self.authenticate(socket, ["display"], token)
+
+            with client.websocket_connect("/ws/device/friday-p3a") as socket:
+                self.authenticate(socket, ["display"], token)
+
+            with client.websocket_connect("/ws/device/friday-p3a") as socket:
+                self.assertEqual(socket.receive_json()["type"], "hello.required")
+                socket.send_json(
+                    {
+                        "type": "hello",
+                        "capabilities": ["display"],
+                        "device_token": "f" * 64,
+                    }
+                )
+                self.assertEqual(socket.receive_json()["code"], "pairing_required")
+
+    def test_loopback_websocket_still_requires_a_credential(self):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/device/local-test") as socket:
+                self.assertEqual(socket.receive_json()["type"], "hello.required")
+                socket.send_json({"type": "hello", "capabilities": []})
+                self.assertEqual(socket.receive_json()["code"], "pairing_required")
+
+    def test_explicit_simulator_credential_is_accepted(self):
+        with patch.object(settings, "assistant_simulator_token", "b" * 64):
             with TestClient(app) as client:
-                with client.websocket_connect("/ws/device/friday-p3a") as socket:
-                    self.authenticate(socket, ["display"], token)
-
-                with client.websocket_connect("/ws/device/friday-p3a") as socket:
-                    self.authenticate(socket, ["display"], token)
-
                 with client.websocket_connect("/ws/device/friday-p3a") as socket:
                     self.assertEqual(socket.receive_json()["type"], "hello.required")
                     socket.send_json(
                         {
                             "type": "hello",
+                            "device_token": "b" * 64,
                             "capabilities": ["display"],
-                            "device_token": "f" * 64,
                         }
                     )
-                    self.assertEqual(socket.receive_json()["code"], "pairing_required")
+                    self.assertEqual(socket.receive_json()["type"], "ready")
 
     def test_pairing_window_requires_local_confirmation_header(self):
-        with TestClient(app) as client:
-            self.assertEqual(client.post("/api/devices/pairing-window").status_code, 400)
-            response = client.post(
-                "/api/devices/pairing-window",
-                headers={"X-Friday-Pairing": "open"},
-            )
+        with patch("app.main.is_local_host", return_value=True), patch.object(
+            settings, "assistant_admin_token", "9" * 64
+        ):
+            with TestClient(app) as client:
+                self.assertEqual(client.post("/api/devices/pairing-window").status_code, 401)
+                response = client.post(
+                    "/api/devices/pairing-window",
+                    headers={
+                        "X-Friday-Pairing": "open",
+                        "X-Friday-Admin-Token": "9" * 64,
+                    },
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "pairing")
+
+    def test_pairing_window_rejects_non_loopback_clients(self):
+        with patch("app.main.is_local_host", return_value=False), patch.object(
+            settings, "assistant_admin_token", "9" * 64
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/devices/pairing-window",
+                    headers={
+                        "X-Friday-Pairing": "open",
+                        "X-Friday-Admin-Token": "9" * 64,
+                    },
+                )
+        self.assertEqual(response.status_code, 403)
+
+    def test_online_device_identity_can_be_rotated_locally(self):
+        self.credential_store.open_pairing_window()
+        self.credential_store.authorize("friday-p3a", "c" * 64)
+        with patch("app.main.is_local_host", return_value=True), patch.object(
+            settings, "assistant_admin_token", "9" * 64
+        ), patch(
+            "app.main.hub.broadcast", new=AsyncMock(return_value=1)
+        ) as broadcast:
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/devices/friday-p3a/rotate",
+                    headers={
+                        "X-Friday-Device-Action": "rotate",
+                        "X-Friday-Admin-Token": "9" * 64,
+                    },
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.credential_store.is_paired("friday-p3a"))
+        self.assertTrue(self.credential_store.pairing_open())
+        self.assertEqual(broadcast.await_args.kwargs["required_capability"], "identity_rotate")
+
+    def test_device_identity_can_be_revoked_locally(self):
+        self.credential_store.open_pairing_window()
+        self.credential_store.authorize("friday-p3a", "d" * 64)
+        with patch("app.main.is_local_host", return_value=True), patch.object(
+            settings, "assistant_admin_token", "9" * 64
+        ), patch(
+            "app.main.hub.broadcast", new=AsyncMock(return_value=1)
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/devices/friday-p3a/revoke",
+                    headers={
+                        "X-Friday-Device-Action": "revoke",
+                        "X-Friday-Admin-Token": "9" * 64,
+                    },
+                )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.credential_store.is_paired("friday-p3a"))
 
 
 if __name__ == "__main__":

@@ -199,7 +199,7 @@ button, input { font: inherit; }
 .connection-dot.online { background: var(--cyan); }
 .console label { display: block; margin-bottom: 10px; color: var(--muted); font-size: 13px; }
 .input-row { display: flex; gap: 8px; }
-.input-row input {
+.input-row input, #simulator-token {
   min-width: 0;
   flex: 1;
   padding: 13px 14px;
@@ -208,6 +208,7 @@ button, input { font: inherit; }
   background: var(--panel);
   color: var(--ink);
 }
+#simulator-token { width: 100%; margin-bottom: 18px; }
 .input-row button, .suggestions button {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -234,4 +235,3 @@ button, input { font: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
-

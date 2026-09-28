@@ -52,12 +52,18 @@ Firmware and networking:
   only its SHA-256 hash in SQLite. First enrollment requires a two-minute
   pairing window opened from loopback with the documented confirmation header;
   it closes after one device enrolls. Later reconnects verify the stored token.
+- The device now accepts only `wss://`, verifies a Friday CA embedded in the
+  firmware, and saves the endpoint only after authenticated `ready`. The local
+  CA/server private keys live in ignored `data/tls/`; the public CA is embedded
+  from `firmware/main/friday_backend_ca.pem`. Rerun `make tls-local
+  LAN_IP=<address>` when the host address changes; reflash only when the CA
+  changes.
 - At the final check, the board joined the LAN at `192.168.4.46`; this is a DHCP
   address and must not be treated as permanent.
 - A local factory flash backup exists only in ignored `work/`; it is intentionally
   not uploaded because it may contain device-specific state.
 - The physical firmware now discovers
-  `ws://192.168.4.38:8000/ws/device/friday-p3a` on the current LAN, retries
+  `wss://192.168.4.38:8000/ws/device/friday-p3a` on the current LAN, retries
   automatically, sends touch or wake-word activation, and renders backend
   state, surface, tool, error, and assistant-text messages. It waits for an
   authenticated `ready` message before enabling activation or idle audio. It
@@ -70,17 +76,18 @@ Backend and simulator:
 
 - The FastAPI service binds to `0.0.0.0:8000` under `make dev-local`, allowing
   the ESP32 to reach it over the LAN. It remains available as
-  `http://localhost:8000` on the Mac.
+  `https://localhost:8000` on the Mac using the private Friday CA.
 - At the final check, the Mac LAN address was `192.168.4.38` and the health
   endpoint was reachable there. This is also a DHCP address and may change.
 - The browser simulator supports typed interaction plus browser speech APIs.
 - The JSON WebSocket protocol is implemented at `/ws/device/{device_id}`.
   Multiple peers sharing an ID receive the same server messages; the browser
   and P3A use `friday-p3a` and were verified to stay synchronized.
-- LAN peers are not registered and cannot send device data until they answer
-  `hello.required` with a valid device token. Loopback connections retain a
-  simulator bypass. The pairing endpoint is loopback-only and also requires
-  `X-Friday-Pairing: open`, preventing an ordinary cross-site form submission.
+- LAN and loopback peers are not registered and cannot send device data until
+  they answer `hello.required` with a valid device token. Loopback connections retain a
+  separately configured simulator credential; there is no address-based
+  WebSocket bypass. Administrative endpoints are loopback-only and require a
+  64-hex admin token plus an explicit action header.
 - The configured model now drives a provider-neutral tool loop with bounded
   per-device conversation history persisted in SQLite. Calendar reads, reminder creation, and
   reminder listing are structured tools; mock mode retains its deterministic
@@ -97,23 +104,24 @@ Backend and simulator:
   reminder creation idempotent.
 - A background scheduler atomically claims durable reminders and sends
   `reminder.alert` only to firmware advertising `reminder_ack`. It retries after
-  disconnect or a missing acknowledgement and records delivery only when the
-  firmware returns `reminder.ack`.
-- Verification for this hardening milestone passed 33 backend unit tests, a
-  live Ollama tool turn, and an ESP-IDF build/flash/boot. A uniquely identified
-  due reminder was delivered to the physical P3A at `192.168.4.46`; serial logs
-  showed `reminder.alert` and the alert state, while SQLite recorded its
-  `reminder.ack` after exactly one delivery attempt. The test row was removed.
+  disconnect or a missing acknowledgement at a configurable bounded cadence
+  and records delivery only when a user tap makes firmware return
+  `reminder.ack`. Firmware honors the 60-second surface expiry and returns to
+  idle without acknowledging an untouched alert.
+- Verification for this hardening milestone now passes 48 backend unit tests,
+  a live Ollama tool turn, and an ESP-IDF build/flash/boot. On the physical P3A
+  at `192.168.4.46`, an untouched test reminder expired to idle, remained
+  pending in SQLite, and was rendered again after the 90-second retry interval.
 
 Discovery and pairing milestone added on 2026-09-28:
 
-- Forty backend tests pass, including token format/hash persistence, bounded
+- Forty-eight backend tests pass, including token format/hash persistence, bounded
   single-device pairing windows, correct-token reuse, wrong-token rejection,
   WebSocket authentication order, pairing endpoint confirmation, and discovery
   response validation.
 - A real UDP broadcast to the development Mac received the correct device URL
   using the Mac's `192.168.4.38` LAN interface rather than loopback.
-- The final ESP-IDF build is 0x17d400 bytes with 81% of the app partition free.
+- The final TLS ESP-IDF build is 0x17e050 bytes with 81% of the app partition free.
 - The build was flashed to the physical P3A. With the pairing window closed,
   the device joined at `192.168.4.46`, rediscovered the backend, received
   `hello.required`, authenticated using its already-persisted token, received
@@ -122,11 +130,12 @@ Discovery and pairing milestone added on 2026-09-28:
   physical device retried automatically, authenticated with the same identity,
   and returned to idle. SQLite still contained one paired device and a closed
   pairing window after first enrollment.
-- This proves discovery, enrollment, token persistence, and authenticated
-  reconnect on the current trusted LAN. It does not prove confidentiality:
-  plaintext `ws://` permits a hostile LAN observer to capture the token/audio.
-  TLS plus secure credential rotation/revocation remains required before use
-  on an untrusted network.
+- The follow-up TLS build was flashed and connected over a certificate signed
+  by the embedded Friday CA. Replacing the backend with a different self-signed
+  certificate produced the expected TLS handshake rejection; restoring the
+  real backend reconnected automatically. A live rotation command then cleared
+  the old device token, rebooted Friday, enrolled a new token during the
+  bounded window, and returned to authenticated idle.
 
 Voice-loop implementation added on 2026-09-25:
 
@@ -192,10 +201,8 @@ following remain:
 2. Replace mock calendar data with an authorized calendar integration.
 3. Add a true streaming/cloud STT adapter if lower latency is needed.
 4. Add TTS and interruption/barge-in after a speaker is attached.
-5. Add TLS plus device credential rotation/revocation before using the service
-   outside a trusted LAN; basic paired device identity is now implemented.
-6. Add metrics, alerting, backup/retention policy, and load/failure testing.
-7. Add device acknowledgement for completed agent results if exactly-once
+5. Add metrics, alerting, backup/retention policy, and load/failure testing.
+6. Add device acknowledgement for completed agent results if exactly-once
    presentation is required; current result delivery is reconnect-safe but
    server-send acknowledged only.
 
@@ -204,8 +211,9 @@ following remain:
 From the repository root:
 
 ```sh
+make tls-local LAN_IP=192.168.4.38
 make dev-local
-curl -X POST -H 'X-Friday-Pairing: open' http://127.0.0.1:8000/api/devices/pairing-window
+curl --cacert data/tls/friday-ca.crt -X POST -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" -H 'X-Friday-Pairing: open' https://127.0.0.1:8000/api/devices/pairing-window
 make test-local
 make smoke
 make firmware-build

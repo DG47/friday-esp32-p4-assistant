@@ -10,6 +10,8 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_random.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -23,6 +25,7 @@
 #include "friday_wifi.h"
 
 static const char *TAG = "friday_backend";
+extern const char friday_backend_ca_pem_start[] asm("_binary_friday_backend_ca_pem_start");
 #define FRIDAY_AUDIO_SEND_TIMEOUT_MS 1000
 #define FRIDAY_DEVICE_ID "friday-p3a"
 #define FRIDAY_BACKEND_URI_MAX 192
@@ -39,11 +42,49 @@ static volatile bool wake_requested;
 static volatile bool backend_ready;
 static char backend_uri[FRIDAY_BACKEND_URI_MAX];
 static char device_token[FRIDAY_DEVICE_TOKEN_LENGTH + 1];
+static bool persist_backend_uri;
+static esp_timer_handle_t reminder_expiry_timer;
+static volatile int pending_reminder_id = -1;
+
+static void reminder_expired(void *argument)
+{
+    (void)argument;
+    if (pending_reminder_id < 0) {
+        return;
+    }
+    pending_reminder_id = -1;
+    friday_ui_set_surface("AMBIENT", "FRIDAY", "Ready when needed.");
+    friday_ui_set_state(FRIDAY_STATE_IDLE);
+    ESP_LOGI(TAG, "Reminder alert expired without acknowledgement");
+}
+
+static void restart_after_identity_change(void *argument)
+{
+    (void)argument;
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    esp_restart();
+}
+
+static bool clear_device_token(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open("friday_auth", NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+    esp_err_t result = nvs_erase_key(handle, "device_token");
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+        result = ESP_OK;
+    }
+    if (result == ESP_OK) {
+        result = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return result == ESP_OK;
+}
 
 static bool valid_backend_uri(const char *uri)
 {
-    return uri != NULL &&
-           (strncmp(uri, "ws://", 5) == 0 || strncmp(uri, "wss://", 6) == 0);
+    return uri != NULL && strncmp(uri, "wss://", 6) == 0;
 }
 
 static esp_err_t load_or_create_device_token(void)
@@ -189,6 +230,14 @@ static void handle_message(const char *payload)
 
     if (strcmp(type, "ready") == 0) {
         backend_ready = true;
+        if (persist_backend_uri) {
+            if (friday_wifi_set_backend_uri(backend_uri) == ESP_OK) {
+                persist_backend_uri = false;
+                ESP_LOGI(TAG, "Saved authenticated backend endpoint");
+            } else {
+                ESP_LOGW(TAG, "Could not save authenticated backend endpoint");
+            }
+        }
         friday_ui_set_backend("FRIDAY ONLINE");
         friday_ui_set_state(parse_state(json_string(root, "state")));
         handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
@@ -202,19 +251,36 @@ static void handle_message(const char *payload)
     } else if (strcmp(type, "reminder.alert") == 0) {
         const cJSON *reminder_id = cJSON_GetObjectItemCaseSensitive(
             root, "reminder_id");
-        handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
+        const cJSON *surface = cJSON_GetObjectItemCaseSensitive(root, "surface");
+        handle_surface(surface);
         friday_ui_set_response(json_string(root, "text"));
         friday_ui_set_state(FRIDAY_STATE_ALERT);
         if (cJSON_IsNumber(reminder_id)) {
-            char acknowledgement[80];
-            int length = snprintf(
-                acknowledgement, sizeof(acknowledgement),
-                "{\"type\":\"reminder.ack\",\"reminder_id\":%d}",
-                reminder_id->valueint);
-            if (length <= 0 || (size_t)length >= sizeof(acknowledgement) ||
-                send_text(acknowledgement, pdMS_TO_TICKS(1000)) < 0) {
-                ESP_LOGW(TAG, "Could not acknowledge reminder");
+            pending_reminder_id = reminder_id->valueint;
+            int expires_ms = 60000;
+            const cJSON *expires = cJSON_IsObject(surface)
+                                       ? cJSON_GetObjectItemCaseSensitive(surface, "expires_ms")
+                                       : NULL;
+            if (cJSON_IsNumber(expires) && expires->valueint >= 5000 &&
+                expires->valueint <= 300000) {
+                expires_ms = expires->valueint;
             }
+            if (reminder_expiry_timer != NULL) {
+                esp_timer_stop(reminder_expiry_timer);
+                esp_timer_start_once(reminder_expiry_timer,
+                                     (uint64_t)expires_ms * 1000U);
+            }
+        }
+    } else if (strcmp(type, "identity.rotate") == 0 ||
+               strcmp(type, "identity.revoked") == 0) {
+        if (clear_device_token()) {
+            friday_ui_set_backend(strcmp(type, "identity.rotate") == 0
+                                      ? "FRIDAY ROTATING IDENTITY"
+                                      : "FRIDAY IDENTITY REVOKED");
+            xTaskCreate(restart_after_identity_change, "friday_identity_restart",
+                        2048, NULL, 5, NULL);
+        } else {
+            ESP_LOGE(TAG, "Could not clear device identity");
         }
     } else if (strcmp(type, "surface") == 0) {
         handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
@@ -275,7 +341,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             "{\"type\":\"hello\",\"protocol\":1,"
             "\"device_token\":\"%s\","
             "\"capabilities\":[\"display\",\"touch\",\"microphone\","
-            "\"reminder_ack\"]}",
+            "\"reminder_ack\",\"identity_rotate\"]}",
             device_token);
         ESP_LOGI(TAG, "Connected to Friday backend");
         friday_ui_set_backend("FRIDAY AUTHENTICATING");
@@ -320,6 +386,7 @@ static void backend_start_task(void *argument)
     if (saved_uri == ESP_OK && valid_backend_uri(backend_uri)) {
         ESP_LOGI(TAG, "Using configured backend endpoint");
     } else if (discover_backend(backend_uri, sizeof(backend_uri))) {
+        persist_backend_uri = true;
         ESP_LOGI(TAG, "Discovered Friday backend on the local network");
     } else {
         strlcpy(backend_uri, CONFIG_FRIDAY_BACKEND_WS_URI, sizeof(backend_uri));
@@ -337,6 +404,7 @@ static void backend_start_task(void *argument)
 
     const esp_websocket_client_config_t config = {
         .uri = backend_uri,
+        .cert_pem = friday_backend_ca_pem_start,
         .buffer_size = 2048,
         .enable_close_reconnect = true,
         .reconnect_timeout_ms = 3000,
@@ -362,19 +430,47 @@ esp_err_t friday_backend_start(void)
     send_lock = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(send_lock != NULL, ESP_ERR_NO_MEM, TAG,
                         "Could not create WebSocket send lock");
+    const esp_timer_create_args_t reminder_timer_args = {
+        .callback = reminder_expired,
+        .name = "friday_reminder_expiry",
+    };
+    ESP_RETURN_ON_ERROR(
+        esp_timer_create(&reminder_timer_args, &reminder_expiry_timer),
+        TAG, "Could not create reminder expiry timer");
     BaseType_t created = xTaskCreate(
         backend_start_task, "friday_backend_start", 6144, NULL, 6, NULL);
     return created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-bool friday_backend_toggle_audio(void)
+friday_ui_activation_result_t friday_backend_toggle_audio(void)
 {
+    if (pending_reminder_id >= 0) {
+        int reminder_id = pending_reminder_id;
+        char acknowledgement[80];
+        int length = snprintf(
+            acknowledgement, sizeof(acknowledgement),
+            "{\"type\":\"reminder.ack\",\"reminder_id\":%d}",
+            reminder_id);
+        if (length > 0 && (size_t)length < sizeof(acknowledgement) &&
+            send_text(acknowledgement, pdMS_TO_TICKS(1000)) >= 0) {
+            pending_reminder_id = -1;
+            if (reminder_expiry_timer != NULL) {
+                esp_timer_stop(reminder_expiry_timer);
+            }
+            ESP_LOGI(TAG, "Reminder %d acknowledged by touch", reminder_id);
+            return FRIDAY_UI_ACTIVATION_ACKNOWLEDGED;
+        }
+        ESP_LOGW(TAG, "Could not acknowledge reminder %d", reminder_id);
+        return FRIDAY_UI_ACTIVATION_UNCHANGED;
+    }
     if (audio_active) {
         friday_backend_end_audio();
-        return false;
+        return FRIDAY_UI_ACTIVATION_IDLE;
     }
 
-    return friday_backend_begin_audio("touch");
+    return friday_backend_begin_audio("touch")
+               ? FRIDAY_UI_ACTIVATION_RECORDING
+               : FRIDAY_UI_ACTIVATION_IDLE;
 }
 
 bool friday_backend_begin_audio(const char *source)

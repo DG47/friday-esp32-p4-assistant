@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 *.db
 backend/data/
+data/tls/
 firmware/build/
 firmware/sdkconfig
 firmware/sdkconfig.old

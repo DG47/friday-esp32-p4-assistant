@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import Reminder
@@ -155,17 +155,25 @@ class ReminderStore:
     def due(self, now: datetime) -> list[Reminder]:
         due = []
         for reminder in self.pending():
-            comparison_now = (
-                now.replace(tzinfo=reminder.due_at.tzinfo)
-                if now.tzinfo is None
-                else now.astimezone(reminder.due_at.tzinfo)
-            )
-            if reminder.due_at <= comparison_now:
+            # Older databases and SQLite's datetime() function can contain
+            # timezone-naive UTC values. Normalize both sides before comparing
+            # so one legacy row cannot stop the scheduler loop.
+            reminder_due_at = reminder.due_at
+            if reminder_due_at.tzinfo is None:
+                reminder_due_at = reminder_due_at.replace(tzinfo=timezone.utc)
+            comparison_now = now
+            if comparison_now.tzinfo is None:
+                comparison_now = comparison_now.replace(tzinfo=timezone.utc)
+            if reminder_due_at <= comparison_now.astimezone(timezone.utc):
                 due.append(reminder)
         return due
 
     def claim_delivery(
-        self, reminder_id: int, attempted_at: datetime, retry_seconds: float = 10.0
+        self,
+        reminder_id: int,
+        attempted_at: datetime,
+        retry_seconds: float = 90.0,
+        max_attempts: int = 10,
     ) -> bool:
         retry_before = datetime.fromtimestamp(
             attempted_at.timestamp() - retry_seconds, tz=attempted_at.tzinfo
@@ -176,8 +184,9 @@ class ReminderStore:
                     "UPDATE reminders SET delivery_attempted_at = ?, "
                     "delivery_attempts = delivery_attempts + 1 "
                     "WHERE id = ? AND delivered_at IS NULL "
+                    "AND delivery_attempts < ? "
                     "AND (delivery_attempted_at IS NULL OR delivery_attempted_at <= ?)",
-                    (attempted_at.isoformat(), reminder_id, retry_before),
+                    (attempted_at.isoformat(), reminder_id, max_attempts, retry_before),
                 )
         return cursor.rowcount == 1
 

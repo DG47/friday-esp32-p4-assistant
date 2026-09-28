@@ -30,6 +30,14 @@ class DeviceCredentialStoreTests(unittest.TestCase):
         self.assertEqual(self.store.authorize("friday-p3a", "c" * 64), "paired")
         self.assertIsNone(self.store.authorize("friday-p3a", "d" * 64))
 
+    def test_revoke_removes_paired_identity(self):
+        self.store.open_pairing_window()
+        self.assertEqual(self.store.authorize("friday-p3a", "e" * 64), "paired")
+        self.assertTrue(self.store.is_paired("friday-p3a"))
+        self.assertTrue(self.store.revoke("friday-p3a"))
+        self.assertFalse(self.store.is_paired("friday-p3a"))
+        self.assertIsNone(self.store.authorize("friday-p3a", "e" * 64))
+
 
 if __name__ == "__main__":
     unittest.main()

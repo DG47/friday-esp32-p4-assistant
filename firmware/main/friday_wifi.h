@@ -9,3 +9,4 @@
 esp_err_t friday_wifi_start(void);
 bool friday_wifi_wait_connected(TickType_t timeout);
 esp_err_t friday_wifi_get_backend_uri(char *uri, size_t uri_size);
+esp_err_t friday_wifi_set_backend_uri(const char *uri);

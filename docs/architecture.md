@@ -26,8 +26,9 @@ FastAPI realtime gateway
 - Audio, STT, LLM, TTS, and tools are independent provider interfaces.
 - LAN hardware generates a persistent random identity in NVS and must enroll
   during a locally opened pairing window. The backend stores only the token
-  hash. This is device authentication, not transport confidentiality: the
-  current `ws://` development path still assumes a trusted LAN.
+  hash. Device traffic uses `wss://` and validates a build-pinned Friday CA;
+  the browser simulator has an independent explicit credential. Private CA and
+  server keys remain outside Git.
 - VAD endpointing runs on the ESP32. The current wake-word implementation sends
   idle microphone audio to the trusted local backend; moving exact `Friday`
   detection on-device remains the privacy target.
@@ -37,7 +38,8 @@ FastAPI realtime gateway
 1. Firmware discovers the local backend (or uses its saved override), receives
    `hello.required`, and sends an authenticated `hello`. The server registers
    it only after the saved identity verifies, then sends `ready` and the
-   ambient state. Loopback simulator clients bypass hardware pairing.
+   ambient state. Loopback simulator clients use their separate explicit
+   credential instead of hardware pairing.
 2. Client either sends a recognized text utterance or brackets binary PCM
    frames with `audio.start` and `audio.end`. The STT adapter emits the same
    text-utterance boundary used by typed input.
@@ -51,5 +53,6 @@ FastAPI realtime gateway
    delivery.
 6. Reminder writes are committed idempotently before success is announced.
 7. The background scheduler claims due reminders, sends `reminder.alert` only
-   to capable firmware, retries unacknowledged delivery, and records delivery
-   only after `reminder.ack`.
+   to capable firmware, and retries at a bounded cadence. Firmware honors the
+   alert expiry without acknowledging it; delivery is recorded only when a
+   user tap produces `reminder.ack`.

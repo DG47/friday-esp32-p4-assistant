@@ -31,7 +31,7 @@ class FridayDiscoveryProtocolTests(unittest.TestCase):
             json.loads(data),
             {
                 "protocol": 1,
-                "ws_url": "ws://192.168.4.38:8000/ws/device/friday-p3a",
+                "ws_url": "wss://192.168.4.38:8000/ws/device/friday-p3a",
             },
         )
 

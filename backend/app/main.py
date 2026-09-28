@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,7 @@ from .agent_jobs import AgentJobStore, AgentJobWorker
 from .audio_session import AudioSession, AudioSessionError
 from .config import get_settings
 from .db import ReminderStore
-from .device_auth import DeviceCredentialStore
+from .device_auth import TOKEN_PATTERN, DeviceCredentialStore
 from .device_hub import DeviceHub
 from .discovery import FridayDiscoveryProtocol
 from .reminder_scheduler import ReminderScheduler
@@ -35,7 +36,11 @@ static_dir = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
 hub = DeviceHub()
 reminder_scheduler = ReminderScheduler(
-    store, hub, poll_seconds=settings.assistant_reminder_poll_seconds
+    store,
+    hub,
+    poll_seconds=settings.assistant_reminder_poll_seconds,
+    retry_seconds=settings.assistant_reminder_retry_seconds,
+    max_attempts=settings.assistant_reminder_max_attempts,
 )
 job_worker = AgentJobWorker(
     job_store, agent, hub, timeout_seconds=settings.assistant_job_timeout_seconds
@@ -48,7 +53,10 @@ async def lifespan(_: FastAPI):
     try:
         loop = asyncio.get_running_loop()
         transport, _ = await loop.create_datagram_endpoint(
-            lambda: FridayDiscoveryProtocol(settings.assistant_public_port),
+            lambda: FridayDiscoveryProtocol(
+                settings.assistant_public_port,
+                settings.assistant_public_scheme,
+            ),
             local_addr=("0.0.0.0", settings.assistant_discovery_port),
             allow_broadcast=True,
         )
@@ -82,12 +90,35 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 def is_local_host(host: str | None) -> bool:
-    if host in {"localhost", "testclient"}:
-        return True
     try:
         return ipaddress.ip_address(host or "").is_loopback
     except ValueError:
         return False
+
+
+def simulator_token_valid(token: str) -> bool:
+    configured = settings.assistant_simulator_token
+    return (
+        bool(TOKEN_PATTERN.fullmatch(configured))
+        and bool(TOKEN_PATTERN.fullmatch(token))
+        and secrets.compare_digest(token.lower(), configured.lower())
+    )
+
+
+def admin_token_valid(token: str) -> bool:
+    configured = settings.assistant_admin_token
+    return (
+        bool(TOKEN_PATTERN.fullmatch(configured))
+        and bool(TOKEN_PATTERN.fullmatch(token))
+        and secrets.compare_digest(token.lower(), configured.lower())
+    )
+
+
+def require_local_admin(request: Request) -> None:
+    if not is_local_host(request.client.host if request.client else None):
+        raise HTTPException(status_code=403, detail="Administration is loopback-only")
+    if not admin_token_valid(request.headers.get("x-friday-admin-token", "")):
+        raise HTTPException(status_code=401, detail="Valid Friday admin token required")
 
 
 async def handle_utterance(
@@ -129,13 +160,51 @@ async def reminders() -> list[dict]:
 
 @app.post("/api/devices/pairing-window")
 async def open_pairing_window(request: Request) -> dict[str, str]:
-    if not is_local_host(request.client.host if request.client else None):
-        raise HTTPException(status_code=403, detail="Pairing can only start locally")
+    require_local_admin(request)
     if request.headers.get("x-friday-pairing") != "open":
         raise HTTPException(status_code=400, detail="Pairing confirmation header required")
     expires_at = credential_store.open_pairing_window()
     logger.info("Device pairing window opened until %s", expires_at.isoformat())
     return {"status": "pairing", "expires_at": expires_at.isoformat()}
+
+
+def require_local_device_action(request: Request, action: str) -> None:
+    require_local_admin(request)
+    if request.headers.get("x-friday-device-action") != action:
+        raise HTTPException(status_code=400, detail="Device action confirmation required")
+
+
+@app.post("/api/devices/{device_id}/rotate")
+async def rotate_device_identity(device_id: str, request: Request) -> dict[str, str]:
+    require_local_device_action(request, "rotate")
+    if not credential_store.is_paired(device_id):
+        raise HTTPException(status_code=404, detail="Device is not paired")
+    recipients = await hub.broadcast(
+        device_id,
+        {"type": "identity.rotate"},
+        required_capability="identity_rotate",
+    )
+    if recipients == 0:
+        raise HTTPException(status_code=409, detail="Device must be online to rotate")
+    credential_store.revoke(device_id)
+    expires_at = credential_store.open_pairing_window()
+    logger.warning("Rotating identity for device %s", device_id)
+    return {"status": "rotating", "expires_at": expires_at.isoformat()}
+
+
+@app.post("/api/devices/{device_id}/revoke")
+async def revoke_device_identity(device_id: str, request: Request) -> dict[str, str]:
+    require_local_device_action(request, "revoke")
+    if not credential_store.is_paired(device_id):
+        raise HTTPException(status_code=404, detail="Device is not paired")
+    await hub.broadcast(
+        device_id,
+        {"type": "identity.revoked"},
+        required_capability="identity_rotate",
+    )
+    credential_store.revoke(device_id)
+    logger.warning("Revoked identity for device %s", device_id)
+    return {"status": "revoked"}
 
 
 @app.websocket("/ws/device/{device_id}")
@@ -224,9 +293,11 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     if isinstance(item, str)
                 }
                 if not registered:
-                    client_host = websocket.client.host if websocket.client else None
-                    auth_status = "local" if is_local_host(client_host) else credential_store.authorize(
-                        device_id, str(message.get("device_token", ""))
+                    token = str(message.get("device_token", ""))
+                    auth_status = (
+                        "simulator"
+                        if simulator_token_valid(token)
+                        else credential_store.authorize(device_id, token)
                     )
                     if auth_status is None:
                         await send_error(

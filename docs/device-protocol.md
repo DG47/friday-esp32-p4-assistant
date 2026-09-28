@@ -15,24 +15,33 @@ data.
 
 After joining Wi-Fi, firmware broadcasts `FRIDAY_DISCOVER_V1 <device_id>` on
 UDP port 8334. The backend replies directly with protocol version 1 and the
-WebSocket URL for the requesting device. Discovery runs at boot; firmware uses
-an optional URL saved during setup when present, or its compile-time URL only
-when discovery fails.
+`wss://` URL for the requesting device. Firmware accepts only TLS URLs and
+verifies the server against the Friday CA embedded at build time. After the
+first authenticated `ready`, it persists the endpoint and prefers it on later
+boots, so an untrusted discovery responder cannot redirect an already-paired
+device. Its compile-time URL remains a recovery fallback.
 
 On first boot, firmware creates a random 32-byte token and stores it in NVS.
 The backend stores only its SHA-256 hash. An unpaired LAN device is accepted
 only during the two-minute, loopback-opened pairing window:
 
 ```sh
-curl -X POST -H 'X-Friday-Pairing: open' \
-  http://127.0.0.1:8000/api/devices/pairing-window
+curl --cacert data/tls/friday-ca.crt -X POST \
+  -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" \
+  -H 'X-Friday-Pairing: open' \
+  https://127.0.0.1:8000/api/devices/pairing-window
 ```
 
 The window closes as soon as one device enrolls. The stored identity is reused
-after device and backend restarts. This authenticates a device on a trusted
-LAN, but `ws://` does not protect the token or audio from network observers;
-use `wss://` and a secure provisioning/rotation design before exposure to an
-untrusted network.
+after device and backend restarts. All WebSocket peers, including loopback
+clients, must authenticate. The browser simulator uses a separate configured
+credential rather than bypassing authentication.
+
+Rotate an online physical identity with `X-Friday-Device-Action: rotate` at
+`POST /api/devices/{device_id}/rotate`; this clears the device token, opens a
+new one-device window, reboots, and enrolls a new token. `revoke` uses the same
+endpoint shape but does not open a pairing window. Both actions are loopback
+only and require `X-Friday-Admin-Token`.
 
 ## Client messages
 
@@ -75,7 +84,7 @@ turns from streaming forever. The capture boundary remains separate from STT.
 {"type":"assistant.text","text":"Your interview is at two."}
 {"type":"surface","surface":{"kind":"timeline","title":"Today","items":[]}}
 {"type":"tool.activity","name":"calendar","status":"working"}
-{"type":"reminder.alert","reminder_id":42,"text":"Reminder: prepare","surface":{"kind":"reminder","title":"Reminder","subtitle":"prepare"}}
+{"type":"reminder.alert","reminder_id":42,"text":"Reminder: prepare","surface":{"kind":"reminder","title":"Reminder","subtitle":"prepare","expires_ms":60000}}
 {"type":"error","code":"bad_message","message":"..."}
 ```
 
@@ -91,8 +100,10 @@ are retried after their lease expires, and completed results are retained until
 they can be sent to a connected peer.
 
 `reminder.alert` is sent only to peers advertising `reminder_ack`. The physical
-device renders the alert before replying with `reminder.ack`; until that
-acknowledgement is stored, the backend retries delivery with a bounded cadence.
+device renders the alert for `expires_ms` and returns to idle without replying
+when it expires. It sends `reminder.ack` only after the user taps the displayed
+alert. Until that acknowledgement is stored, the backend retries delivery at a
+bounded cadence and stops after the configured maximum number of attempts.
 
 States are `idle`, `listening`, `thinking`, `speaking`, and `alert`. Surface
 kinds currently implemented by the simulator are `ambient`, `timeline`,

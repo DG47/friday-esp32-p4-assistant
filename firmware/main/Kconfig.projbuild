@@ -2,11 +2,11 @@ menu "Friday assistant"
 
 config FRIDAY_BACKEND_WS_URI
     string "Friday backend WebSocket URI"
-    default "ws://192.168.4.38:8000/ws/device/friday-p3a"
+    default "wss://192.168.4.38:8000/ws/device/friday-p3a"
     help
         WebSocket endpoint used by this device. The backend must listen on a
-        LAN-accessible interface. Plain ws:// is acceptable only on a trusted
-        development network; production firmware must use authenticated wss://.
+        LAN-accessible interface and present a certificate signed by the
+        Friday CA embedded in this firmware. Plain ws:// is rejected.
 
 config FRIDAY_DISCOVERY_PORT
     int "Friday backend UDP discovery port"

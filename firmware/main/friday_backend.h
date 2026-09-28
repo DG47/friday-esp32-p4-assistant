@@ -5,10 +5,11 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "friday_ui.h"
 
 esp_err_t friday_backend_start(void);
 bool friday_backend_begin_audio(const char *source);
-bool friday_backend_toggle_audio(void);
+friday_ui_activation_result_t friday_backend_toggle_audio(void);
 bool friday_backend_audio_active(void);
 bool friday_backend_take_wake_request(void);
 esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count);

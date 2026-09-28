@@ -69,6 +69,23 @@ class DeviceCredentialStore:
             ).fetchone()
         return row is not None and datetime.fromisoformat(row["expires_at"]) > check_time
 
+    def is_paired(self, device_id: str) -> bool:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM device_credentials WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+        return row is not None
+
+    def revoke(self, device_id: str) -> bool:
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "DELETE FROM device_credentials WHERE device_id = ?",
+                    (device_id,),
+                )
+        return cursor.rowcount == 1
+
     def authorize(self, device_id: str, token: str) -> str | None:
         if not TOKEN_PATTERN.fullmatch(token):
             return None

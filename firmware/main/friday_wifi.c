@@ -176,10 +176,9 @@ static esp_err_t configure_handler(httpd_req_t *request)
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Wi-Fi name is required");
         return ESP_FAIL;
     }
-    if (backend_uri[0] != '\0' && strncmp(backend_uri, "ws://", 5) != 0 &&
-        strncmp(backend_uri, "wss://", 6) != 0) {
+    if (backend_uri[0] != '\0' && strncmp(backend_uri, "wss://", 6) != 0) {
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
-                            "Backend URL must begin with ws:// or wss://");
+                            "Backend URL must begin with wss://");
         return ESP_FAIL;
     }
 
@@ -355,6 +354,22 @@ esp_err_t friday_wifi_get_backend_uri(char *uri, size_t uri_size)
     }
     size_t stored_size = uri_size;
     result = nvs_get_str(handle, "backend_uri", uri, &stored_size);
+    nvs_close(handle);
+    return result;
+}
+
+esp_err_t friday_wifi_set_backend_uri(const char *uri)
+{
+    if (uri == NULL || strncmp(uri, "wss://", 6) != 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t handle;
+    ESP_RETURN_ON_ERROR(nvs_open("friday_wifi", NVS_READWRITE, &handle), TAG,
+                        "Could not open backend settings");
+    esp_err_t result = nvs_set_str(handle, "backend_uri", uri);
+    if (result == ESP_OK) {
+        result = nvs_commit(handle);
+    }
     nvs_close(handle);
     return result;
 }
