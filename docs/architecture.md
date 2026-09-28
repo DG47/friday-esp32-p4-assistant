@@ -54,7 +54,10 @@ FastAPI realtime gateway
 5. Server sends tool activity, a dynamic surface, assistant text, and
    `speaking`/`idle` state transitions. A reconnect triggers pending-result
    delivery.
-6. Reminder writes are committed idempotently before success is announced.
+6. Reminder writes and state transitions are committed idempotently before
+   success is announced. Cancel, complete, and snooze actions are device-scoped,
+   require confirmation, and operate on stable reminder IDs. Ambiguous mock-mode
+   matches stop for clarification. Snoozing resets delivery state atomically.
 7. The background scheduler claims due reminders, sends `reminder.alert` only
    to capable firmware, and retries at a bounded cadence. Firmware honors the
    alert expiry without acknowledging it; delivery is recorded only when a

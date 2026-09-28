@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import PendingConfirmation, ReminderStore
-from .models import AgentReply, CalendarEvent, Surface
+from .models import AgentReply, CalendarEvent, Reminder, Surface
 from .providers.base import TextProvider
 from .providers.router import ProviderRouter
 from .tools.calendar import MockCalendar
@@ -59,10 +59,62 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_reminders",
-            "description": "List all pending reminders.",
+            "description": (
+                "List active reminders, including their stable IDs. Use this before "
+                "changing a reminder unless its ID is already known."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_reminder",
+            "description": "Cancel one active reminder by its exact ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {"type": "integer"},
+                },
+                "required": ["reminder_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "complete_reminder",
+            "description": "Mark one active reminder complete by its exact ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {"type": "integer"},
+                },
+                "required": ["reminder_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "snooze_reminder",
+            "description": "Move one active reminder to a new future due time.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {"type": "integer"},
+                    "due_at": {
+                        "type": "string",
+                        "description": "New ISO 8601 date and time, including UTC offset.",
+                    },
+                },
+                "required": ["reminder_id", "due_at"],
                 "additionalProperties": False,
             },
         },
@@ -83,7 +135,12 @@ class ToolOutcome:
     success: bool = True
 
 
-CONSEQUENTIAL_TOOLS = {"create_reminder"}
+CONSEQUENTIAL_TOOLS = {
+    "create_reminder",
+    "cancel_reminder",
+    "complete_reminder",
+    "snooze_reminder",
+}
 AFFIRMATIVE_CONFIRMATIONS = {"yes", "confirm", "confirmed", "do it", "proceed"}
 NEGATIVE_CONFIRMATIONS = {"no", "cancel", "never mind", "nevermind", "stop"}
 
@@ -128,7 +185,9 @@ be one or two short sentences.
 The current local date and time is {now}. Use the supplied tools whenever the
 request depends on calendar or reminder data. Never claim that a tool action
 succeeded until its result confirms success. Use prior conversation messages
-to resolve follow-up questions and references."""
+to resolve follow-up questions and references. Before changing a reminder,
+identify exactly one active reminder. If the request is ambiguous, list the
+matches and ask which one; never guess."""
 
     async def _handle_with_model(
         self,
@@ -198,7 +257,7 @@ to resolve follow-up questions and references."""
                     device_id=session_id,
                     request_id=request_id,
                     actions=actions,
-                    summary=self._confirmation_summary(actions),
+                    summary=self._confirmation_summary(actions, device_id=session_id),
                     expires_at=datetime.now().astimezone()
                     + timedelta(seconds=self.settings.assistant_confirmation_timeout_seconds),
                 )
@@ -312,7 +371,9 @@ to resolve follow-up questions and references."""
             tool=last_tool,
         )
 
-    def _confirmation_summary(self, actions: list[dict[str, Any]]) -> str:
+    def _confirmation_summary(
+        self, actions: list[dict[str, Any]], device_id: str | None = None
+    ) -> str:
         if all(action["name"] == "create_reminder" for action in actions):
             if len(actions) > 1:
                 return f"set {len(actions)} reminders"
@@ -332,6 +393,40 @@ to resolve follow-up questions and references."""
             except ValueError:
                 pass
             return f'set a reminder for "{reminder_text}" on {due_label}'
+        if len(actions) == 1 and actions[0]["name"] in {
+            "cancel_reminder",
+            "complete_reminder",
+            "snooze_reminder",
+        }:
+            action = actions[0]
+            reminder_id = action["arguments"].get("reminder_id")
+            reminder = None
+            if device_id is not None:
+                try:
+                    reminder = self.store.active_by_id(int(reminder_id), device_id)
+                except (TypeError, ValueError):
+                    pass
+            target = (
+                f'reminder {reminder_id}, "{reminder.text}"'
+                if reminder is not None
+                else f"reminder {reminder_id}"
+            )
+            verb = {
+                "cancel_reminder": "cancel",
+                "complete_reminder": "mark complete",
+                "snooze_reminder": "snooze",
+            }[action["name"]]
+            if action["name"] == "snooze_reminder":
+                due_value = str(action["arguments"].get("due_at", "")).strip()
+                try:
+                    due_at = self._local_datetime(due_value)
+                    return (
+                        f"{verb} {target} until "
+                        f"{due_at.strftime('%b %-d at %-I:%M %p')}"
+                    )
+                except ValueError:
+                    return f"{verb} {target} until {due_value}"
+            return f"{verb} {target}"
         if len(actions) == 1:
             return f"run {actions[0]['name']}"
         return f"run {len(actions)} actions"
@@ -443,6 +538,12 @@ to resolve follow-up questions and references."""
                 if count == 1
                 else f"Confirmed. {count} reminders are set."
             )
+        elif all_succeeded and len(confirmation.actions) == 1:
+            answer = {
+                "cancel_reminder": "Confirmed. The reminder is cancelled.",
+                "complete_reminder": "Confirmed. The reminder is complete.",
+                "snooze_reminder": "Confirmed. The reminder is snoozed.",
+            }.get(confirmation.actions[0]["name"], "Confirmed. The action is complete.")
         elif all_succeeded:
             answer = "Confirmed. The action is complete."
         else:
@@ -531,8 +632,55 @@ to resolve follow-up questions and references."""
                 ),
             )
 
+        if name in {"cancel_reminder", "complete_reminder", "snooze_reminder"}:
+            try:
+                reminder_id = int(arguments.get("reminder_id"))
+                if reminder_id <= 0:
+                    raise ValueError("Reminder ID must be positive")
+                due_at = None
+                if name == "snooze_reminder":
+                    due_at = self._local_datetime(str(arguments.get("due_at", "")))
+                    if due_at <= datetime.now(ZoneInfo(self.settings.assistant_timezone)):
+                        raise ValueError("Snooze time must be in the future")
+            except (TypeError, ValueError) as error:
+                return ToolOutcome(
+                    content=json.dumps({"ok": False, "error": str(error)}),
+                    success=False,
+                )
+
+            action = name.removesuffix("_reminder")
+            result = self.store.mutate_reminder(
+                reminder_id=reminder_id,
+                device_id=device_id,
+                action=action,
+                due_at=due_at,
+                idempotency_key=f"{request_id}:{name}:{operation_index}",
+            )
+            if not result["ok"]:
+                return ToolOutcome(content=json.dumps(result), success=False)
+            reminder = result["reminder"]
+            title = {
+                "cancel": "Reminder cancelled",
+                "complete": "Reminder complete",
+                "snooze": "Reminder snoozed",
+            }[action]
+            subtitle = reminder["text"]
+            items = []
+            if action == "snooze":
+                items = [{"time": due_at.strftime("%-I:%M %p")}]
+            return ToolOutcome(
+                content=json.dumps(result),
+                surface=Surface(
+                    kind="reminder",
+                    title=title,
+                    subtitle=subtitle,
+                    items=items,
+                    expires_ms=10000,
+                ),
+            )
+
         if name == "list_reminders":
-            pending = self.store.pending(device_id=device_id)
+            pending = self.store.active(device_id=device_id)
             result = {
                 "ok": True,
                 "reminders": [item.model_dump(mode="json") for item in pending],
@@ -638,6 +786,74 @@ to resolve follow-up questions and references."""
                 tool="calendar",
             )
 
+        reminder_action = self._parse_reminder_action(normalized)
+        if reminder_action is None and re.fullmatch(
+            r"(?:reminder\s+(?:number\s+)?)?#?\d+", normalized
+        ):
+            reminder_action = self._last_mock_ambiguous_action(session_id)
+        if reminder_action is not None:
+            action, due_at = reminder_action
+            active = self.store.active(device_id=session_id)
+            matches = self._match_reminders(normalized, active)
+            if len(matches) != 1:
+                if not matches:
+                    answer = "I couldn't find an active reminder matching that request."
+                    items = []
+                else:
+                    answer = "I found multiple matches. Say the reminder number you mean."
+                    items = [
+                        {
+                            "time": item.due_at.strftime("%-I:%M %p"),
+                            "label": f"#{item.id} {item.text}",
+                        }
+                        for item in matches
+                    ]
+                self.store.append_exchange(session_id, request_id, text, answer)
+                return AgentReply(
+                    text=answer,
+                    surface=Surface(
+                        kind="reminder",
+                        title="Reminders",
+                        subtitle=answer,
+                        items=items,
+                        expires_ms=15000,
+                    ),
+                    tool="list_reminders",
+                )
+
+            reminder = matches[0]
+            tool_name = f"{action}_reminder"
+            arguments: dict[str, Any] = {"reminder_id": reminder.id}
+            if action == "snooze":
+                if due_at is None:
+                    answer = "How long should I snooze it for?"
+                    self.store.append_exchange(session_id, request_id, text, answer)
+                    return AgentReply(
+                        text=answer,
+                        surface=Surface(
+                            kind="reminder",
+                            title="Snooze reminder",
+                            subtitle=answer,
+                            expires_ms=15000,
+                        ),
+                        tool="list_reminders",
+                    )
+                arguments["due_at"] = due_at.isoformat()
+            actions = [
+                {
+                    "call_id": f"{request_id}:mock-{tool_name}",
+                    "name": tool_name,
+                    "arguments": arguments,
+                    "operation_index": 0,
+                }
+            ]
+            return self._request_mock_confirmation(
+                session_id=session_id,
+                text=text,
+                request_id=request_id,
+                actions=actions,
+            )
+
         reminder = self._parse_reminder(text)
         if reminder:
             reminder_text, due_at = reminder
@@ -652,64 +868,15 @@ to resolve follow-up questions and references."""
                     "operation_index": 0,
                 }
             ]
-            confirmation = self.store.request_confirmation(
-                confirmation_id=f"{request_id}:confirmation:0",
-                device_id=session_id,
+            return self._request_mock_confirmation(
+                session_id=session_id,
+                text=text,
                 request_id=request_id,
                 actions=actions,
-                summary=self._confirmation_summary(actions),
-                expires_at=datetime.now().astimezone()
-                + timedelta(seconds=self.settings.assistant_confirmation_timeout_seconds),
-            )
-            answer = (
-                f"Confirm: {confirmation.summary}. "
-                "Say yes to continue or no to cancel."
-            )
-            self.store.append_messages(
-                session_id,
-                request_id,
-                [
-                    {"role": "user", "content": text},
-                    {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": actions[0]["call_id"],
-                                "name": "create_reminder",
-                                "arguments": actions[0]["arguments"],
-                            }
-                        ],
-                    },
-                    {
-                        "role": "tool",
-                        "tool_call_id": actions[0]["call_id"],
-                        "name": "create_reminder",
-                        "content": json.dumps(
-                            {
-                                "ok": False,
-                                "confirmation_required": True,
-                                "confirmation_id": confirmation.id,
-                                "summary": confirmation.summary,
-                            }
-                        ),
-                    },
-                    {"role": "assistant", "content": answer},
-                ],
-            )
-            return AgentReply(
-                text=answer,
-                surface=Surface(
-                    kind="message",
-                    title="Confirmation required",
-                    subtitle=confirmation.summary,
-                    expires_ms=30000,
-                ),
-                tool="create_reminder",
             )
 
         if "reminder" in normalized or "reminders" in normalized:
-            pending = self.store.pending(device_id=session_id)
+            pending = self.store.active(device_id=session_id)
             if not pending:
                 text_out = "No pending reminders. Against all odds, future-you is currently safe."
             else:
@@ -771,6 +938,165 @@ to resolve follow-up questions and references."""
                 subtitle="Calendar and reminders are ready",
                 expires_ms=10000,
             ),
+        )
+
+    def _request_mock_confirmation(
+        self,
+        session_id: str,
+        text: str,
+        request_id: str,
+        actions: list[dict[str, Any]],
+    ) -> AgentReply:
+        confirmation = self.store.request_confirmation(
+            confirmation_id=f"{request_id}:confirmation:0",
+            device_id=session_id,
+            request_id=request_id,
+            actions=actions,
+            summary=self._confirmation_summary(actions, device_id=session_id),
+            expires_at=datetime.now().astimezone()
+            + timedelta(seconds=self.settings.assistant_confirmation_timeout_seconds),
+        )
+        answer = (
+            f"Confirm: {confirmation.summary}. "
+            "Say yes to continue or no to cancel."
+        )
+        tool_calls = [
+            {
+                "id": action["call_id"],
+                "name": action["name"],
+                "arguments": action["arguments"],
+            }
+            for action in actions
+        ]
+        tool_messages = [
+            {
+                "role": "tool",
+                "tool_call_id": action["call_id"],
+                "name": action["name"],
+                "content": json.dumps(
+                    {
+                        "ok": False,
+                        "confirmation_required": True,
+                        "confirmation_id": confirmation.id,
+                        "summary": confirmation.summary,
+                    }
+                ),
+            }
+            for action in actions
+        ]
+        self.store.append_messages(
+            session_id,
+            request_id,
+            [
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": "", "tool_calls": tool_calls},
+                *tool_messages,
+                {"role": "assistant", "content": answer},
+            ],
+        )
+        return AgentReply(
+            text=answer,
+            surface=Surface(
+                kind="message",
+                title="Confirmation required",
+                subtitle=confirmation.summary,
+                expires_ms=30000,
+            ),
+            tool=actions[0]["name"],
+        )
+
+    def _parse_reminder_action(
+        self, text: str
+    ) -> tuple[str, datetime | None] | None:
+        text = " ".join(text.lower().strip().split())
+        if "remind me" in text:
+            return None
+        mentions_target = "reminder" in text or "that" in text or "it" in text
+        if not mentions_target:
+            return None
+        if re.search(r"\b(cancel|delete|remove)\b", text):
+            return "cancel", None
+        if re.search(r"\b(snooze|postpone|delay)\b", text):
+            duration = re.search(
+                r"(?:for|by)?\s*(\d+)\s*(minute|minutes|hour|hours)\b", text
+            )
+            if duration is None:
+                return "snooze", None
+            amount = int(duration.group(1))
+            unit = duration.group(2)
+            delta = (
+                timedelta(hours=amount)
+                if unit.startswith("hour")
+                else timedelta(minutes=amount)
+            )
+            return (
+                "snooze",
+                datetime.now(ZoneInfo(self.settings.assistant_timezone)) + delta,
+            )
+        if (
+            re.search(r"\b(complete|finish)\b", text)
+            or re.search(r"\bmark\b.*\b(done|complete)\b", text)
+        ):
+            return "complete", None
+        return None
+
+    @staticmethod
+    def _match_reminders(text: str, active: list[Reminder]) -> list[Reminder]:
+        id_match = re.search(
+            r"(?:\breminder\s+(?:number\s+)?#?|^#?)(\d+)\b", text
+        )
+        if id_match:
+            reminder_id = int(id_match.group(1))
+            return [item for item in active if item.id == reminder_id]
+
+        phrase_matches = [item for item in active if item.text.lower().strip() in text]
+        if phrase_matches:
+            return phrase_matches
+        if len(active) <= 1:
+            return active
+
+        stop_words = {
+            "a", "an", "and", "at", "cancel", "complete", "delete", "delay",
+            "done", "finish", "for", "it", "mark", "my", "postpone", "reminder",
+            "remove", "snooze", "that", "the", "this", "to",
+        }
+        query_tokens = set(re.findall(r"[a-z0-9]+", text)) - stop_words
+        scored = []
+        for item in active:
+            item_tokens = set(re.findall(r"[a-z0-9]+", item.text.lower()))
+            score = len(query_tokens & item_tokens)
+            if score:
+                scored.append((score, item))
+        if not scored:
+            return active
+        best = max(score for score, _ in scored)
+        return [item for score, item in scored if score == best]
+
+    def _last_mock_ambiguous_action(
+        self, session_id: str
+    ) -> tuple[str, datetime | None] | None:
+        messages = self.store.conversation(session_id, limit=3)
+        for index in range(len(messages) - 1, 0, -1):
+            message = messages[index]
+            if (
+                message.get("role") != "assistant"
+                or not str(message.get("content", "")).startswith(
+                    "I found multiple matches"
+                )
+            ):
+                continue
+            previous = messages[index - 1]
+            if previous.get("role") == "user":
+                return self._parse_reminder_action(str(previous.get("content", "")))
+        return None
+
+    def _local_datetime(self, value: str) -> datetime:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        timezone = ZoneInfo(self.settings.assistant_timezone)
+        return (
+            parsed.replace(tzinfo=timezone)
+            if parsed.tzinfo is None
+            else parsed.astimezone(timezone)
         )
 
     def _last_mock_calendar_event(self, session_id: str) -> CalendarEvent | None:

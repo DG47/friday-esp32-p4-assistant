@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -100,9 +101,48 @@ class ReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await scheduler.deliver_due_once(now + timedelta(seconds=22)), 0)
         self.assertEqual(len(socket.messages), 2)
 
+    async def test_cancelled_and_completed_reminders_are_never_delivered(self):
+        now = datetime.now(timezone.utc)
+        cancelled = self.store.create("cancelled", now, device_id="device-1")
+        completed = self.store.create("completed", now, device_id="device-1")
+        self.store.mutate_reminder(
+            cancelled.id, "device-1", "cancel", "cancel-action"
+        )
+        self.store.mutate_reminder(
+            completed.id, "device-1", "complete", "complete-action"
+        )
+        socket = FakeWebSocket()
+        await self.hub.connect("device-1", socket)
+        self.hub.set_capabilities("device-1", socket, {"reminder_ack"})
+
+        self.assertEqual(await self.scheduler.deliver_due_once(now), 0)
+        self.assertEqual(socket.messages, [])
+
+    async def test_snoozed_reminder_is_delivered_only_at_its_new_time(self):
+        now = datetime.now(timezone.utc)
+        reminder = self.store.create("snooze me", now, device_id="device-1")
+        self.store.mark_delivered(reminder.id, "device-1", now)
+        snoozed_until = now + timedelta(minutes=20)
+        self.store.mutate_reminder(
+            reminder.id,
+            "device-1",
+            "snooze",
+            "snooze-action",
+            due_at=snoozed_until,
+        )
+        socket = FakeWebSocket()
+        await self.hub.connect("device-1", socket)
+        self.hub.set_capabilities("device-1", socket, {"reminder_ack"})
+
+        self.assertEqual(
+            await self.scheduler.deliver_due_once(now + timedelta(minutes=19)), 0
+        )
+        self.assertEqual(await self.scheduler.deliver_due_once(snoozed_until), 1)
+        self.assertEqual(socket.messages[0]["surface"]["subtitle"], "snooze me")
+
     async def test_legacy_naive_utc_due_at_does_not_stop_scheduler(self):
         now = datetime.now(timezone.utc)
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
                 "INSERT INTO reminders (text, due_at, created_at, device_id) "
                 "VALUES (?, ?, ?, ?)",
@@ -113,6 +153,7 @@ class ReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
                     "device-1",
                 ),
             )
+            connection.commit()
         socket = FakeWebSocket()
         await self.hub.connect("device-1", socket)
         self.hub.set_capabilities("device-1", socket, {"reminder_ack"})
@@ -122,7 +163,7 @@ class ReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_migrates_existing_reminder_database(self):
         legacy_path = Path(self.tempdir.name) / "legacy.db"
-        with sqlite3.connect(legacy_path) as connection:
+        with closing(sqlite3.connect(legacy_path)) as connection:
             connection.execute(
                 """
                 CREATE TABLE reminders (
@@ -134,6 +175,7 @@ class ReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 )
                 """
             )
+            connection.commit()
 
         migrated = ReminderStore(legacy_path)
         reminder = migrated.create(
@@ -142,6 +184,12 @@ class ReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reminder.device_id, "friday-p3a")
         self.assertIsNone(reminder.delivered_at)
+        with closing(sqlite3.connect(legacy_path)) as connection:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(reminders)")
+            }
+        self.assertIn("cancelled_at", columns)
+        self.assertIn("completed_at", columns)
 
 
 if __name__ == "__main__":

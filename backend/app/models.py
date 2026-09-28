@@ -27,6 +27,8 @@ class Reminder(BaseModel):
     device_id: str = "friday-p3a"
     delivered_at: datetime | None = None
     completed: bool = False
+    completed_at: datetime | None = None
+    cancelled_at: datetime | None = None
 
 
 class Surface(BaseModel):

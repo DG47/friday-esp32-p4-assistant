@@ -48,7 +48,10 @@ class ReminderStore:
                         delivery_attempted_at TEXT,
                         delivery_attempts INTEGER NOT NULL DEFAULT 0,
                         idempotency_key TEXT,
-                        completed INTEGER NOT NULL DEFAULT 0
+                        completed INTEGER NOT NULL DEFAULT 0,
+                        completed_at TEXT,
+                        cancelled_at TEXT,
+                        updated_at TEXT
                     )
                     """
                 )
@@ -78,9 +81,33 @@ class ReminderStore:
                     connection.execute(
                         "ALTER TABLE reminders ADD COLUMN idempotency_key TEXT"
                     )
+                if "completed_at" not in columns:
+                    connection.execute(
+                        "ALTER TABLE reminders ADD COLUMN completed_at TEXT"
+                    )
+                if "cancelled_at" not in columns:
+                    connection.execute(
+                        "ALTER TABLE reminders ADD COLUMN cancelled_at TEXT"
+                    )
+                if "updated_at" not in columns:
+                    connection.execute(
+                        "ALTER TABLE reminders ADD COLUMN updated_at TEXT"
+                    )
                 connection.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS reminders_idempotency_key "
                     "ON reminders(idempotency_key) WHERE idempotency_key IS NOT NULL"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS reminder_actions (
+                        idempotency_key TEXT PRIMARY KEY,
+                        reminder_id INTEGER NOT NULL,
+                        device_id TEXT NOT NULL,
+                        action TEXT NOT NULL,
+                        result_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
                 )
                 conversation_table = connection.execute(
                     "SELECT 1 FROM sqlite_master "
@@ -204,12 +231,40 @@ class ReminderStore:
                 else None
             ),
             completed=bool(row["completed"]),
+            completed_at=(
+                datetime.fromisoformat(row["completed_at"])
+                if row["completed_at"]
+                else None
+            ),
+            cancelled_at=(
+                datetime.fromisoformat(row["cancelled_at"])
+                if row["cancelled_at"]
+                else None
+            ),
         )
+
+    def active(self, device_id: str) -> list[Reminder]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT * FROM reminders WHERE device_id = ? "
+                "AND completed = 0 AND cancelled_at IS NULL ORDER BY due_at, id",
+                (device_id,),
+            ).fetchall()
+        return [self._from_row(row) for row in rows]
+
+    def active_by_id(self, reminder_id: int, device_id: str) -> Reminder | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM reminders WHERE id = ? AND device_id = ? "
+                "AND completed = 0 AND cancelled_at IS NULL",
+                (reminder_id, device_id),
+            ).fetchone()
+        return self._from_row(row) if row is not None else None
 
     def pending(self, device_id: str | None = None) -> list[Reminder]:
         query = (
             "SELECT * FROM reminders "
-            "WHERE completed = 0 AND delivered_at IS NULL"
+            "WHERE completed = 0 AND cancelled_at IS NULL AND delivered_at IS NULL"
         )
         parameters: tuple[str, ...] = ()
         if device_id is not None:
@@ -254,6 +309,7 @@ class ReminderStore:
                     "UPDATE reminders SET delivery_attempted_at = ?, "
                     "delivery_attempts = delivery_attempts + 1 "
                     "WHERE id = ? AND delivered_at IS NULL "
+                    "AND completed = 0 AND cancelled_at IS NULL "
                     "AND delivery_attempts < ? "
                     "AND (delivery_attempted_at IS NULL OR delivery_attempted_at <= ?)",
                     (attempted_at.isoformat(), reminder_id, max_attempts, retry_before),
@@ -267,10 +323,100 @@ class ReminderStore:
             with connection:
                 cursor = connection.execute(
                     "UPDATE reminders SET delivered_at = ? "
-                    "WHERE id = ? AND device_id = ? AND delivered_at IS NULL",
+                    "WHERE id = ? AND device_id = ? AND delivered_at IS NULL "
+                    "AND completed = 0 AND cancelled_at IS NULL",
                     (delivered_at.isoformat(), reminder_id, device_id),
                 )
         return cursor.rowcount == 1
+
+    def mutate_reminder(
+        self,
+        reminder_id: int,
+        device_id: str,
+        action: str,
+        idempotency_key: str,
+        due_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        if action not in {"cancel", "complete", "snooze"}:
+            raise ValueError(f"Unsupported reminder action: {action}")
+        now = datetime.now(timezone.utc)
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT result_json FROM reminder_actions WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                connection.commit()
+                return json.loads(existing["result_json"])
+
+            row = connection.execute(
+                "SELECT * FROM reminders WHERE id = ? AND device_id = ?",
+                (reminder_id, device_id),
+            ).fetchone()
+            if row is None:
+                result: dict[str, Any] = {
+                    "ok": False,
+                    "error": "Reminder not found",
+                    "reminder_id": reminder_id,
+                }
+            elif row["completed"] or row["cancelled_at"]:
+                state = "completed" if row["completed"] else "cancelled"
+                result = {
+                    "ok": False,
+                    "error": f"Reminder is already {state}",
+                    "reminder_id": reminder_id,
+                }
+            elif action == "snooze" and due_at is None:
+                result = {
+                    "ok": False,
+                    "error": "A new due time is required",
+                    "reminder_id": reminder_id,
+                }
+            else:
+                if action == "cancel":
+                    connection.execute(
+                        "UPDATE reminders SET cancelled_at = ?, updated_at = ? "
+                        "WHERE id = ? AND device_id = ?",
+                        (now.isoformat(), now.isoformat(), reminder_id, device_id),
+                    )
+                elif action == "complete":
+                    connection.execute(
+                        "UPDATE reminders SET completed = 1, completed_at = ?, "
+                        "updated_at = ? WHERE id = ? AND device_id = ?",
+                        (now.isoformat(), now.isoformat(), reminder_id, device_id),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE reminders SET due_at = ?, delivered_at = NULL, "
+                        "delivery_attempted_at = NULL, delivery_attempts = 0, "
+                        "updated_at = ? WHERE id = ? AND device_id = ?",
+                        (due_at.isoformat(), now.isoformat(), reminder_id, device_id),
+                    )
+                updated = connection.execute(
+                    "SELECT * FROM reminders WHERE id = ?", (reminder_id,)
+                ).fetchone()
+                result = {
+                    "ok": True,
+                    "action": action,
+                    "reminder": self._from_row(updated).model_dump(mode="json"),
+                }
+
+            connection.execute(
+                "INSERT INTO reminder_actions "
+                "(idempotency_key, reminder_id, device_id, action, result_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    idempotency_key,
+                    reminder_id,
+                    device_id,
+                    action,
+                    json.dumps(result),
+                    now.isoformat(),
+                ),
+            )
+            connection.commit()
+        return result
 
     def conversation(self, device_id: str, limit: int = 10) -> list[dict[str, Any]]:
         with closing(self._connect()) as connection:

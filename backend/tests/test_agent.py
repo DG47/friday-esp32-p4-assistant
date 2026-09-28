@@ -3,7 +3,7 @@ import unittest
 import sqlite3
 from contextlib import closing
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -272,6 +272,46 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.pending()[0].text, "prepare")
         self.assertEqual(self.store.pending()[0].device_id, "reminder-device")
 
+    async def test_model_can_cancel_an_exact_reminder_after_confirmation(self):
+        reminder = self.store.create(
+            "prepare the demo",
+            datetime.now(timezone.utc) + timedelta(hours=1),
+            device_id="model-cancel-device",
+        )
+        provider = FakeToolProvider(
+            [
+                ProviderTurn(
+                    tool_calls=[
+                        ToolCall(
+                            id="cancel-call",
+                            name="cancel_reminder",
+                            arguments={"reminder_id": reminder.id},
+                        )
+                    ]
+                )
+            ]
+        )
+
+        with patch.object(self.agent.providers, "select", return_value=provider):
+            requested = await self.agent.handle(
+                "model-cancel-device",
+                "Cancel my demo reminder",
+                request_id="model-cancel-request",
+            )
+        confirmed = await self.agent.handle(
+            "model-cancel-device", "yes", request_id="model-cancel-confirm"
+        )
+
+        self.assertIn("prepare the demo", requested.surface.subtitle)
+        self.assertIn("cancelled", confirmed.text)
+        self.assertEqual(self.store.active("model-cancel-device"), [])
+        tool_names = {
+            tool["function"]["name"] for tool in provider.requests[0]["tools"]
+        }
+        self.assertIn("cancel_reminder", tool_names)
+        self.assertIn("snooze_reminder", tool_names)
+        self.assertIn("complete_reminder", tool_names)
+
     async def test_reminder_tool_is_idempotent_for_a_retried_request(self):
         def provider():
             return FakeToolProvider(
@@ -346,6 +386,140 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
             [item.text for item in self.store.pending(device_id="multi-device")],
             ["prepare", "leave"],
         )
+
+    async def test_mock_cancel_requires_confirmation_and_survives_restart(self):
+        reminder = self.store.create(
+            "prepare slides",
+            datetime.now(timezone.utc) + timedelta(hours=1),
+            device_id="cancel-reminder-device",
+        )
+
+        reply = await self.agent.handle(
+            "cancel-reminder-device",
+            "Cancel the prepare slides reminder",
+            request_id="cancel-reminder-request",
+        )
+        self.assertEqual(reply.surface.title, "Confirmation required")
+        self.assertEqual(len(self.store.active("cancel-reminder-device")), 1)
+
+        restarted = FridayAgent(
+            self.settings, ReminderStore(self.settings.assistant_database_path)
+        )
+        confirmed = await restarted.handle(
+            "cancel-reminder-device", "yes", request_id="cancel-reminder-confirm"
+        )
+
+        self.assertIn("cancelled", confirmed.text)
+        self.assertEqual(self.store.active("cancel-reminder-device"), [])
+        with closing(
+            sqlite3.connect(self.settings.assistant_database_path)
+        ) as connection:
+            cancelled_at = connection.execute(
+                "SELECT cancelled_at FROM reminders WHERE id = ?", (reminder.id,)
+            ).fetchone()[0]
+        self.assertIsNotNone(cancelled_at)
+
+    async def test_mock_complete_removes_reminder_from_active_list(self):
+        reminder = self.store.create(
+            "submit expenses",
+            datetime.now(timezone.utc) + timedelta(hours=1),
+            device_id="complete-device",
+        )
+
+        await self.agent.handle(
+            "complete-device",
+            "Mark the submit expenses reminder complete",
+            request_id="complete-request",
+        )
+        reply = await self.agent.handle(
+            "complete-device", "yes", request_id="complete-confirm"
+        )
+
+        self.assertIn("complete", reply.text)
+        self.assertEqual(self.store.active("complete-device"), [])
+        with closing(
+            sqlite3.connect(self.settings.assistant_database_path)
+        ) as connection:
+            completed, completed_at = connection.execute(
+                "SELECT completed, completed_at FROM reminders WHERE id = ?",
+                (reminder.id,),
+            ).fetchone()
+        self.assertEqual(completed, 1)
+        self.assertIsNotNone(completed_at)
+
+    async def test_mock_snooze_resets_delivery_and_moves_due_time(self):
+        now = datetime.now(timezone.utc)
+        reminder = self.store.create(
+            "call the dentist", now - timedelta(minutes=1), device_id="snooze-device"
+        )
+        self.store.mark_delivered(reminder.id, "snooze-device", now)
+
+        await self.agent.handle(
+            "snooze-device",
+            "Snooze the call the dentist reminder for 20 minutes",
+            request_id="snooze-request",
+        )
+        reply = await self.agent.handle(
+            "snooze-device", "yes", request_id="snooze-confirm"
+        )
+
+        snoozed = self.store.active("snooze-device")[0]
+        self.assertIn("snoozed", reply.text)
+        self.assertIsNone(snoozed.delivered_at)
+        self.assertGreater(snoozed.due_at.timestamp(), now.timestamp() + 19 * 60)
+
+    async def test_mock_ambiguous_reminder_action_does_not_request_confirmation(self):
+        due_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        self.store.create("prepare slides", due_at, device_id="ambiguous-device")
+        self.store.create("prepare notes", due_at, device_id="ambiguous-device")
+
+        reply = await self.agent.handle(
+            "ambiguous-device", "Cancel my reminder", request_id="ambiguous-request"
+        )
+
+        self.assertIn("multiple matches", reply.text)
+        self.assertIsNone(self.store.pending_confirmation("ambiguous-device"))
+        self.assertEqual(len(self.store.active("ambiguous-device")), 2)
+
+        selected = await self.agent.handle(
+            "ambiguous-device",
+            "reminder 2",
+            request_id="ambiguous-selection",
+        )
+
+        self.assertEqual(selected.surface.title, "Confirmation required")
+        self.assertIn("prepare notes", selected.surface.subtitle)
+        self.assertEqual(len(self.store.active("ambiguous-device")), 2)
+
+    async def test_reminder_mutation_is_device_scoped_and_idempotent(self):
+        reminder = self.store.create(
+            "private task",
+            datetime.now(timezone.utc) + timedelta(hours=1),
+            device_id="owner-device",
+        )
+
+        rejected = self.store.mutate_reminder(
+            reminder.id,
+            "other-device",
+            "cancel",
+            idempotency_key="wrong-device-action",
+        )
+        first = self.store.mutate_reminder(
+            reminder.id,
+            "owner-device",
+            "cancel",
+            idempotency_key="stable-action",
+        )
+        replay = self.store.mutate_reminder(
+            reminder.id,
+            "owner-device",
+            "cancel",
+            idempotency_key="stable-action",
+        )
+
+        self.assertFalse(rejected["ok"])
+        self.assertTrue(first["ok"])
+        self.assertEqual(replay, first)
 
     async def test_ollama_provider_sends_personality_and_prompt(self):
         response = MagicMock()

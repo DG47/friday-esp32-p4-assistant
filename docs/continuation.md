@@ -106,17 +106,22 @@ Backend and simulator:
   make enqueue and reminder creation idempotent. Queued or offline results older
   than five minutes become `expired`/`late` and emit `agent_stale` instead of an
   outdated answer.
-- Reminder creation is now a consequential action. Friday stores the exact
-  requested action, asks for `yes` or `no`, survives a backend restart while
-  waiting, and executes only the confirmed arguments. Confirmations expire
-  after five minutes and abandoned executions can be reclaimed idempotently.
+- Reminder creation, cancellation, completion, and snoozing are consequential
+  actions. Friday stores the exact device-scoped action, names the selected
+  reminder in the confirmation, asks for `yes` or `no`, survives a backend
+  restart while waiting, and executes only the confirmed arguments. Ambiguous
+  mock-mode matches require clarification instead of guessing. Confirmations
+  expire after five minutes and abandoned executions can be reclaimed
+  idempotently. A durable action ledger makes state transitions replay-safe;
+  snoozing resets acknowledgement and retry state for the new due time, while
+  cancelled and completed reminders are never scheduled again.
 - A background scheduler atomically claims durable reminders and sends
   `reminder.alert` only to firmware advertising `reminder_ack`. It retries after
   disconnect or a missing acknowledgement at a configurable bounded cadence
   and records delivery only when a user tap makes firmware return
   `reminder.ack`. Firmware honors the 60-second surface expiry and returns to
   idle without acknowledging an untouched alert.
-- Verification for this hardening milestone now passes 59 backend unit tests,
+- Verification for this hardening milestone now passes 67 backend unit tests,
   a live Ollama tool turn, and an ESP-IDF build/flash/boot. On the physical P3A
   at `192.168.4.46`, an untouched test reminder expired to idle, remained
   pending in SQLite, and was rendered again after the 90-second retry interval.

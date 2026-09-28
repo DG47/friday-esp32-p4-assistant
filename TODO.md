@@ -28,7 +28,7 @@ P3A has been tested.
 
 ## Reminders
 
-- [ ] Add cancel, snooze, and complete reminder tools.
+- [x] Add cancel, snooze, and complete reminder tools.
 - [x] Honor `expires_ms` on physical-device surfaces and return expired alerts
   to idle.
 - [x] Treat `reminder.ack` as user acknowledgement, not merely receipt; require
