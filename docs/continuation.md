@@ -128,6 +128,17 @@ Backend and simulator:
   A subsequent physical tap produced `Reminder 12 acknowledged by touch` in
   the device log, returned the UI to idle, and set `delivered_at` in SQLite.
   The test reminder was then removed.
+- The complete reminder lifecycle was physically exercised with reminder 13 on
+  2026-09-28. The authenticated Ollama path created it after an exact persisted
+  confirmation, the P3A rendered the 4:46 PM alert, snoozing reset its delivery
+  state and moved it to 4:48 PM, and the P3A rendered the rescheduled alert.
+  Completion then persisted `completed=1` and `completed_at`, rendered the final
+  confirmation on the device, and suppressed the former 90-second retry; the
+  delivery-attempt count remained one. Two transient `transport_poll_write(0)`
+  disconnects occurred during the extended observation, and the device
+  reauthenticated automatically each time. Treat that recurrence as an
+  operational signal for the existing metrics/load-failure roadmap item rather
+  than evidence of a lost reminder transition.
 
 Discovery and pairing milestone added on 2026-09-28:
 

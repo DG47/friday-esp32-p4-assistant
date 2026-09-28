@@ -179,7 +179,11 @@ and retry path was also verified on the physical P3A: the device rendered an
 alert, returned to idle after 60 seconds without falsely acknowledging it, and
 rendered the bounded 90-second retry. A later physical tap sent
 `reminder.ack`, returned the UI to idle, and recorded delivery in SQLite. The
-tap-to-talk → local
+full lifecycle was subsequently verified on the physical display: Friday
+rendered an exact create confirmation, alerted at the original due time,
+rendered and confirmed a two-minute snooze, alerted again at the new due time,
+then rendered and confirmed completion. The completed reminder did not retry.
+The tap-to-talk → local
 Whisper → Ollama → display loop was confirmed by the user on the physical P3A.
 The automatic VAD endpoint was also confirmed on the physical P3A through a
 complete one-tap voice turn without a WebSocket drop. LAN discovery, first
