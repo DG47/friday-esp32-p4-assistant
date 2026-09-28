@@ -58,7 +58,9 @@ PORT=/dev/cu.usbmodem5AE60376951 make firmware-monitor
     faster-whisper backend for exact `Friday` detection. A physical test
     completed wake detection, speech capture, automatic endpointing,
     transcription, and the assistant path. Touch remains a fallback.
-12. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
+12. Done: the physical P3A received and rendered `reminder.alert`, returned
+    `reminder.ack`, and the backend recorded delivery after one attempt.
+13. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
 
 ## First-boot Wi-Fi setup
 

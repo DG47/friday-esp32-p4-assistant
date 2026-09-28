@@ -42,7 +42,7 @@ Firmware and networking:
   credentials the setup network is `Friday-Setup`, password `fridaysetup`, at
   `http://192.168.4.1`.
 - Credentials are stored only in device NVS. They are not in this repository.
-- At the final check, the board joined the LAN at `192.168.4.33`; this is a DHCP
+- At the final check, the board joined the LAN at `192.168.4.46`; this is a DHCP
   address and must not be treated as permanent.
 - A local factory flash backup exists only in ignored `work/`; it is intentionally
   not uploaded because it may contain device-specific state.
@@ -51,10 +51,8 @@ Firmware and networking:
   touch or wake-word activation, and renders backend state, surface, tool,
   error, and assistant-text messages. It reconnects after both transport
   failures and a clean backend shutdown. This was flashed and verified on the
-  real board. The 2026-09-28 build was flashed and boot-verified with this new
-  address, but the board had no saved credentials and entered factory setup
-  mode; reconnect it to Wi-Fi before claiming the newest reminder-ack path is
-  physically verified end to end.
+  real board. The 2026-09-28 build was flashed, booted, provisioned onto the
+  LAN, and reconnected to the backend with this address.
 - Dynamic labels are re-anchored after every text change. This matters in LVGL:
   labels resize to their content and otherwise retain coordinates calculated
   for the previous size, which can place response text partly off-screen.
@@ -89,9 +87,10 @@ Backend and simulator:
   disconnect or a missing acknowledgement and records delivery only when the
   firmware returns `reminder.ack`.
 - Verification for this hardening milestone passed 33 backend unit tests, a
-  live Ollama tool turn, and an ESP-IDF build/flash/boot. The final physical
-  reminder acknowledgement remains pending because the freshly booted board is
-  in factory Wi-Fi setup mode.
+  live Ollama tool turn, and an ESP-IDF build/flash/boot. A uniquely identified
+  due reminder was delivered to the physical P3A at `192.168.4.46`; serial logs
+  showed `reminder.alert` and the alert state, while SQLite recorded its
+  `reminder.ack` after exactly one delivery attempt. The test row was removed.
 
 Voice-loop implementation added on 2026-09-25:
 

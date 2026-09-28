@@ -113,11 +113,11 @@ The connected serial device is expected to look like
 `/dev/cu.usbmodem...`. Firmware setup instructions are in
 [`firmware/README.md`](firmware/README.md). The native display/touch firmware
 has been flashed and boot-verified on the connected ESP32-P4 revision 1.0. The
-board has joined Wi-Fi successfully in earlier physical tests and its microphone
-capture was verified with continuously changing, nonzero audio samples. After
-the latest flash it entered factory Wi-Fi setup mode, so the new reminder-alert
-acknowledgement path is build/boot tested but still awaits a joined-network
-end-to-end check. The tap-to-talk → local
+board has joined Wi-Fi successfully and its microphone capture was verified
+with continuously changing, nonzero audio samples. The reminder-alert path was
+also verified end to end on the physical P3A: the device rendered the alert and
+acknowledged it, and the backend recorded delivery after one attempt. The
+tap-to-talk → local
 Whisper → Ollama → display loop was confirmed by the user on the physical P3A.
 The automatic VAD endpoint was also confirmed on the physical P3A through a
 complete one-tap voice turn without a WebSocket drop.
