@@ -112,6 +112,9 @@ Backend and simulator:
   a live Ollama tool turn, and an ESP-IDF build/flash/boot. On the physical P3A
   at `192.168.4.46`, an untouched test reminder expired to idle, remained
   pending in SQLite, and was rendered again after the 90-second retry interval.
+  A subsequent physical tap produced `Reminder 12 acknowledged by touch` in
+  the device log, returned the UI to idle, and set `delivered_at` in SQLite.
+  The test reminder was then removed.
 
 Discovery and pairing milestone added on 2026-09-28:
 

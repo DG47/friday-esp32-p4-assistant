@@ -61,7 +61,8 @@ PORT=/dev/cu.usbmodem5AE60376951 make firmware-monitor
 12. Done: the physical P3A received and rendered `reminder.alert`, left it
     pending when untouched, returned to idle after its 60-second expiry, and
     rendered the backend's 90-second retry. A tap is the only action that sends
-    `reminder.ack`.
+    `reminder.ack`; that tap and the resulting persisted acknowledgement were
+    verified on the physical device.
 13. Done: the firmware discovered the backend over UDP, enrolled once during a
     locally opened pairing window, reused its NVS identity after reflashing,
     and authenticated again after a live backend restart with pairing closed.

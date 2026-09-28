@@ -31,7 +31,7 @@ P3A has been tested.
 - [ ] Add cancel, snooze, and complete reminder tools.
 - [x] Honor `expires_ms` on physical-device surfaces and return expired alerts
   to idle.
-- [ ] Treat `reminder.ack` as user acknowledgement, not merely receipt; require
+- [x] Treat `reminder.ack` as user acknowledgement, not merely receipt; require
   a tap before marking a reminder seen.
 - [x] Add a retry/expiry policy so permanently unacknowledged reminders do not
   retry forever.
