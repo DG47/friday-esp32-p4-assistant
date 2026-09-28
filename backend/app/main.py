@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -16,7 +17,9 @@ from .agent_jobs import AgentJobStore, AgentJobWorker
 from .audio_session import AudioSession, AudioSessionError
 from .config import get_settings
 from .db import ReminderStore
+from .device_auth import DeviceCredentialStore
 from .device_hub import DeviceHub
+from .discovery import FridayDiscoveryProtocol
 from .reminder_scheduler import ReminderScheduler
 from .stt import TranscriptionError, create_transcriber
 from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
@@ -26,6 +29,7 @@ settings = get_settings()
 store = ReminderStore(settings.assistant_database_path)
 agent = FridayAgent(settings, store)
 job_store = AgentJobStore(settings.assistant_database_path)
+credential_store = DeviceCredentialStore(settings.assistant_database_path)
 transcriber = create_transcriber(settings)
 static_dir = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
@@ -40,6 +44,21 @@ job_worker = AgentJobWorker(
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    discovery_transport: asyncio.DatagramTransport | None = None
+    try:
+        loop = asyncio.get_running_loop()
+        transport, _ = await loop.create_datagram_endpoint(
+            lambda: FridayDiscoveryProtocol(settings.assistant_public_port),
+            local_addr=("0.0.0.0", settings.assistant_discovery_port),
+            allow_broadcast=True,
+        )
+        discovery_transport = transport  # type: ignore[assignment]
+        logger.info(
+            "Friday discovery listening on UDP %s",
+            settings.assistant_discovery_port,
+        )
+    except OSError as error:
+        logger.warning("Friday discovery unavailable: %s", error)
     tasks = [
         asyncio.create_task(
             reminder_scheduler.run(), name="friday-reminder-scheduler"
@@ -49,6 +68,8 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        if discovery_transport is not None:
+            discovery_transport.close()
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -58,6 +79,15 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Friday Assistant", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+def is_local_host(host: str | None) -> bool:
+    if host in {"localhost", "testclient"}:
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
 
 
 async def handle_utterance(
@@ -97,12 +127,24 @@ async def reminders() -> list[dict]:
     return [item.model_dump(mode="json") for item in store.pending()]
 
 
+@app.post("/api/devices/pairing-window")
+async def open_pairing_window(request: Request) -> dict[str, str]:
+    if not is_local_host(request.client.host if request.client else None):
+        raise HTTPException(status_code=403, detail="Pairing can only start locally")
+    if request.headers.get("x-friday-pairing") != "open":
+        raise HTTPException(status_code=400, detail="Pairing confirmation header required")
+    expires_at = credential_store.open_pairing_window()
+    logger.info("Device pairing window opened until %s", expires_at.isoformat())
+    return {"status": "pairing", "expires_at": expires_at.isoformat()}
+
+
 @app.websocket("/ws/device/{device_id}")
 async def device_socket(websocket: WebSocket, device_id: str) -> None:
     audio = AudioSession(max_seconds=settings.stt_max_seconds)
     wake_audio = WakeAudioSession()
     wake_enabled = False
     wake_probe_task: asyncio.Task[None] | None = None
+    registered = False
 
     async def detect_wake_word(pcm: bytes) -> None:
         nonlocal wake_enabled
@@ -123,14 +165,12 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                 device_id, {"type": "wake.detected", "wake_word": "Friday"}
             )
 
-    await hub.connect(device_id, websocket)
+    await websocket.accept()
     await websocket.send_json(
         {
-            "type": "ready",
+            "type": "hello.required",
             "protocol": 1,
             "device_id": device_id,
-            "state": "idle",
-            "surface": {"kind": "ambient", "title": "Friday"},
         }
     )
 
@@ -142,6 +182,13 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
 
             binary = event.get("bytes")
             if binary is not None:
+                if not registered:
+                    await send_error(
+                        websocket,
+                        "authentication_required",
+                        "Send an authenticated hello before device data",
+                    )
+                    continue
                 if audio.active:
                     try:
                         audio.append(binary)
@@ -176,11 +223,45 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     for item in message.get("capabilities", [])
                     if isinstance(item, str)
                 }
-                hub.set_capabilities(device_id, websocket, capabilities)
+                if not registered:
+                    client_host = websocket.client.host if websocket.client else None
+                    auth_status = "local" if is_local_host(client_host) else credential_store.authorize(
+                        device_id, str(message.get("device_token", ""))
+                    )
+                    if auth_status is None:
+                        await send_error(
+                            websocket,
+                            "pairing_required",
+                            "Open a local pairing window, then reconnect Friday",
+                        )
+                        await websocket.close(code=1008)
+                        return
+                    hub.register(device_id, websocket, capabilities)
+                    registered = True
+                    logger.info(
+                        "Device %s authenticated via %s", device_id, auth_status
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "ready",
+                            "protocol": 1,
+                            "device_id": device_id,
+                            "state": "idle",
+                            "surface": {"kind": "ambient", "title": "Friday"},
+                        }
+                    )
+                else:
+                    hub.set_capabilities(device_id, websocket, capabilities)
                 wake_audio.reset()
                 wake_enabled = transcriber is not None
                 await hub.broadcast(device_id, {"type": "state", "state": "idle"})
                 await job_worker.deliver_pending(device_id)
+            elif not registered:
+                await send_error(
+                    websocket,
+                    "authentication_required",
+                    "Send hello before other messages",
+                )
             elif message_type == "activate":
                 wake_enabled = False
                 wake_audio.reset()
@@ -276,4 +357,5 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
     finally:
         if wake_probe_task is not None and not wake_probe_task.done():
             wake_probe_task.cancel()
-        hub.disconnect(device_id, websocket)
+        if registered:
+            hub.disconnect(device_id, websocket)

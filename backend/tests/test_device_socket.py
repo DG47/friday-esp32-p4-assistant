@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.agent_jobs import AgentJob, AgentJobStore
 from app.db import ReminderStore
+from app.device_auth import DeviceCredentialStore
 from app.main import app
 
 
@@ -32,12 +33,14 @@ class DeviceSocketTests(unittest.TestCase):
         database_path = Path(self.temp_dir.name) / "friday.db"
         self.reminder_store = ReminderStore(database_path)
         self.job_store = AgentJobStore(database_path)
+        self.credential_store = DeviceCredentialStore(database_path)
         self.patchers = [
             patch("app.main.store", self.reminder_store),
             patch("app.main.agent.store", self.reminder_store),
             patch("app.main.reminder_scheduler.store", self.reminder_store),
             patch("app.main.job_store", self.job_store),
             patch("app.main.job_worker.store", self.job_store),
+            patch("app.main.credential_store", self.credential_store),
         ]
         for patcher in self.patchers:
             patcher.start()
@@ -46,6 +49,17 @@ class DeviceSocketTests(unittest.TestCase):
         for patcher in reversed(self.patchers):
             patcher.stop()
         self.temp_dir.cleanup()
+
+    def authenticate(self, socket, capabilities=None, token=None):
+        self.assertEqual(socket.receive_json()["type"], "hello.required")
+        message = {"type": "hello", "capabilities": capabilities or []}
+        if token is not None:
+            message["device_token"] = token
+        socket.send_json(message)
+        self.assertEqual(socket.receive_json()["type"], "ready")
+        self.assertEqual(
+            socket.receive_json(), {"type": "state", "state": "idle"}
+        )
 
     def test_utterance_is_accepted_without_waiting_for_the_agent(self):
         queued = AgentJob(
@@ -58,7 +72,7 @@ class DeviceSocketTests(unittest.TestCase):
         with patch("app.main.job_store.enqueue", return_value=queued):
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/device/queue-test") as socket:
-                    self.assertEqual(socket.receive_json()["type"], "ready")
+                    self.authenticate(socket)
                     socket.send_json(
                         {
                             "type": "utterance",
@@ -78,11 +92,7 @@ class DeviceSocketTests(unittest.TestCase):
         with patch("app.main.store.mark_delivered") as mark_delivered:
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/device/ack-test") as socket:
-                    self.assertEqual(socket.receive_json()["type"], "ready")
-                    socket.send_json(
-                        {"type": "hello", "capabilities": ["reminder_ack"]}
-                    )
-                    self.assertEqual(socket.receive_json()["type"], "state")
+                    self.authenticate(socket, ["reminder_ack"])
                     socket.send_json({"type": "reminder.ack", "reminder_id": 42})
                     socket.send_json({"type": "unsupported"})
                     self.assertEqual(socket.receive_json()["type"], "error")
@@ -94,7 +104,7 @@ class DeviceSocketTests(unittest.TestCase):
         with patch("app.main.transcriber", transcriber):
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/device/wake-test") as socket:
-                    self.assertEqual(socket.receive_json()["type"], "ready")
+                    self.authenticate(socket)
                     socket.send_json({"type": "wake.start"})
                     sample = (5000).to_bytes(2, "little", signed=True)
                     socket.send_bytes(sample * 36000)
@@ -113,7 +123,7 @@ class DeviceSocketTests(unittest.TestCase):
         ):
             with TestClient(app) as client:
                 with client.websocket_connect("/ws/device/voice-test") as socket:
-                    self.assertEqual(socket.receive_json()["type"], "ready")
+                    self.authenticate(socket)
                     socket.send_json(
                         {
                             "type": "audio.start",
@@ -140,6 +150,39 @@ class DeviceSocketTests(unittest.TestCase):
         self.assertEqual(transcript["text"], "What's next?")
         self.assertIn("next event", reply["text"])
         self.assertEqual(transcriber.pcm, b"\x00\x00" * 3200)
+
+    def test_physical_device_requires_pairing_then_reuses_its_identity(self):
+        token = "e" * 64
+        self.credential_store.open_pairing_window()
+        with patch("app.main.is_local_host", return_value=False):
+            with TestClient(app) as client:
+                with client.websocket_connect("/ws/device/friday-p3a") as socket:
+                    self.authenticate(socket, ["display"], token)
+
+                with client.websocket_connect("/ws/device/friday-p3a") as socket:
+                    self.authenticate(socket, ["display"], token)
+
+                with client.websocket_connect("/ws/device/friday-p3a") as socket:
+                    self.assertEqual(socket.receive_json()["type"], "hello.required")
+                    socket.send_json(
+                        {
+                            "type": "hello",
+                            "capabilities": ["display"],
+                            "device_token": "f" * 64,
+                        }
+                    )
+                    self.assertEqual(socket.receive_json()["code"], "pairing_required")
+
+    def test_pairing_window_requires_local_confirmation_header(self):
+        with TestClient(app) as client:
+            self.assertEqual(client.post("/api/devices/pairing-window").status_code, 400)
+            response = client.post(
+                "/api/devices/pairing-window",
+                headers={"X-Friday-Pairing": "open"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "pairing")
 
 
 if __name__ == "__main__":

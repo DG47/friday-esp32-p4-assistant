@@ -7,12 +7,37 @@ idle wake-word detection or the active turn on that same connection.
 Multiple clients may join the same `device_id`. Server messages are broadcast
 to every connected peer for that device, allowing the browser input/debug view
 and the physical display to stay synchronized. The default physical device ID
-is `friday-p3a`.
+is `friday-p3a`. Loopback clients support the browser simulator. A LAN client
+must authenticate before it is registered or allowed to send audio/control
+data.
+
+## Discovery and pairing
+
+After joining Wi-Fi, firmware broadcasts `FRIDAY_DISCOVER_V1 <device_id>` on
+UDP port 8334. The backend replies directly with protocol version 1 and the
+WebSocket URL for the requesting device. Discovery runs at boot; firmware uses
+an optional URL saved during setup when present, or its compile-time URL only
+when discovery fails.
+
+On first boot, firmware creates a random 32-byte token and stores it in NVS.
+The backend stores only its SHA-256 hash. An unpaired LAN device is accepted
+only during the two-minute, loopback-opened pairing window:
+
+```sh
+curl -X POST -H 'X-Friday-Pairing: open' \
+  http://127.0.0.1:8000/api/devices/pairing-window
+```
+
+The window closes as soon as one device enrolls. The stored identity is reused
+after device and backend restarts. This authenticates a device on a trusted
+LAN, but `ws://` does not protect the token or audio from network observers;
+use `wss://` and a secure provisioning/rotation design before exposure to an
+untrusted network.
 
 ## Client messages
 
 ```json
-{"type":"hello","protocol":1,"capabilities":["display","touch","reminder_ack"]}
+{"type":"hello","protocol":1,"device_token":"64 lowercase hex characters","capabilities":["display","touch","reminder_ack"]}
 {"type":"wake.start","format":"pcm_s16le","sample_rate":12000,"channels":1}
 {"type":"activate","source":"touch"}
 {"type":"activate","source":"wake_word"}
@@ -41,6 +66,8 @@ turns from streaming forever. The capture boundary remains separate from STT.
 ## Server messages
 
 ```json
+{"type":"hello.required","protocol":1,"device_id":"friday-p3a"}
+{"type":"ready","protocol":1,"device_id":"friday-p3a","state":"idle","surface":{"kind":"ambient"}}
 {"type":"wake.detected","wake_word":"Friday"}
 {"type":"job.accepted","job_id":"7b1..."}
 {"type":"state","state":"thinking"}
@@ -51,6 +78,11 @@ turns from streaming forever. The capture boundary remains separate from STT.
 {"type":"reminder.alert","reminder_id":42,"text":"Reminder: prepare","surface":{"kind":"reminder","title":"Reminder","subtitle":"prepare"}}
 {"type":"error","code":"bad_message","message":"..."}
 ```
+
+The server sends `hello.required` immediately after accepting the WebSocket.
+The client must answer with `hello`. Only after successful authentication does
+the server register the connection and send `ready`; firmware does not stream
+idle audio or enable activation before that boundary.
 
 Utterances become durable agent jobs. Supplying a stable `request_id` makes
 retries idempotent; the server returns the corresponding `job.accepted` event

@@ -1,10 +1,10 @@
 # Architecture
 
 ```text
-P3A device / 720×720 simulator
+P3A device / loopback 720×720 simulator
   local touch, wake word, VAD, audio I/O
                  │
-                 │ WebSocket: control JSON + PCM audio frames
+                 │ UDP discovery, paired WebSocket control + PCM audio
                  ▼
 FastAPI realtime gateway
   audio-turn buffer ─ STT adapter ─ durable agent queue ─ tool-calling agent
@@ -24,13 +24,20 @@ FastAPI realtime gateway
 - Tools return structured data. The scene composer decides how to visualize it.
 - Consequential tools will require confirmation. Mock read-only tools do not.
 - Audio, STT, LLM, TTS, and tools are independent provider interfaces.
+- LAN hardware generates a persistent random identity in NVS and must enroll
+  during a locally opened pairing window. The backend stores only the token
+  hash. This is device authentication, not transport confidentiality: the
+  current `ws://` development path still assumes a trusted LAN.
 - VAD endpointing runs on the ESP32. The current wake-word implementation sends
   idle microphone audio to the trusted local backend; moving exact `Friday`
   detection on-device remains the privacy target.
 
 ## MVP sequence
 
-1. Client sends `hello`; server sends ambient state and capabilities.
+1. Firmware discovers the local backend (or uses its saved override), receives
+   `hello.required`, and sends an authenticated `hello`. The server registers
+   it only after the saved identity verifies, then sends `ready` and the
+   ambient state. Loopback simulator clients bypass hardware pairing.
 2. Client either sends a recognized text utterance or brackets binary PCM
    frames with `audio.start` and `audio.end`. The STT adapter emits the same
    text-utterance boundary used by typed input.

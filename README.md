@@ -36,6 +36,10 @@ scene generation.
 - provider-neutral speech transcription with local faster-whisper `base.en`
   as the default keyless adapter
 - first-boot Wi-Fi provisioning with host libraries matched to the factory C6
+- local UDP backend discovery with an optional setup-page WebSocket override
+- persistent per-device pairing: Friday generates its identity on-device,
+  while the backend stores only a hash and requires an explicit local pairing
+  window for first enrollment
 - physical-device WebSocket connection with automatic reconnect, touch
   activation, and server-driven states, surfaces, and Ollama responses
 - synchronized browser and P3A display sessions using the `friday-p3a` device ID
@@ -52,6 +56,17 @@ playback still requires the external speaker.
 1. For the already-installed local environment, run `make dev-local`. It listens
    on all local interfaces so the ESP32 can reach it over Wi-Fi. You can instead
    start Docker Desktop and run `make dev`.
+   On a device's first authenticated connection, open a two-minute pairing
+   window from the same Mac:
+
+   ```sh
+   curl -X POST -H 'X-Friday-Pairing: open' \
+     http://127.0.0.1:8000/api/devices/pairing-window
+   ```
+
+   Then boot or reconnect Friday. The window closes after the first device
+   enrolls. Later reconnects and backend restarts use the identity saved in the
+   device and do not require another pairing window.
 2. Open <http://localhost:8000>.
 3. Tap the orb and say or type: `What's next?`
 4. Continue with: `With who?`
@@ -94,11 +109,14 @@ completed response remains pending until a matching device reconnects.
 
 This is a hardened local prototype, not yet an internet-facing production
 service. The durable job/reminder paths now cover process restart, retry, and
-device disconnect scenarios, but production deployment still requires device
-authentication, TLS, secrets management, operational metrics/alerting, backup
-and retention policy, load/failure testing, and live validation of any selected
-cloud providers. Agent results also need a device-level acknowledgement if
-exactly-once presentation is required; reminder alerts already have one.
+device disconnect scenarios, and LAN device pairing now rejects unregistered
+clients. The current `ws://` transport does not keep the device token or audio
+confidential from a hostile LAN, so production deployment still requires TLS,
+secure provisioning/credential rotation, secrets management, operational
+metrics/alerting, backup and retention policy, load/failure testing, and live
+validation of any selected cloud providers. Agent results also need a
+device-level acknowledgement if exactly-once presentation is required;
+reminder alerts already have one.
 
 ## Verify
 
@@ -120,7 +138,9 @@ acknowledged it, and the backend recorded delivery after one attempt. The
 tap-to-talk → local
 Whisper → Ollama → display loop was confirmed by the user on the physical P3A.
 The automatic VAD endpoint was also confirmed on the physical P3A through a
-complete one-tap voice turn without a WebSocket drop.
+complete one-tap voice turn without a WebSocket drop. LAN discovery, first
+pairing, identity persistence across a firmware reboot, and authenticated
+reconnection after a backend restart were also verified on the physical board.
 
 ## Repository map
 

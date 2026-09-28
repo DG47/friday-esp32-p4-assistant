@@ -3,19 +3,32 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "cJSON.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
+#include "nvs.h"
 
 #include "friday_state.h"
 #include "friday_ui.h"
+#include "friday_wifi.h"
 
 static const char *TAG = "friday_backend";
 #define FRIDAY_AUDIO_SEND_TIMEOUT_MS 1000
+#define FRIDAY_DEVICE_ID "friday-p3a"
+#define FRIDAY_BACKEND_URI_MAX 192
+#define FRIDAY_DEVICE_TOKEN_BYTES 32
+#define FRIDAY_DEVICE_TOKEN_LENGTH (FRIDAY_DEVICE_TOKEN_BYTES * 2)
+#define FRIDAY_DISCOVERY_ATTEMPTS 3
 
 static esp_websocket_client_handle_t client;
 static char *message_buffer;
@@ -23,6 +36,93 @@ static size_t message_size;
 static SemaphoreHandle_t send_lock;
 static volatile bool audio_active;
 static volatile bool wake_requested;
+static volatile bool backend_ready;
+static char backend_uri[FRIDAY_BACKEND_URI_MAX];
+static char device_token[FRIDAY_DEVICE_TOKEN_LENGTH + 1];
+
+static bool valid_backend_uri(const char *uri)
+{
+    return uri != NULL &&
+           (strncmp(uri, "ws://", 5) == 0 || strncmp(uri, "wss://", 6) == 0);
+}
+
+static esp_err_t load_or_create_device_token(void)
+{
+    nvs_handle_t handle;
+    ESP_RETURN_ON_ERROR(nvs_open("friday_auth", NVS_READWRITE, &handle), TAG,
+                        "Could not open device identity");
+    size_t token_size = sizeof(device_token);
+    esp_err_t result = nvs_get_str(handle, "device_token", device_token, &token_size);
+    if (result == ESP_ERR_NVS_NOT_FOUND) {
+        uint8_t random_bytes[FRIDAY_DEVICE_TOKEN_BYTES];
+        static const char hex[] = "0123456789abcdef";
+        esp_fill_random(random_bytes, sizeof(random_bytes));
+        for (size_t index = 0; index < sizeof(random_bytes); index++) {
+            device_token[index * 2] = hex[random_bytes[index] >> 4];
+            device_token[index * 2 + 1] = hex[random_bytes[index] & 0x0f];
+        }
+        device_token[FRIDAY_DEVICE_TOKEN_LENGTH] = '\0';
+        result = nvs_set_str(handle, "device_token", device_token);
+        if (result == ESP_OK) {
+            result = nvs_commit(handle);
+        }
+    }
+    nvs_close(handle);
+    return result;
+}
+
+static bool discover_backend(char *uri, size_t uri_size)
+{
+    int discovery_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (discovery_socket < 0) {
+        return false;
+    }
+
+    int enabled = 1;
+    struct timeval timeout = {.tv_sec = 2, .tv_usec = 0};
+    setsockopt(discovery_socket, SOL_SOCKET, SO_BROADCAST, &enabled, sizeof(enabled));
+    setsockopt(discovery_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    struct sockaddr_in destination = {
+        .sin_family = AF_INET,
+        .sin_port = htons(CONFIG_FRIDAY_DISCOVERY_PORT),
+        .sin_addr.s_addr = htonl(INADDR_BROADCAST),
+    };
+    esp_netif_t *station = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info;
+    if (station != NULL && esp_netif_get_ip_info(station, &ip_info) == ESP_OK) {
+        destination.sin_addr.s_addr = ip_info.ip.addr | ~ip_info.netmask.addr;
+    }
+
+    char request[96];
+    snprintf(request, sizeof(request), "FRIDAY_DISCOVER_V1 %s", FRIDAY_DEVICE_ID);
+    bool found = false;
+    for (int attempt = 0; attempt < FRIDAY_DISCOVERY_ATTEMPTS && !found; attempt++) {
+        if (sendto(discovery_socket, request, strlen(request), 0,
+                   (struct sockaddr *)&destination, sizeof(destination)) < 0) {
+            continue;
+        }
+        char response[256] = {0};
+        int received = recvfrom(discovery_socket, response, sizeof(response) - 1,
+                                0, NULL, NULL);
+        if (received <= 0) {
+            continue;
+        }
+        response[received] = '\0';
+        cJSON *root = cJSON_Parse(response);
+        const cJSON *url = root != NULL
+                               ? cJSON_GetObjectItemCaseSensitive(root, "ws_url")
+                               : NULL;
+        if (cJSON_IsString(url) && valid_backend_uri(url->valuestring) &&
+            strlen(url->valuestring) < uri_size) {
+            strlcpy(uri, url->valuestring, uri_size);
+            found = true;
+        }
+        cJSON_Delete(root);
+    }
+    close(discovery_socket);
+    return found;
+}
 
 static int send_text(const char *message, TickType_t timeout)
 {
@@ -88,9 +188,13 @@ static void handle_message(const char *payload)
     ESP_LOGI(TAG, "Received backend message: %s", type);
 
     if (strcmp(type, "ready") == 0) {
+        backend_ready = true;
         friday_ui_set_backend("FRIDAY ONLINE");
         friday_ui_set_state(parse_state(json_string(root, "state")));
         handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
+        if (send_text("{\"type\":\"wake.start\"}", pdMS_TO_TICKS(1000)) < 0) {
+            ESP_LOGW(TAG, "Could not start Friday wake detection");
+        }
     } else if (strcmp(type, "state") == 0) {
         friday_ui_set_state(parse_state(json_string(root, "state")));
     } else if (strcmp(type, "wake.detected") == 0) {
@@ -164,17 +268,25 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
 
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED: {
-        const char hello[] =
+        backend_ready = false;
+        char hello[256];
+        int hello_length = snprintf(
+            hello, sizeof(hello),
             "{\"type\":\"hello\",\"protocol\":1,"
+            "\"device_token\":\"%s\","
             "\"capabilities\":[\"display\",\"touch\",\"microphone\","
-            "\"reminder_ack\"]}";
+            "\"reminder_ack\"]}",
+            device_token);
         ESP_LOGI(TAG, "Connected to Friday backend");
-        friday_ui_set_backend("FRIDAY ONLINE");
-        send_text(hello, pdMS_TO_TICKS(1000));
-        send_text("{\"type\":\"wake.start\"}", pdMS_TO_TICKS(1000));
+        friday_ui_set_backend("FRIDAY AUTHENTICATING");
+        if (hello_length <= 0 || (size_t)hello_length >= sizeof(hello) ||
+            send_text(hello, pdMS_TO_TICKS(1000)) < 0) {
+            ESP_LOGW(TAG, "Could not send authenticated hello");
+        }
         break;
     }
     case WEBSOCKET_EVENT_DISCONNECTED:
+        backend_ready = false;
         audio_active = false;
         wake_requested = false;
         ESP_LOGW(TAG, "Backend disconnected; automatic reconnect pending");
@@ -186,6 +298,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         }
         break;
     case WEBSOCKET_EVENT_ERROR:
+        backend_ready = false;
         ESP_LOGW(TAG, "Backend connection error");
         friday_ui_set_backend("FRIDAY OFFLINE");
         break;
@@ -194,10 +307,36 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     }
 }
 
-esp_err_t friday_backend_start(void)
+static void backend_start_task(void *argument)
 {
+    (void)argument;
+    if (!friday_wifi_wait_connected(portMAX_DELAY)) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_err_t saved_uri = friday_wifi_get_backend_uri(
+        backend_uri, sizeof(backend_uri));
+    if (saved_uri == ESP_OK && valid_backend_uri(backend_uri)) {
+        ESP_LOGI(TAG, "Using configured backend endpoint");
+    } else if (discover_backend(backend_uri, sizeof(backend_uri))) {
+        ESP_LOGI(TAG, "Discovered Friday backend on the local network");
+    } else {
+        strlcpy(backend_uri, CONFIG_FRIDAY_BACKEND_WS_URI, sizeof(backend_uri));
+        ESP_LOGW(TAG, "Discovery unavailable; using fallback backend endpoint");
+    }
+
+    esp_err_t token_result = load_or_create_device_token();
+    if (token_result != ESP_OK) {
+        ESP_LOGE(TAG, "Device identity unavailable: %s",
+                 esp_err_to_name(token_result));
+        friday_ui_set_backend("PAIRING ERROR");
+        vTaskDelete(NULL);
+        return;
+    }
+
     const esp_websocket_client_config_t config = {
-        .uri = CONFIG_FRIDAY_BACKEND_WS_URI,
+        .uri = backend_uri,
         .buffer_size = 2048,
         .enable_close_reconnect = true,
         .reconnect_timeout_ms = 3000,
@@ -206,19 +345,26 @@ esp_err_t friday_backend_start(void)
         .keep_alive_enable = true,
     };
 
+    ESP_LOGI(TAG, "Backend endpoint: %s", backend_uri);
+    client = esp_websocket_client_init(&config);
+    if (client == NULL ||
+        esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY,
+                                      websocket_event_handler, NULL) != ESP_OK ||
+        esp_websocket_client_start(client) != ESP_OK) {
+        ESP_LOGE(TAG, "Could not start WebSocket client");
+        friday_ui_set_backend("FRIDAY OFFLINE");
+    }
+    vTaskDelete(NULL);
+}
+
+esp_err_t friday_backend_start(void)
+{
     send_lock = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(send_lock != NULL, ESP_ERR_NO_MEM, TAG,
                         "Could not create WebSocket send lock");
-
-    ESP_LOGI(TAG, "Backend endpoint: %s", CONFIG_FRIDAY_BACKEND_WS_URI);
-    client = esp_websocket_client_init(&config);
-    ESP_RETURN_ON_FALSE(client != NULL, ESP_ERR_NO_MEM, TAG,
-                        "Could not create WebSocket client");
-    ESP_RETURN_ON_ERROR(
-        esp_websocket_register_events(client, WEBSOCKET_EVENT_ANY,
-                                      websocket_event_handler, NULL),
-        TAG, "Could not register WebSocket events");
-    return esp_websocket_client_start(client);
+    BaseType_t created = xTaskCreate(
+        backend_start_task, "friday_backend_start", 6144, NULL, 6, NULL);
+    return created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 bool friday_backend_toggle_audio(void)
@@ -233,7 +379,8 @@ bool friday_backend_toggle_audio(void)
 
 bool friday_backend_begin_audio(const char *source)
 {
-    if (client == NULL || !esp_websocket_client_is_connected(client)) {
+    if (!backend_ready || client == NULL ||
+        !esp_websocket_client_is_connected(client)) {
         ESP_LOGW(TAG, "Activation ignored while backend is offline");
         return false;
     }
@@ -297,7 +444,7 @@ esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count)
 
 esp_err_t friday_backend_send_idle_audio(const int16_t *samples, size_t sample_count)
 {
-    if (audio_active) {
+    if (audio_active || !backend_ready) {
         return ESP_ERR_INVALID_STATE;
     }
     return send_audio_binary(samples, sample_count);

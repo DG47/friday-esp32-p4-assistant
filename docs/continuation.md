@@ -42,17 +42,26 @@ Firmware and networking:
   credentials the setup network is `Friday-Setup`, password `fridaysetup`, at
   `http://192.168.4.1`.
 - Credentials are stored only in device NVS. They are not in this repository.
+- The setup portal accepts an optional backend WebSocket override. When it is
+  blank, firmware broadcasts discovery on UDP 8334 after joining Wi-Fi; the
+  backend replies with the correct interface address for that device. The
+  compile-time address is now only a fallback. Discovery happens at boot, so
+  reboot the device after a backend host address change.
+- Firmware generates a random 32-byte device token on first use and stores it
+  in the `friday_auth` NVS namespace without logging it. The backend retains
+  only its SHA-256 hash in SQLite. First enrollment requires a two-minute
+  pairing window opened from loopback with the documented confirmation header;
+  it closes after one device enrolls. Later reconnects verify the stored token.
 - At the final check, the board joined the LAN at `192.168.4.46`; this is a DHCP
   address and must not be treated as permanent.
 - A local factory flash backup exists only in ignored `work/`; it is intentionally
   not uploaded because it may contain device-specific state.
-- The physical firmware now targets
-  `ws://192.168.4.38:8000/ws/device/friday-p3a`, retries automatically, sends
-  touch or wake-word activation, and renders backend state, surface, tool,
-  error, and assistant-text messages. It reconnects after both transport
-  failures and a clean backend shutdown. This was flashed and verified on the
-  real board. The 2026-09-28 build was flashed, booted, provisioned onto the
-  LAN, and reconnected to the backend with this address.
+- The physical firmware now discovers
+  `ws://192.168.4.38:8000/ws/device/friday-p3a` on the current LAN, retries
+  automatically, sends touch or wake-word activation, and renders backend
+  state, surface, tool, error, and assistant-text messages. It waits for an
+  authenticated `ready` message before enabling activation or idle audio. It
+  reconnects after both transport failures and a clean backend shutdown.
 - Dynamic labels are re-anchored after every text change. This matters in LVGL:
   labels resize to their content and otherwise retain coordinates calculated
   for the previous size, which can place response text partly off-screen.
@@ -68,6 +77,10 @@ Backend and simulator:
 - The JSON WebSocket protocol is implemented at `/ws/device/{device_id}`.
   Multiple peers sharing an ID receive the same server messages; the browser
   and P3A use `friday-p3a` and were verified to stay synchronized.
+- LAN peers are not registered and cannot send device data until they answer
+  `hello.required` with a valid device token. Loopback connections retain a
+  simulator bypass. The pairing endpoint is loopback-only and also requires
+  `X-Friday-Pairing: open`, preventing an ordinary cross-site form submission.
 - The configured model now drives a provider-neutral tool loop with bounded
   per-device conversation history persisted in SQLite. Calendar reads, reminder creation, and
   reminder listing are structured tools; mock mode retains its deterministic
@@ -91,6 +104,29 @@ Backend and simulator:
   due reminder was delivered to the physical P3A at `192.168.4.46`; serial logs
   showed `reminder.alert` and the alert state, while SQLite recorded its
   `reminder.ack` after exactly one delivery attempt. The test row was removed.
+
+Discovery and pairing milestone added on 2026-09-28:
+
+- Forty backend tests pass, including token format/hash persistence, bounded
+  single-device pairing windows, correct-token reuse, wrong-token rejection,
+  WebSocket authentication order, pairing endpoint confirmation, and discovery
+  response validation.
+- A real UDP broadcast to the development Mac received the correct device URL
+  using the Mac's `192.168.4.38` LAN interface rather than loopback.
+- The final ESP-IDF build is 0x17d400 bytes with 81% of the app partition free.
+- The build was flashed to the physical P3A. With the pairing window closed,
+  the device joined at `192.168.4.46`, rediscovered the backend, received
+  `hello.required`, authenticated using its already-persisted token, received
+  `ready`, and entered idle. No pre-authentication audio was transmitted.
+- The backend was then stopped and restarted without reopening pairing. The
+  physical device retried automatically, authenticated with the same identity,
+  and returned to idle. SQLite still contained one paired device and a closed
+  pairing window after first enrollment.
+- This proves discovery, enrollment, token persistence, and authenticated
+  reconnect on the current trusted LAN. It does not prove confidentiality:
+  plaintext `ws://` permits a hostile LAN observer to capture the token/audio.
+  TLS plus secure credential rotation/revocation remains required before use
+  on an untrusted network.
 
 Voice-loop implementation added on 2026-09-25:
 
@@ -156,11 +192,10 @@ following remain:
 2. Replace mock calendar data with an authorized calendar integration.
 3. Add a true streaming/cloud STT adapter if lower latency is needed.
 4. Add TTS and interruption/barge-in after a speaker is attached.
-5. Move the compile-time backend address into provisioning or local discovery.
-6. Add authentication and transport security before using the service outside
-   a trusted LAN.
-7. Add metrics, alerting, backup/retention policy, and load/failure testing.
-8. Add device acknowledgement for completed agent results if exactly-once
+5. Add TLS plus device credential rotation/revocation before using the service
+   outside a trusted LAN; basic paired device identity is now implemented.
+6. Add metrics, alerting, backup/retention policy, and load/failure testing.
+7. Add device acknowledgement for completed agent results if exactly-once
    presentation is required; current result delivery is reconnect-safe but
    server-send acknowledged only.
 
@@ -170,6 +205,7 @@ From the repository root:
 
 ```sh
 make dev-local
+curl -X POST -H 'X-Friday-Pairing: open' http://127.0.0.1:8000/api/devices/pairing-window
 make test-local
 make smoke
 make firmware-build
@@ -195,6 +231,8 @@ build outputs, toolchains, or factory backup images.
 - `firmware/main/friday_wifi.c`: provisioning and station connection.
 - `firmware/main/friday_ui.c`: native display scene.
 - `backend/app/main.py`: FastAPI and WebSocket gateway.
+- `backend/app/device_auth.py`: hashed device identity and pairing window.
+- `backend/app/discovery.py`: local UDP discovery responder.
 - `backend/app/agent.py`: agent behavior, context, reminders, and personality.
 
 ## Product decisions already made

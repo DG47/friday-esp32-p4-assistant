@@ -60,7 +60,10 @@ PORT=/dev/cu.usbmodem5AE60376951 make firmware-monitor
     transcription, and the assistant path. Touch remains a fallback.
 12. Done: the physical P3A received and rendered `reminder.alert`, returned
     `reminder.ack`, and the backend recorded delivery after one attempt.
-13. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
+13. Done: the firmware discovered the backend over UDP, enrolled once during a
+    locally opened pairing window, reused its NVS identity after reflashing,
+    and authenticated again after a live backend restart with pairing closed.
+14. Attach an MX1.25 2-pin 8Ω/2W speaker before enabling ES8311 playback.
 
 ## First-boot Wi-Fi setup
 
@@ -70,10 +73,26 @@ With no saved credentials, the device creates this temporary setup network:
 - Password: `fridaysetup`
 - Setup page: `http://192.168.4.1`
 
-Submit the local Wi-Fi name and password in the setup page. The device stores
-them in its NVS partition, restarts, and switches to station mode. NVS
-encryption is not enabled in this MVP. After five failed connection attempts,
-the device clears the saved settings and returns to setup mode.
+Submit the local Wi-Fi name and password in the setup page. Leave the optional
+Backend WebSocket URL blank to use local discovery; enter a `ws://` or `wss://`
+URL only when a fixed override is required. The device stores the settings in
+its NVS partition, restarts, and switches to station mode. NVS encryption is
+not enabled in this MVP. After five failed connection attempts, the device
+clears the saved network settings and returns to setup mode.
+
+For a device that has not previously paired with this backend, start the
+backend, open a two-minute enrollment window locally, and boot/reconnect Friday:
+
+```sh
+curl -X POST -H 'X-Friday-Pairing: open' \
+  http://127.0.0.1:8000/api/devices/pairing-window
+```
+
+Friday generates its 32-byte device token on-device and never writes it to the
+log. The backend retains only a hash. Pairing closes after the first enrollment
+and normal reconnects require no operator action. Because the development URL
+uses plaintext `ws://`, use this only on a trusted LAN until TLS and secure
+credential lifecycle support are added.
 
 The P4 host libraries are deliberately pinned to `esp_hosted` 2.9.0 and
 `esp_wifi_remote` 1.2.5 to match the factory ESP32-C6 hosted firmware. This
@@ -84,7 +103,8 @@ without obtaining the matching board-specific image.
 The browser simulator is the source of truth for interaction behavior; the
 firmware renderer consumes the same scene/state protocol.
 
-The development backend URI is configured through `FRIDAY_BACKEND_WS_URI` and
-currently defaults to `ws://192.168.4.38:8000/ws/device/friday-p3a`. Rebuild and
-flash if the Mac's DHCP address changes. A later provisioning milestone should
-replace this compile-time address with discovery or an editable device setting.
+On each boot the firmware waits for Wi-Fi, then chooses the backend in this
+order: setup-page override, UDP discovery on port 8334, compile-time
+`FRIDAY_BACKEND_WS_URI` fallback. A Mac DHCP address change therefore needs a
+device reboot, not a firmware rebuild, as long as discovery traffic can cross
+the local network. The compile-time default remains available for recovery.

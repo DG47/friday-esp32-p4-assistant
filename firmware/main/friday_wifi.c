@@ -12,6 +12,7 @@
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "nvs.h"
 
@@ -20,11 +21,13 @@
 #define FRIDAY_SETUP_SSID "Friday-Setup"
 #define FRIDAY_SETUP_PASSWORD "fridaysetup"
 #define FRIDAY_MAX_RETRIES 5
+#define FRIDAY_WIFI_CONNECTED_BIT BIT0
 
 static const char *TAG = "friday_wifi";
 static httpd_handle_t setup_server;
 static bool has_credentials;
 static int retry_count;
+static EventGroupHandle_t wifi_events;
 
 static esp_err_t load_credentials(char *ssid, size_t ssid_size,
                                   char *password, size_t password_size)
@@ -46,7 +49,8 @@ static esp_err_t load_credentials(char *ssid, size_t ssid_size,
     return result;
 }
 
-static esp_err_t save_credentials(const char *ssid, const char *password)
+static esp_err_t save_credentials(const char *ssid, const char *password,
+                                  const char *backend_uri)
 {
     nvs_handle_t handle;
     ESP_RETURN_ON_ERROR(nvs_open("friday_wifi", NVS_READWRITE, &handle), TAG,
@@ -54,6 +58,14 @@ static esp_err_t save_credentials(const char *ssid, const char *password)
     esp_err_t result = nvs_set_str(handle, "ssid", ssid);
     if (result == ESP_OK) {
         result = nvs_set_str(handle, "password", password);
+    }
+    if (result == ESP_OK) {
+        result = backend_uri != NULL && backend_uri[0] != '\0'
+                     ? nvs_set_str(handle, "backend_uri", backend_uri)
+                     : nvs_erase_key(handle, "backend_uri");
+        if (result == ESP_ERR_NVS_NOT_FOUND) {
+            result = ESP_OK;
+        }
     }
     if (result == ESP_OK) {
         result = nvs_commit(handle);
@@ -89,6 +101,8 @@ static const char setup_page[] =
     "<p>Connect this device to your Wi-Fi. Credentials stay on the device.</p>"
     "<form method=post action=/configure><label>Wi-Fi name</label><input name=ssid maxlength=32 required>"
     "<label>Password</label><input name=password type=password maxlength=63>"
+    "<label>Backend WebSocket URL (optional)</label>"
+    "<input name=backend maxlength=191 placeholder='Auto-discover on local network'>"
     "<button>Connect Friday</button></form></body></html>";
 
 static void url_decode(char *destination, size_t destination_size, const char *source)
@@ -122,7 +136,7 @@ static bool form_value(const char *body, const char *key, char *value, size_t va
     start += strlen(pattern);
     const char *end = strchr(start, '&');
     size_t length = end == NULL ? strlen(start) : (size_t)(end - start);
-    char encoded[128];
+    char encoded[256];
     if (length >= sizeof(encoded)) {
         return false;
     }
@@ -140,12 +154,12 @@ static esp_err_t root_handler(httpd_req_t *request)
 
 static esp_err_t configure_handler(httpd_req_t *request)
 {
-    if (request->content_len <= 0 || request->content_len >= 256) {
+    if (request->content_len <= 0 || request->content_len >= 512) {
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid setup request");
         return ESP_FAIL;
     }
 
-    char body[256] = {0};
+    char body[512] = {0};
     int received = httpd_req_recv(request, body, request->content_len);
     if (received <= 0) {
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Could not read setup request");
@@ -155,13 +169,21 @@ static esp_err_t configure_handler(httpd_req_t *request)
 
     char ssid[33] = {0};
     char password[64] = {0};
+    char backend_uri[192] = {0};
     if (!form_value(body, "ssid", ssid, sizeof(ssid)) || ssid[0] == '\0' ||
-        !form_value(body, "password", password, sizeof(password))) {
+        !form_value(body, "password", password, sizeof(password)) ||
+        !form_value(body, "backend", backend_uri, sizeof(backend_uri))) {
         httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Wi-Fi name is required");
         return ESP_FAIL;
     }
+    if (backend_uri[0] != '\0' && strncmp(backend_uri, "ws://", 5) != 0 &&
+        strncmp(backend_uri, "wss://", 6) != 0) {
+        httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
+                            "Backend URL must begin with ws:// or wss://");
+        return ESP_FAIL;
+    }
 
-    ESP_RETURN_ON_ERROR(save_credentials(ssid, password), TAG,
+    ESP_RETURN_ON_ERROR(save_credentials(ssid, password, backend_uri), TAG,
                         "Could not save Wi-Fi credentials");
 
     friday_ui_set_network("WI-FI SAVED", "Restarting to join your network...");
@@ -218,6 +240,9 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED &&
                has_credentials) {
+        if (wifi_events != NULL) {
+            xEventGroupClearBits(wifi_events, FRIDAY_WIFI_CONNECTED_BIT);
+        }
         if (retry_count++ < FRIDAY_MAX_RETRIES) {
             ESP_LOGW(TAG, "Wi-Fi disconnected; retry %d/%d", retry_count, FRIDAY_MAX_RETRIES);
             esp_wifi_connect();
@@ -230,6 +255,9 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base,
         char detail[64];
         snprintf(detail, sizeof(detail), "Connected at " IPSTR, IP2STR(&event->ip_info.ip));
         retry_count = 0;
+        if (wifi_events != NULL) {
+            xEventGroupSetBits(wifi_events, FRIDAY_WIFI_CONNECTED_BIT);
+        }
         ESP_LOGI(TAG, "%s", detail);
         friday_ui_set_network("WI-FI ONLINE", detail);
     }
@@ -246,6 +274,9 @@ esp_err_t friday_wifi_start(void)
         ESP_LOGW(TAG, "Ignoring unreadable Wi-Fi settings: %s", esp_err_to_name(saved_result));
     }
 
+    wifi_events = xEventGroupCreate();
+    ESP_RETURN_ON_FALSE(wifi_events != NULL, ESP_ERR_NO_MEM, TAG,
+                        "Could not create Wi-Fi event group");
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "Network stack init failed");
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "Event loop init failed");
     if (has_credentials) {
@@ -299,4 +330,31 @@ esp_err_t friday_wifi_start(void)
                               "Join Friday-Setup (password: fridaysetup), then open 192.168.4.1");
     }
     return ESP_OK;
+}
+
+bool friday_wifi_wait_connected(TickType_t timeout)
+{
+    if (wifi_events == NULL) {
+        return false;
+    }
+    EventBits_t bits = xEventGroupWaitBits(
+        wifi_events, FRIDAY_WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, timeout);
+    return (bits & FRIDAY_WIFI_CONNECTED_BIT) != 0;
+}
+
+esp_err_t friday_wifi_get_backend_uri(char *uri, size_t uri_size)
+{
+    if (uri == NULL || uri_size == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    uri[0] = '\0';
+    nvs_handle_t handle;
+    esp_err_t result = nvs_open("friday_wifi", NVS_READONLY, &handle);
+    if (result != ESP_OK) {
+        return result;
+    }
+    size_t stored_size = uri_size;
+    result = nvs_get_str(handle, "backend_uri", uri, &stored_size);
+    nvs_close(handle);
+    return result;
 }

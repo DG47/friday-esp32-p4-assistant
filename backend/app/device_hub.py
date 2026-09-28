@@ -18,7 +18,17 @@ class DeviceHub:
 
     async def connect(self, device_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
-        self.connections[device_id].append(DevicePeer(websocket))
+        self.register(device_id, websocket)
+
+    def register(
+        self,
+        device_id: str,
+        websocket: WebSocket,
+        capabilities: set[str] | None = None,
+    ) -> None:
+        self.connections[device_id].append(
+            DevicePeer(websocket, capabilities or set())
+        )
 
     def set_capabilities(
         self, device_id: str, websocket: WebSocket, capabilities: set[str]

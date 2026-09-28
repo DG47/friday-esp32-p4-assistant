@@ -10,6 +10,7 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
     ports:
       - "8000:8000"
+      - "8334:8334/udp"
     volumes:
       - ./backend/app:/app/app
       - ./backend/tests:/app/tests

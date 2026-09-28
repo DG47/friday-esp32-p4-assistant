@@ -8,6 +8,14 @@ config FRIDAY_BACKEND_WS_URI
         LAN-accessible interface. Plain ws:// is acceptable only on a trusted
         development network; production firmware must use authenticated wss://.
 
+config FRIDAY_DISCOVERY_PORT
+    int "Friday backend UDP discovery port"
+    range 1024 65535
+    default 8334
+    help
+        UDP port used to discover the backend on the current LAN before falling
+        back to FRIDAY_BACKEND_WS_URI.
+
 config FRIDAY_AUDIO_DIGITAL_GAIN
     int "Digital gain applied to streamed microphone PCM"
     range 1 32

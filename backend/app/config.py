@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     assistant_database_path: Path = Path("data/friday.db")
     assistant_reminder_poll_seconds: float = 1.0
     assistant_job_timeout_seconds: float = 120.0
+    assistant_discovery_port: int = 8334
+    assistant_public_port: int = 8000
 
     openai_api_key: str = ""
     anthropic_api_key: str = ""
