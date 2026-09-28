@@ -7,10 +7,13 @@ P3A device / 720×720 simulator
                  │ WebSocket: control JSON + PCM audio frames
                  ▼
 FastAPI realtime gateway
-  audio-turn buffer ─ STT adapter ─ session state ─ scene composer ─ tools
-                         │               │
-                         ▼               ▼
-               local faster-whisper   Ollama / GPT / Claude
+  audio-turn buffer ─ STT adapter ─ tool-calling agent ─ scene composer
+                         │               │       │
+                         ▼               ▼       ▼
+               local faster-whisper   history  tools
+                                         │
+                                         ▼
+                                Ollama / GPT / Claude
 ```
 
 ## Design boundaries
@@ -20,8 +23,9 @@ FastAPI realtime gateway
 - Tools return structured data. The scene composer decides how to visualize it.
 - Consequential tools will require confirmation. Mock read-only tools do not.
 - Audio, STT, LLM, TTS, and tools are independent provider interfaces.
-- VAD endpointing runs on the ESP32, and the future wake word belongs there as
-  well. Raw audio streams only after an intentional activation.
+- VAD endpointing runs on the ESP32. The current wake-word implementation sends
+  idle microphone audio to the trusted local backend; moving exact `Friday`
+  detection on-device remains the privacy target.
 
 ## MVP sequence
 
@@ -29,6 +33,9 @@ FastAPI realtime gateway
 2. Client either sends a recognized text utterance or brackets binary PCM
    frames with `audio.start` and `audio.end`. The STT adapter emits the same
    text-utterance boundary used by typed input.
-3. Server sends `thinking`, an optional transcript, tool activity, a dynamic surface, assistant text,
-   and `speaking`/`idle` state transitions.
-4. Reminder writes are committed to SQLite before success is announced.
+3. The selected model receives bounded conversation history and structured
+   tool definitions. It may call calendar or reminder tools before composing
+   the final response.
+4. Server sends `thinking`, an optional transcript, tool activity, a dynamic
+   surface, assistant text, and `speaking`/`idle` state transitions.
+5. Reminder writes are committed to SQLite before success is announced.

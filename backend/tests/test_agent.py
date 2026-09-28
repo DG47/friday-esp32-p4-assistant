@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,8 +8,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.agent import FridayAgent
 from app.config import Settings
 from app.db import ReminderStore
+from app.providers.base import ProviderTurn, TextProvider, ToolCall
 from app.providers.ollama_provider import OllamaProvider
 from app.providers.router import ProviderRouter
+
+
+class FakeToolProvider(TextProvider):
+    name = "test-model"
+
+    def __init__(self, turns):
+        self.turns = list(turns)
+        self.requests = []
+
+    async def complete(self, messages, instructions, tools):
+        self.requests.append(
+            {
+                "messages": deepcopy(messages),
+                "instructions": instructions,
+                "tools": deepcopy(tools),
+            }
+        )
+        return self.turns.pop(0)
 
 
 class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
@@ -65,6 +85,67 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(provider, OllamaProvider)
         self.assertEqual(provider.model, "local-test-model")
+
+    async def test_model_chooses_calendar_tool_and_receives_result(self):
+        provider = FakeToolProvider(
+            [
+                ProviderTurn(
+                    tool_calls=[
+                        ToolCall(id="call-1", name="get_calendar", arguments={"range": "next"})
+                    ]
+                ),
+                ProviderTurn(text="Your next event is the interview at 2 PM."),
+            ]
+        )
+        with patch.object(self.agent.providers, "select", return_value=provider):
+            reply = await self.agent.handle("device-model", "What's next?")
+
+        self.assertEqual(reply.provider, "test-model")
+        self.assertEqual(reply.tool, "get_calendar")
+        self.assertEqual(reply.surface.kind, "timeline")
+        self.assertIn("interview", reply.text)
+        tool_result = provider.requests[1]["messages"][-1]
+        self.assertEqual(tool_result["role"], "tool")
+        self.assertIn('"events"', tool_result["content"])
+        self.assertIn("Dhruv", provider.requests[0]["instructions"])
+
+    async def test_model_history_is_available_on_the_next_turn(self):
+        first_provider = FakeToolProvider([ProviderTurn(text="Your next event is the interview.")])
+        second_provider = FakeToolProvider([ProviderTurn(text="It is with David.")])
+        with patch.object(self.agent.providers, "select", return_value=first_provider):
+            await self.agent.handle("history-device", "What's next?")
+        with patch.object(self.agent.providers, "select", return_value=second_provider):
+            reply = await self.agent.handle("history-device", "Who is it with?")
+
+        history = second_provider.requests[0]["messages"]
+        self.assertEqual(history[0]["content"], "What's next?")
+        self.assertEqual(history[1]["content"], "Your next event is the interview.")
+        self.assertEqual(history[2]["content"], "Who is it with?")
+        self.assertEqual(reply.text, "It is with David.")
+
+    async def test_model_can_create_a_reminder_tool(self):
+        provider = FakeToolProvider(
+            [
+                ProviderTurn(
+                    tool_calls=[
+                        ToolCall(
+                            id="call-2",
+                            name="create_reminder",
+                            arguments={
+                                "text": "prepare",
+                                "due_at": "2030-01-02T12:00:00-05:00",
+                            },
+                        )
+                    ]
+                ),
+                ProviderTurn(text="I'll remind you at noon."),
+            ]
+        )
+        with patch.object(self.agent.providers, "select", return_value=provider):
+            reply = await self.agent.handle("reminder-device", "Remind me to prepare.")
+
+        self.assertEqual(reply.surface.kind, "reminder")
+        self.assertEqual(self.store.pending()[0].text, "prepare")
 
     async def test_ollama_provider_sends_personality_and_prompt(self):
         response = MagicMock()

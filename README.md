@@ -11,8 +11,11 @@ scene generation.
   reminder, and speaking scenes
 - WebSocket device protocol shared by the simulator and firmware
 - deterministic mock agent for the complete acceptance flow
+- model-driven tool loop for Ollama, GPT, and Claude, with bounded per-device
+  conversation history and structured calendar/reminder calls
 - SQLite-backed reminders that survive backend restarts
-- mock calendar and contextual follow-up handling
+- mock calendar data exposed through the same tool interface intended for a
+  future real calendar adapter
 - pluggable local Ollama and cloud GPT/Claude provider boundary
 - ESP-IDF firmware for P3A with the native animated Friday scene, ST7703
   display initialization, GT911 touch input, and protocol state machine

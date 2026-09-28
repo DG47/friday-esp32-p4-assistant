@@ -1,6 +1,9 @@
+import json
+from typing import Any
+
 from openai import AsyncOpenAI
 
-from .base import TextProvider
+from .base import ProviderTurn, TextProvider, ToolCall
 
 
 class OpenAIProvider(TextProvider):
@@ -10,11 +13,48 @@ class OpenAIProvider(TextProvider):
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
 
-    async def respond(self, prompt: str, instructions: str) -> str:
-        response = await self.client.responses.create(
-            model=self.model,
-            instructions=instructions,
-            input=prompt,
-        )
-        return response.output_text.strip()
-
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        instructions: str,
+        tools: list[dict[str, Any]],
+    ) -> ProviderTurn:
+        openai_messages: list[dict[str, Any]] = [
+            {"role": "system", "content": instructions}
+        ]
+        for message in messages:
+            converted = dict(message)
+            if converted.get("role") == "assistant" and converted.get("tool_calls"):
+                converted["tool_calls"] = [
+                    {
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {
+                            "name": call["name"],
+                            "arguments": json.dumps(call.get("arguments", {})),
+                        },
+                    }
+                    for call in converted["tool_calls"]
+                ]
+            elif converted.get("role") == "tool":
+                converted.pop("name", None)
+            openai_messages.append(converted)
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": openai_messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        response = await self.client.chat.completions.create(**kwargs)
+        message = response.choices[0].message
+        calls = []
+        for item in message.tool_calls or []:
+            arguments = json.loads(item.function.arguments or "{}")
+            calls.append(
+                ToolCall(
+                    id=item.id,
+                    name=item.function.name,
+                    arguments=arguments if isinstance(arguments, dict) else {},
+                )
+            )
+        return ProviderTurn(text=message.content or "", tool_calls=calls)

@@ -13,10 +13,11 @@ TTS, reminders, calendar integrations, and a dry, witty, competent butler
 personality.
 
 The architecture is deliberately provider-neutral. Audio, STT, LLM, TTS, and
-tools should remain replaceable adapters. Wake-word detection and basic VAD
-belong on the device. Raw audio should leave it only after activation.
+tools should remain replaceable adapters. Basic VAD runs on the device. The
+current exact-name detector streams idle audio to the trusted local backend;
+moving wake-word detection on-device remains the privacy target.
 
-## Verified state through 2026-09-25
+## Verified state through 2026-09-28
 
 Hardware:
 
@@ -66,11 +67,17 @@ Backend and simulator:
 - The JSON WebSocket protocol is implemented at `/ws/device/{device_id}`.
   Multiple peers sharing an ID receive the same server messages; the browser
   and P3A use `friday-p3a` and were verified to stay synchronized.
-- Mock calendar, contextual follow-ups, and SQLite reminders work. Ollama is the
-  selected keyless provider on the development Mac, using `qwen3.6:latest` at
-  `http://127.0.0.1:11434`. OpenAI and Anthropic remain optional adapters.
+- The configured model now drives a provider-neutral tool loop with bounded
+  per-device conversation history. Calendar reads, reminder creation, and
+  reminder listing are structured tools; mock mode retains its deterministic
+  acceptance path. Ollama is the selected keyless provider on the development
+  Mac, using `qwen3.6:latest` at `http://127.0.0.1:11434`. OpenAI and Anthropic
+  use the same tool-loop contract.
 - Personality instructions live in `backend/app/agent.py`.
-- Verification passed: three backend unit tests, the HTTP/WebSocket smoke test,
+- The personality now reads `ASSISTANT_USER_NAME` instead of hardcoding a user
+  name. A live Ollama check selected `get_calendar`, consumed its result, and
+  produced the expected grounded response and timeline surface.
+- Verification passed: 19 backend unit tests, the HTTP/WebSocket smoke test,
   ESP-IDF build, flash, boot, display, touch, Wi-Fi, and microphone capture.
 
 Voice-loop implementation added on 2026-09-25:
@@ -132,12 +139,12 @@ Voice-loop implementation added on 2026-09-25:
 Do not confuse working microphone capture with a complete voice assistant. The
 following remain:
 
-1. Optimize wake-word latency or replace the rolling transcription probe with
+1. Add reminder scheduling/notifications rather than storage alone.
+2. Optimize wake-word latency or replace the rolling transcription probe with
    a dedicated on-device wake model if needed.
-2. Add a true streaming/cloud STT adapter if lower latency is needed.
-3. Add TTS and interruption/barge-in after a speaker is attached.
-4. Replace mock calendar data with an authorized calendar integration.
-5. Add reminder scheduling/notifications rather than storage alone.
+3. Replace mock calendar data with an authorized calendar integration.
+4. Add a true streaming/cloud STT adapter if lower latency is needed.
+5. Add TTS and interruption/barge-in after a speaker is attached.
 6. Move the compile-time backend address into provisioning or local discovery.
 7. Add authentication and transport security before using the service outside
    a trusted LAN.

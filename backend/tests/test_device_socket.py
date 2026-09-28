@@ -41,7 +41,9 @@ class DeviceSocketTests(unittest.TestCase):
 
     def test_audio_turn_is_transcribed_and_sent_to_agent(self):
         transcriber = FakeTranscriber()
-        with patch("app.main.transcriber", transcriber):
+        with patch("app.main.transcriber", transcriber), patch(
+            "app.main.agent.providers.select", return_value=None
+        ):
             with TestClient(app).websocket_connect("/ws/device/voice-test") as socket:
                 self.assertEqual(socket.receive_json()["type"], "ready")
                 socket.send_json(
