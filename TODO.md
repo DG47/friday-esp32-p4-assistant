@@ -17,14 +17,14 @@ P3A has been tested.
 
 ## Agent durability and concurrency
 
-- [ ] Persist structured tool calls/results so future turns can use exact prior
+- [x] Persist structured tool calls/results so future turns can use exact prior
   calendar and reminder data.
-- [ ] Persist mock-mode conversation exchanges too.
-- [ ] Add a maximum job age and mark late results instead of presenting stale
+- [x] Persist mock-mode conversation exchanges too.
+- [x] Add a maximum job age and mark late results instead of presenting stale
   answers as current.
-- [ ] Allow bounded parallel job execution without running two turns for the
+- [x] Allow bounded parallel job execution without running two turns for the
   same device concurrently.
-- [ ] Add confirmation before consequential tool actions.
+- [x] Add confirmation before consequential tool actions.
 
 ## Reminders
 

@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     assistant_reminder_retry_seconds: float = 90.0
     assistant_reminder_max_attempts: int = 10
     assistant_job_timeout_seconds: float = 120.0
+    assistant_job_max_age_seconds: float = 300.0
+    assistant_job_concurrency: int = 4
+    assistant_confirmation_timeout_seconds: float = 300.0
     assistant_discovery_port: int = 8334
     assistant_public_port: int = 8000
     assistant_public_scheme: Literal["ws", "wss"] = "wss"

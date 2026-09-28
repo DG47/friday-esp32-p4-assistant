@@ -43,7 +43,12 @@ reminder_scheduler = ReminderScheduler(
     max_attempts=settings.assistant_reminder_max_attempts,
 )
 job_worker = AgentJobWorker(
-    job_store, agent, hub, timeout_seconds=settings.assistant_job_timeout_seconds
+    job_store,
+    agent,
+    hub,
+    timeout_seconds=settings.assistant_job_timeout_seconds,
+    max_age_seconds=settings.assistant_job_max_age_seconds,
+    concurrency=settings.assistant_job_concurrency,
 )
 
 

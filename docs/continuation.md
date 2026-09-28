@@ -89,9 +89,10 @@ Backend and simulator:
   WebSocket bypass. Administrative endpoints are loopback-only and require a
   64-hex admin token plus an explicit action header.
 - The configured model now drives a provider-neutral tool loop with bounded
-  per-device conversation history persisted in SQLite. Calendar reads, reminder creation, and
-  reminder listing are structured tools; mock mode retains its deterministic
-  acceptance path. Ollama is the selected keyless provider on the development
+  per-device structured history persisted in SQLite. User/assistant messages,
+  exact tool arguments, and exact tool results survive restart. Calendar reads,
+  reminder creation, and reminder listing are structured tools; mock mode now
+  persists equivalent structured exchanges. Ollama is the selected keyless provider on the development
   Mac, using `qwen3.6:latest` at `http://127.0.0.1:11434`. OpenAI and Anthropic
   use the same tool-loop contract.
 - Personality instructions live in `backend/app/agent.py`.
@@ -99,16 +100,23 @@ Backend and simulator:
   name. A live Ollama check selected `get_calendar`, consumed its result, and
   produced the expected grounded response and timeline surface.
 - Agent requests are persisted before acceptance. A leased background worker
-  executes them with a timeout, retry/backoff, restart recovery, and delivery
-  of completed results when the device reconnects. Request IDs make enqueue and
-  reminder creation idempotent.
+  pool executes up to four different devices concurrently with timeout,
+  retry/backoff, restart recovery, and delivery after reconnect. SQLite claims
+  prevent two turns for the same device from running concurrently. Request IDs
+  make enqueue and reminder creation idempotent. Queued or offline results older
+  than five minutes become `expired`/`late` and emit `agent_stale` instead of an
+  outdated answer.
+- Reminder creation is now a consequential action. Friday stores the exact
+  requested action, asks for `yes` or `no`, survives a backend restart while
+  waiting, and executes only the confirmed arguments. Confirmations expire
+  after five minutes and abandoned executions can be reclaimed idempotently.
 - A background scheduler atomically claims durable reminders and sends
   `reminder.alert` only to firmware advertising `reminder_ack`. It retries after
   disconnect or a missing acknowledgement at a configurable bounded cadence
   and records delivery only when a user tap makes firmware return
   `reminder.ack`. Firmware honors the 60-second surface expiry and returns to
   idle without acknowledging an untouched alert.
-- Verification for this hardening milestone now passes 48 backend unit tests,
+- Verification for this hardening milestone now passes 59 backend unit tests,
   a live Ollama tool turn, and an ESP-IDF build/flash/boot. On the physical P3A
   at `192.168.4.46`, an untouched test reminder expired to idle, remained
   pending in SQLite, and was rendered again after the 90-second retry interval.

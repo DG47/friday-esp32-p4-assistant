@@ -22,7 +22,8 @@ FastAPI realtime gateway
 - The device never knows which model provider is active.
 - Every visual is a temporary `surface`; there is no app launcher.
 - Tools return structured data. The scene composer decides how to visualize it.
-- Consequential tools will require confirmation. Mock read-only tools do not.
+- Consequential tools require a persisted confirmation before execution. Mock
+  read-only tools do not.
 - Audio, STT, LLM, TTS, and tools are independent provider interfaces.
 - LAN hardware generates a persistent random identity in NVS and must enroll
   during a locally opened pairing window. The backend stores only the token
@@ -45,9 +46,11 @@ FastAPI realtime gateway
    text-utterance boundary used by typed input.
 3. The gateway persists the request as a job and immediately returns
    `job.accepted`; model and tool work no longer blocks the device socket.
-4. A leased worker runs the selected model with bounded SQLite conversation
-   history and structured tool definitions. Expired work is recovered, failed
-   attempts back off, and completed results survive device disconnects.
+4. A bounded worker pool runs different devices in parallel while SQLite
+   claims serialize turns for the same device. Each turn uses durable structured
+   conversation history. Expired work is recovered, failed attempts back off,
+   stale results are discarded, and current results survive disconnects.
+   Consequential tool calls pause on a restart-safe confirmation record.
 5. Server sends tool activity, a dynamic surface, assistant text, and
    `speaking`/`idle` state transitions. A reconnect triggers pending-result
    delivery.

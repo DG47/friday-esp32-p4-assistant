@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import sqlite3
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -58,8 +60,30 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("David", second.text)
         self.assertIn("system-design", second.text)
 
+    async def test_mock_calendar_context_survives_restart(self):
+        interview = self.agent.calendar.today()[1]
+        self.agent.calendar.next_event = lambda: interview
+        await self.agent.handle(
+            "restart-device", "What's next?", request_id="mock-calendar-turn"
+        )
+
+        restarted = FridayAgent(
+            self.settings, ReminderStore(self.settings.assistant_database_path)
+        )
+        reply = await restarted.handle(
+            "restart-device", "With who?", request_id="mock-follow-up"
+        )
+
+        self.assertIn("David", reply.text)
+        self.assertIn("system-design", reply.text)
+
     async def test_reminder_persists(self):
         reply = await self.agent.handle("device-1", "Remind me at noon to prepare")
+        self.assertEqual(reply.surface.title, "Confirmation required")
+        self.assertEqual(self.store.pending(), [])
+        reply = await self.agent.handle(
+            "device-1", "yes", request_id="confirm-reminder"
+        )
         pending = self.store.pending()
 
         self.assertEqual(reply.surface.kind, "reminder")
@@ -70,6 +94,7 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_relative_reminder(self):
         before = datetime.now().astimezone()
         await self.agent.handle("device-1", "Remind me to stretch in 10 minutes")
+        await self.agent.handle("device-1", "yes", request_id="confirm-relative")
         reminder = self.store.pending()[0]
 
         self.assertEqual(reminder.text, "stretch")
@@ -124,6 +149,100 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history[2]["content"], "Who is it with?")
         self.assertEqual(reply.text, "It is with David.")
 
+    async def test_structured_tool_history_is_available_after_restart(self):
+        first_provider = FakeToolProvider(
+            [
+                ProviderTurn(
+                    tool_calls=[
+                        ToolCall(
+                            id="history-call",
+                            name="get_calendar",
+                            arguments={"range": "next"},
+                        )
+                    ]
+                ),
+                ProviderTurn(text="Your interview is next."),
+            ]
+        )
+        with patch.object(self.agent.providers, "select", return_value=first_provider):
+            await self.agent.handle(
+                "structured-device", "What's next?", request_id="structured-first"
+            )
+
+        restarted = FridayAgent(
+            self.settings, ReminderStore(self.settings.assistant_database_path)
+        )
+        second_provider = FakeToolProvider([ProviderTurn(text="It is with David.")])
+        with patch.object(restarted.providers, "select", return_value=second_provider):
+            await restarted.handle(
+                "structured-device", "With who?", request_id="structured-second"
+            )
+
+        history = second_provider.requests[0]["messages"]
+        tool_call = next(message for message in history if message.get("tool_calls"))
+        tool_result = next(message for message in history if message["role"] == "tool")
+        self.assertEqual(tool_call["tool_calls"][0]["arguments"], {"range": "next"})
+        self.assertEqual(tool_result["name"], "get_calendar")
+        self.assertIn('"events"', tool_result["content"])
+
+    async def test_confirmation_survives_restart(self):
+        await self.agent.handle(
+            "confirmation-device",
+            "Remind me to stretch in 10 minutes",
+            request_id="confirmation-request",
+        )
+        self.assertEqual(self.store.pending(device_id="confirmation-device"), [])
+
+        restarted = FridayAgent(
+            self.settings, ReminderStore(self.settings.assistant_database_path)
+        )
+        reply = await restarted.handle(
+            "confirmation-device", "Yes, do it.", request_id="confirmation-yes"
+        )
+
+        self.assertEqual(reply.provider, "confirmation")
+        self.assertEqual(
+            self.store.pending(device_id="confirmation-device")[0].text, "stretch"
+        )
+
+    async def test_confirmation_can_be_cancelled_without_side_effects(self):
+        await self.agent.handle(
+            "cancel-device",
+            "Remind me to stretch in 10 minutes",
+            request_id="cancel-request",
+        )
+
+        reply = await self.agent.handle(
+            "cancel-device", "No, cancel that.", request_id="cancel-response"
+        )
+
+        self.assertEqual(reply.surface.title, "Cancelled")
+        self.assertEqual(self.store.pending(device_id="cancel-device"), [])
+
+    async def test_legacy_text_history_is_migrated(self):
+        legacy_path = Path(self.tempdir.name) / "legacy-conversation.db"
+        with closing(sqlite3.connect(legacy_path)) as connection:
+            connection.execute(
+                "CREATE TABLE conversation_messages ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL, "
+                "request_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, UNIQUE(request_id, role))"
+            )
+            connection.execute(
+                "INSERT INTO conversation_messages "
+                "(device_id, request_id, role, content, created_at) "
+                "VALUES ('legacy-device', 'legacy-request', 'user', 'hello', "
+                "'2026-01-01T00:00:00+00:00')"
+            )
+            connection.commit()
+
+        migrated = ReminderStore(legacy_path)
+
+        self.assertEqual(
+            migrated.conversation("legacy-device"),
+            [{"role": "user", "content": "hello"}],
+        )
+
     async def test_model_can_create_a_reminder_tool(self):
         provider = FakeToolProvider(
             [
@@ -144,6 +263,10 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(self.agent.providers, "select", return_value=provider):
             reply = await self.agent.handle("reminder-device", "Remind me to prepare.")
+        self.assertEqual(reply.surface.title, "Confirmation required")
+        reply = await self.agent.handle(
+            "reminder-device", "yes", request_id="confirm-model-reminder"
+        )
 
         self.assertEqual(reply.surface.kind, "reminder")
         self.assertEqual(self.store.pending()[0].text, "prepare")
@@ -174,6 +297,9 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
             await self.agent.handle(
                 "retry-device", "Remind me to prepare", request_id="stable-request"
             )
+        await self.agent.handle(
+            "retry-device", "yes", request_id="stable-confirmation"
+        )
         second = provider()
         with patch.object(self.agent.providers, "select", return_value=second):
             await self.agent.handle(
@@ -212,6 +338,9 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
             await self.agent.handle(
                 "multi-device", "Set two reminders", request_id="multi-request"
             )
+        await self.agent.handle(
+            "multi-device", "yes", request_id="multi-confirmation"
+        )
 
         self.assertEqual(
             [item.text for item in self.store.pending(device_id="multi-device")],

@@ -12,9 +12,13 @@ scene generation.
 - WebSocket device protocol shared by the simulator and firmware
 - deterministic mock agent for the complete acceptance flow
 - model-driven tool loop for Ollama, GPT, and Claude, with bounded per-device
-  conversation history persisted in SQLite and structured calendar/reminder calls
+  user, assistant, tool-call, and tool-result history persisted in SQLite
 - durable SQLite-backed agent jobs with immediate acceptance, bounded execution,
-  retry/backoff, expired-lease recovery, and result delivery after reconnection
+  retry/backoff, expired-lease recovery, stale-result suppression, and result
+  delivery after reconnection
+- bounded cross-device worker concurrency with strict per-device turn ordering
+- restart-safe confirmation before reminder creation and other consequential
+  tool actions
 - SQLite-backed reminders that survive backend restarts
 - idempotent reminder creation keyed to the originating request
 - proactive reminder delivery that retries through disconnects and records
@@ -88,7 +92,8 @@ playback still requires the external speaker.
    and paste `ASSISTANT_SIMULATOR_TOKEN` into the simulator credential field.
 4. Tap the orb and say or type: `What's next?`
 5. Continue with: `With who?`
-6. Then: `Remind me at noon to prepare.`
+6. Then: `Remind me at noon to prepare.` Friday asks for confirmation; answer
+   `yes` to create it or `no` to cancel it.
 
 When the P3A is online, the browser and physical display share the same session;
 browser text or speech drives the scenes shown on both displays.
@@ -126,12 +131,18 @@ Agent turns are accepted before model work begins and run from a durable local
 queue. `ASSISTANT_JOB_TIMEOUT_SECONDS` bounds each attempt. Interrupted leases
 are recovered after restart, transient failures retry with backoff, and a
 completed response remains pending until a matching device reconnects.
+`ASSISTANT_JOB_MAX_AGE_SECONDS` prevents an old queued or offline result from
+being presented as current. `ASSISTANT_JOB_CONCURRENCY` controls cross-device
+parallelism while SQLite claims guarantee that one device's turns remain
+serial. Consequential tool confirmations expire after
+`ASSISTANT_CONFIRMATION_TIMEOUT_SECONDS` and survive backend restarts.
 
 ## Production-readiness boundary
 
 This is a hardened local prototype, not yet an internet-facing production
-service. The durable job/reminder paths now cover process restart, retry, and
-device disconnect scenarios. LAN clients require explicit credentials, and the
+service. The durable job/reminder paths now cover process restart, retry,
+bounded concurrency, stale-result handling, confirmation recovery, and device
+disconnect scenarios. LAN clients require explicit credentials, and the
 physical path now uses a device-pinned local CA over `wss://`; a physically
 tested rogue certificate was rejected. Production deployment still requires a
 managed certificate/secret lifecycle, stronger key storage/NVS encryption,

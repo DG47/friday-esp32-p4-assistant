@@ -97,7 +97,14 @@ Utterances become durable agent jobs. Supplying a stable `request_id` makes
 retries idempotent; the server returns the corresponding `job.accepted` event
 without running the same request twice. Jobs interrupted by a backend restart
 are retried after their lease expires, and completed results are retained until
-they can be sent to a connected peer.
+they can be sent to a connected peer. Jobs or offline results older than the
+configured useful lifetime produce an `agent_stale` error instead of presenting
+an outdated answer as current. Different device IDs can run concurrently, but
+turns for one device ID are always serialized.
+
+Consequential tools use the normal message/surface protocol to request a `yes`
+or `no` confirmation. The pending action is stored in SQLite, expires after a
+bounded interval, and is executed only after an affirmative follow-up.
 
 `reminder.alert` is sent only to peers advertising `reminder_ack`. The physical
 device renders the alert for `expires_ms` and returns to idle without replying

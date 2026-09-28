@@ -9,7 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import Settings
-from .db import ReminderStore
+from .db import PendingConfirmation, ReminderStore
 from .models import AgentReply, CalendarEvent, Surface
 from .providers.base import TextProvider
 from .providers.router import ProviderRouter
@@ -80,6 +80,12 @@ class SessionContext:
 class ToolOutcome:
     content: str
     surface: Surface | None = None
+    success: bool = True
+
+
+CONSEQUENTIAL_TOOLS = {"create_reminder"}
+AFFIRMATIVE_CONFIRMATIONS = {"yes", "confirm", "confirmed", "do it", "proceed"}
+NEGATIVE_CONFIRMATIONS = {"no", "cancel", "never mind", "nevermind", "stop"}
 
 
 class FridayAgent:
@@ -97,6 +103,11 @@ class FridayAgent:
         self, session_id: str, text: str, request_id: str | None = None
     ) -> AgentReply:
         request_id = request_id or str(uuid.uuid4())
+        confirmation = self.store.pending_confirmation(session_id)
+        if confirmation is not None:
+            return self._handle_confirmation(
+                confirmation, text, response_request_id=request_id
+            )
         provider = self.providers.select(text)
         if provider is not None:
             return await self._handle_with_model(
@@ -127,6 +138,7 @@ to resolve follow-up questions and references."""
         request_id: str,
     ) -> AgentReply:
         user_message = {"role": "user", "content": text}
+        turn_messages: list[dict[str, Any]] = [user_message]
         messages: list[dict[str, Any]] = [
             *self.store.conversation(session_id, limit=10),
             user_message,
@@ -151,10 +163,11 @@ to resolve follow-up questions and references."""
                     for call in turn.tool_calls
                 ]
             messages.append(assistant_message)
+            turn_messages.append(assistant_message)
 
             if not turn.tool_calls:
                 answer = turn.text.strip() or "Done."
-                self.store.append_exchange(session_id, request_id, text, answer)
+                self.store.append_messages(session_id, request_id, turn_messages)
                 return AgentReply(
                     text=answer,
                     surface=last_surface
@@ -168,34 +181,290 @@ to resolve follow-up questions and references."""
                     tool=last_tool,
                 )
 
-            for call in turn.tool_calls:
-                outcome = self._execute_tool(
-                    call.name,
-                    call.arguments,
+            actions = [
+                {
+                    "call_id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments,
+                    "operation_index": tool_sequence + index,
+                }
+                for index, call in enumerate(turn.tool_calls)
+                if call.name in CONSEQUENTIAL_TOOLS
+            ]
+            confirmation = None
+            if actions:
+                confirmation = self.store.request_confirmation(
+                    confirmation_id=f"{request_id}:confirmation:{tool_sequence}",
                     device_id=session_id,
                     request_id=request_id,
-                    operation_index=tool_sequence,
+                    actions=actions,
+                    summary=self._confirmation_summary(actions),
+                    expires_at=datetime.now().astimezone()
+                    + timedelta(seconds=self.settings.assistant_confirmation_timeout_seconds),
                 )
-                tool_sequence += 1
-                last_surface = outcome.surface or last_surface
-                last_tool = call.name
-                messages.append(
+                confirmed_actions = [
                     {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "name": call.name,
-                        "content": outcome.content,
+                        "name": action["name"],
+                        "arguments": action["arguments"],
+                        "operation_index": action["operation_index"],
                     }
+                    for action in confirmation.actions
+                ]
+                requested_actions = [
+                    {
+                        "name": action["name"],
+                        "arguments": action["arguments"],
+                        "operation_index": action["operation_index"],
+                    }
+                    for action in actions
+                ]
+                if (
+                    confirmation.status == "confirmed"
+                    and confirmed_actions != requested_actions
+                ):
+                    answer = "The retried action no longer matches what you confirmed."
+                    turn_messages.append({"role": "assistant", "content": answer})
+                    self.store.append_messages(session_id, request_id, turn_messages)
+                    return AgentReply(
+                        text=answer,
+                        surface=Surface(
+                            kind="message", title="Friday", subtitle=answer, expires_ms=12000
+                        ),
+                        provider=provider.name,
+                    )
+                if confirmation.status not in {"pending", "confirmed"}:
+                    answer = "That action was previously cancelled or expired."
+                    turn_messages.append({"role": "assistant", "content": answer})
+                    self.store.append_messages(session_id, request_id, turn_messages)
+                    return AgentReply(
+                        text=answer,
+                        surface=Surface(
+                            kind="message", title="Friday", subtitle=answer, expires_ms=10000
+                        ),
+                        provider=provider.name,
+                    )
+
+            for call in turn.tool_calls:
+                if (
+                    call.name in CONSEQUENTIAL_TOOLS
+                    and confirmation is not None
+                    and confirmation.status == "pending"
+                ):
+                    outcome = ToolOutcome(
+                        content=json.dumps(
+                            {
+                                "ok": False,
+                                "confirmation_required": True,
+                                "confirmation_id": confirmation.id,
+                                "summary": confirmation.summary,
+                            }
+                        ),
+                        success=False,
+                    )
+                else:
+                    outcome = self._execute_tool(
+                        call.name,
+                        call.arguments,
+                        device_id=session_id,
+                        request_id=request_id,
+                        operation_index=tool_sequence,
+                    )
+                    last_surface = outcome.surface or last_surface
+                    last_tool = call.name
+                tool_message = {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "content": outcome.content,
+                }
+                messages.append(tool_message)
+                turn_messages.append(tool_message)
+                tool_sequence += 1
+
+            if confirmation is not None and confirmation.status == "pending":
+                answer = (
+                    f"Confirm: {confirmation.summary}. "
+                    "Say yes to continue or no to cancel."
+                )
+                final_message = {"role": "assistant", "content": answer}
+                turn_messages.append(final_message)
+                self.store.append_messages(session_id, request_id, turn_messages)
+                return AgentReply(
+                    text=answer,
+                    surface=Surface(
+                        kind="message",
+                        title="Confirmation required",
+                        subtitle=confirmation.summary,
+                        expires_ms=30000,
+                    ),
+                    provider=provider.name,
+                    tool=actions[0]["name"],
                 )
 
         answer = "I couldn't complete that request safely. Please try again."
-        self.store.append_exchange(session_id, request_id, text, answer)
+        turn_messages.append({"role": "assistant", "content": answer})
+        self.store.append_messages(session_id, request_id, turn_messages)
         return AgentReply(
             text=answer,
             surface=last_surface
             or Surface(kind="message", title="Friday", subtitle=answer, expires_ms=12000),
             provider=provider.name,
             tool=last_tool,
+        )
+
+    def _confirmation_summary(self, actions: list[dict[str, Any]]) -> str:
+        if all(action["name"] == "create_reminder" for action in actions):
+            if len(actions) > 1:
+                return f"set {len(actions)} reminders"
+            arguments = actions[0]["arguments"]
+            reminder_text = str(arguments.get("text", "")).strip()
+            due_value = str(arguments.get("due_at", "")).strip()
+            due_label = due_value
+            try:
+                due_at = datetime.fromisoformat(due_value.replace("Z", "+00:00"))
+                timezone = ZoneInfo(self.settings.assistant_timezone)
+                due_at = (
+                    due_at.replace(tzinfo=timezone)
+                    if due_at.tzinfo is None
+                    else due_at.astimezone(timezone)
+                )
+                due_label = due_at.strftime("%b %-d at %-I:%M %p")
+            except ValueError:
+                pass
+            return f'set a reminder for "{reminder_text}" on {due_label}'
+        if len(actions) == 1:
+            return f"run {actions[0]['name']}"
+        return f"run {len(actions)} actions"
+
+    def _handle_confirmation(
+        self,
+        confirmation: PendingConfirmation,
+        text: str,
+        response_request_id: str,
+    ) -> AgentReply:
+        normalized = " ".join(text.lower().strip().split())
+        decision_text = re.sub(r"[^a-z ]", "", normalized).strip()
+        negative = decision_text in NEGATIVE_CONFIRMATIONS or decision_text.startswith(
+            ("no ", "cancel ", "never mind ")
+        )
+        affirmative = (
+            decision_text in AFFIRMATIVE_CONFIRMATIONS
+            or decision_text.startswith(("yes ", "confirm ", "proceed ", "do it "))
+        )
+        if negative:
+            self.store.finish_confirmation(confirmation.id, "cancelled")
+            answer = "Cancelled. No changes were made."
+            self.store.append_exchange(
+                confirmation.device_id, response_request_id, text, answer
+            )
+            return AgentReply(
+                text=answer,
+                surface=Surface(
+                    kind="message",
+                    title="Cancelled",
+                    subtitle="No changes were made.",
+                    expires_ms=10000,
+                ),
+                provider="confirmation",
+            )
+
+        if not affirmative:
+            answer = (
+                f"I’m waiting to {confirmation.summary}. "
+                "Say yes to continue or no to cancel."
+            )
+            self.store.append_exchange(
+                confirmation.device_id, response_request_id, text, answer
+            )
+            return AgentReply(
+                text=answer,
+                surface=Surface(
+                    kind="message",
+                    title="Confirmation required",
+                    subtitle=confirmation.summary,
+                    expires_ms=30000,
+                ),
+                provider="confirmation",
+            )
+
+        if not self.store.claim_confirmation(confirmation.id, confirmation.device_id):
+            answer = "That confirmation expired or was already handled."
+            self.store.append_exchange(
+                confirmation.device_id, response_request_id, text, answer
+            )
+            return AgentReply(
+                text=answer,
+                surface=Surface(
+                    kind="message", title="Friday", subtitle=answer, expires_ms=10000
+                ),
+                provider="confirmation",
+            )
+
+        tool_calls = []
+        tool_messages = []
+        last_surface: Surface | None = None
+        all_succeeded = True
+        for index, action in enumerate(confirmation.actions):
+            call_id = f"{confirmation.id}:confirmed:{index}"
+            tool_calls.append(
+                {
+                    "id": call_id,
+                    "name": action["name"],
+                    "arguments": action["arguments"],
+                }
+            )
+            outcome = self._execute_tool(
+                action["name"],
+                action["arguments"],
+                device_id=confirmation.device_id,
+                request_id=confirmation.request_id,
+                operation_index=int(action["operation_index"]),
+            )
+            all_succeeded = all_succeeded and outcome.success
+            last_surface = outcome.surface or last_surface
+            tool_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": action["name"],
+                    "content": outcome.content,
+                }
+            )
+
+        self.store.finish_confirmation(
+            confirmation.id, "confirmed" if all_succeeded else "failed"
+        )
+        if all_succeeded and all(
+            action["name"] == "create_reminder" for action in confirmation.actions
+        ):
+            count = len(confirmation.actions)
+            answer = (
+                "Confirmed. The reminder is set."
+                if count == 1
+                else f"Confirmed. {count} reminders are set."
+            )
+        elif all_succeeded:
+            answer = "Confirmed. The action is complete."
+        else:
+            answer = "I couldn’t complete the confirmed action safely."
+
+        final_message = {"role": "assistant", "content": answer}
+        self.store.append_messages(
+            confirmation.device_id,
+            response_request_id,
+            [
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": "", "tool_calls": tool_calls},
+                *tool_messages,
+                final_message,
+            ],
+        )
+        return AgentReply(
+            text=answer,
+            surface=last_surface
+            or Surface(kind="message", title="Friday", subtitle=answer, expires_ms=10000),
+            provider="confirmation",
+            tool=confirmation.actions[-1]["name"],
         )
 
     def _execute_tool(
@@ -240,7 +509,10 @@ to resolve follow-up questions and references."""
                 if due_at <= datetime.now(timezone):
                     raise ValueError("Reminder due time must be in the future")
             except ValueError as error:
-                return ToolOutcome(content=json.dumps({"ok": False, "error": str(error)}))
+                return ToolOutcome(
+                    content=json.dumps({"ok": False, "error": str(error)}),
+                    success=False,
+                )
             saved = self.store.create(
                 reminder_text,
                 due_at,
@@ -285,7 +557,8 @@ to resolve follow-up questions and references."""
             )
 
         return ToolOutcome(
-            content=json.dumps({"ok": False, "error": f"Unknown tool: {name}"})
+            content=json.dumps({"ok": False, "error": f"Unknown tool: {name}"}),
+            success=False,
         )
 
     async def _handle_mock(
@@ -293,13 +566,47 @@ to resolve follow-up questions and references."""
     ) -> AgentReply:
         normalized = " ".join(text.lower().strip().split())
         context = self._context(session_id)
+        if context.last_event is None:
+            context.last_event = self._last_mock_calendar_event(session_id)
 
         if self._is_calendar_request(normalized):
             event = self.calendar.next_event()
             context.last_event = event
             context.last_topic = "calendar"
+            answer = (
+                f"Your next event is {event.title} at "
+                f"{event.starts_at.strftime('%-I %p').lower()}."
+            )
+            result = json.dumps(
+                {"ok": True, "events": [event.model_dump(mode="json")]}
+            )
+            self.store.append_messages(
+                session_id,
+                request_id,
+                [
+                    {"role": "user", "content": text},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"{request_id}:mock-calendar",
+                                "name": "get_calendar",
+                                "arguments": {"range": "next"},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": f"{request_id}:mock-calendar",
+                        "name": "get_calendar",
+                        "content": result,
+                    },
+                    {"role": "assistant", "content": answer},
+                ],
+            )
             return AgentReply(
-                text=f"Your next event is {event.title} at {event.starts_at.strftime('%-I %p').lower()}.",
+                text=answer,
                 surface=Surface(
                     kind="timeline",
                     title="Today",
@@ -314,8 +621,12 @@ to resolve follow-up questions and references."""
             event = context.last_event
             people = [person for person in event.people if person != "Upstart"]
             answer = ", ".join(people) if people else "No one else is listed"
+            response = (
+                f"With {answer}. {event.notes}" if event.notes else f"With {answer}."
+            )
+            self.store.append_exchange(session_id, request_id, text, response)
             return AgentReply(
-                text=f"With {answer}. {event.notes}" if event.notes else f"With {answer}.",
+                text=response,
                 surface=Surface(
                     kind="message",
                     title=event.title,
@@ -330,22 +641,71 @@ to resolve follow-up questions and references."""
         reminder = self._parse_reminder(text)
         if reminder:
             reminder_text, due_at = reminder
-            saved = self.store.create(
-                reminder_text,
-                due_at,
+            actions = [
+                {
+                    "call_id": f"{request_id}:mock-reminder",
+                    "name": "create_reminder",
+                    "arguments": {
+                        "text": reminder_text,
+                        "due_at": due_at.isoformat(),
+                    },
+                    "operation_index": 0,
+                }
+            ]
+            confirmation = self.store.request_confirmation(
+                confirmation_id=f"{request_id}:confirmation:0",
                 device_id=session_id,
-                idempotency_key=f"{request_id}:create_reminder:0",
+                request_id=request_id,
+                actions=actions,
+                summary=self._confirmation_summary(actions),
+                expires_at=datetime.now().astimezone()
+                + timedelta(seconds=self.settings.assistant_confirmation_timeout_seconds),
             )
-            context.last_topic = "reminder"
+            answer = (
+                f"Confirm: {confirmation.summary}. "
+                "Say yes to continue or no to cancel."
+            )
+            self.store.append_messages(
+                session_id,
+                request_id,
+                [
+                    {"role": "user", "content": text},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": actions[0]["call_id"],
+                                "name": "create_reminder",
+                                "arguments": actions[0]["arguments"],
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": actions[0]["call_id"],
+                        "name": "create_reminder",
+                        "content": json.dumps(
+                            {
+                                "ok": False,
+                                "confirmation_required": True,
+                                "confirmation_id": confirmation.id,
+                                "summary": confirmation.summary,
+                            }
+                        ),
+                    },
+                    {"role": "assistant", "content": answer},
+                ],
+            )
             return AgentReply(
-                text=f"Done. I’ll remind you at {saved.due_at.strftime('%-I:%M %p').lower()}.",
+                text=answer,
                 surface=Surface(
-                    kind="reminder",
-                    title=saved.due_at.strftime("%-I:%M %p"),
-                    subtitle=saved.text,
-                    expires_ms=10000,
+                    kind="message",
+                    title="Confirmation required",
+                    subtitle=confirmation.summary,
+                    expires_ms=30000,
                 ),
-                tool="reminders",
+                tool="create_reminder",
             )
 
         if "reminder" in normalized or "reminders" in normalized:
@@ -354,6 +714,38 @@ to resolve follow-up questions and references."""
                 text_out = "No pending reminders. Against all odds, future-you is currently safe."
             else:
                 text_out = f"You have {len(pending)} pending reminder{'s' if len(pending) != 1 else ''}."
+            self.store.append_messages(
+                session_id,
+                request_id,
+                [
+                    {"role": "user", "content": text},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": f"{request_id}:mock-reminders",
+                                "name": "list_reminders",
+                                "arguments": {},
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": f"{request_id}:mock-reminders",
+                        "name": "list_reminders",
+                        "content": json.dumps(
+                            {
+                                "ok": True,
+                                "reminders": [
+                                    item.model_dump(mode="json") for item in pending
+                                ],
+                            }
+                        ),
+                    },
+                    {"role": "assistant", "content": text_out},
+                ],
+            )
             return AgentReply(
                 text=text_out,
                 surface=Surface(
@@ -369,8 +761,10 @@ to resolve follow-up questions and references."""
                 tool="reminders",
             )
 
+        answer = "I can handle the calendar and reminders in mock mode. The broader intellect arrives when you add the API keys."
+        self.store.append_exchange(session_id, request_id, text, answer)
         return AgentReply(
-            text="I can handle the calendar and reminders in mock mode. The broader intellect arrives when you add the API keys.",
+            text=answer,
             surface=Surface(
                 kind="message",
                 title="Mock mode",
@@ -378,6 +772,18 @@ to resolve follow-up questions and references."""
                 expires_ms=10000,
             ),
         )
+
+    def _last_mock_calendar_event(self, session_id: str) -> CalendarEvent | None:
+        for message in reversed(self.store.conversation(session_id, limit=30)):
+            if message.get("role") != "tool" or message.get("name") != "get_calendar":
+                continue
+            try:
+                events = json.loads(message["content"]).get("events", [])
+                if events:
+                    return CalendarEvent.model_validate(events[0])
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+        return None
 
     @staticmethod
     def _is_calendar_request(text: str) -> bool:

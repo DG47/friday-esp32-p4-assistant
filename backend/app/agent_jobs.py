@@ -6,7 +6,7 @@ import logging
 import sqlite3
 import uuid
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,6 +25,7 @@ class AgentJob:
     text: str
     status: str
     attempts: int
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     reply_json: str | None = None
     error: str | None = None
 
@@ -73,6 +74,10 @@ class AgentJobStore:
                     connection.execute(
                         "ALTER TABLE agent_jobs ADD COLUMN result_attempted_at TEXT"
                     )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS agent_jobs_claimable "
+                    "ON agent_jobs(status, available_at, created_at, device_id)"
+                )
 
     @staticmethod
     def _job(row: sqlite3.Row) -> AgentJob:
@@ -82,6 +87,7 @@ class AgentJobStore:
             text=row["text"],
             status=row["status"],
             attempts=row["attempts"],
+            created_at=datetime.fromisoformat(row["created_at"]),
             reply_json=row["reply_json"],
             error=row["error"],
         )
@@ -126,17 +132,34 @@ class AgentJobStore:
         return self._job(row) if row is not None else None
 
     def claim_next(
-        self, now: datetime | None = None, lease_seconds: float = 180.0
+        self,
+        now: datetime | None = None,
+        lease_seconds: float = 180.0,
+        max_age_seconds: float = 300.0,
     ) -> AgentJob | None:
         claimed_at = now or datetime.now(timezone.utc)
         timestamp = claimed_at.isoformat()
+        oldest_allowed = (
+            claimed_at - timedelta(seconds=max_age_seconds)
+        ).isoformat()
         lease_expires_at = (claimed_at + timedelta(seconds=lease_seconds)).isoformat()
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM agent_jobs WHERE status = 'queued' "
-                "AND available_at <= ? ORDER BY created_at LIMIT 1",
-                (timestamp,),
+                "SELECT candidate.* FROM agent_jobs AS candidate "
+                "WHERE candidate.status = 'queued' "
+                "AND candidate.available_at <= ? AND candidate.created_at > ? "
+                "AND NOT EXISTS (SELECT 1 FROM agent_jobs AS active "
+                "WHERE active.device_id = candidate.device_id "
+                "AND active.status = 'running') "
+                "AND NOT EXISTS (SELECT 1 FROM agent_jobs AS earlier "
+                "WHERE earlier.device_id = candidate.device_id "
+                "AND earlier.status IN ('queued', 'running') "
+                "AND (earlier.created_at < candidate.created_at "
+                "OR (earlier.created_at = candidate.created_at "
+                "AND earlier.rowid < candidate.rowid))) "
+                "ORDER BY candidate.created_at, candidate.rowid LIMIT 1",
+                (timestamp, oldest_allowed),
             ).fetchone()
             if row is None:
                 connection.commit()
@@ -155,15 +178,61 @@ class AgentJobStore:
             ).fetchone()
         return self._job(row)
 
-    def complete(self, job_id: str, reply: AgentReply) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+    def complete(
+        self, job_id: str, reply: AgentReply, max_age_seconds: float = 300.0
+    ) -> str:
+        completed_at = datetime.now(timezone.utc)
+        now = completed_at.isoformat()
         with closing(self._connect()) as connection:
             with connection:
-                connection.execute(
-                    "UPDATE agent_jobs SET status = 'completed', reply_json = ?, "
-                    "error = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?",
-                    (reply.model_dump_json(), now, job_id),
+                row = connection.execute(
+                    "SELECT created_at FROM agent_jobs WHERE id = ?", (job_id,)
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"Unknown agent job: {job_id}")
+                created_at = datetime.fromisoformat(row["created_at"])
+                status = (
+                    "late"
+                    if (completed_at - created_at).total_seconds() > max_age_seconds
+                    else "completed"
                 )
+                connection.execute(
+                    "UPDATE agent_jobs SET status = ?, reply_json = ?, "
+                    "error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?",
+                    (
+                        status,
+                        reply.model_dump_json(),
+                        "Result completed after its maximum useful age"
+                        if status == "late"
+                        else None,
+                        now,
+                        job_id,
+                    ),
+                )
+        return status
+
+    def expire_stale(
+        self, now: datetime | None = None, max_age_seconds: float = 300.0
+    ) -> int:
+        check_time = now or datetime.now(timezone.utc)
+        timestamp = check_time.isoformat()
+        cutoff = (check_time - timedelta(seconds=max_age_seconds)).isoformat()
+        with closing(self._connect()) as connection:
+            with connection:
+                queued = connection.execute(
+                    "UPDATE agent_jobs SET status = 'expired', "
+                    "error = 'Request expired before execution', updated_at = ? "
+                    "WHERE status = 'queued' AND created_at <= ?",
+                    (timestamp, cutoff),
+                ).rowcount
+                completed = connection.execute(
+                    "UPDATE agent_jobs SET status = 'late', "
+                    "error = 'Result became stale before delivery', updated_at = ? "
+                    "WHERE status = 'completed' AND result_delivered_at IS NULL "
+                    "AND created_at <= ?",
+                    (timestamp, cutoff),
+                ).rowcount
+        return queued + completed
 
     def fail(self, job: AgentJob, error: str, max_attempts: int = 3) -> str:
         now = datetime.now(timezone.utc)
@@ -189,7 +258,7 @@ class AgentJobStore:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT * FROM agent_jobs WHERE device_id = ? "
-                "AND status IN ('completed', 'failed') "
+                "AND status IN ('completed', 'failed', 'expired', 'late') "
                 "AND result_delivered_at IS NULL "
                 "ORDER BY created_at",
                 (device_id,),
@@ -204,7 +273,8 @@ class AgentJobStore:
             with connection:
                 cursor = connection.execute(
                     "UPDATE agent_jobs SET result_attempted_at = ?, updated_at = ? "
-                    "WHERE id = ? AND status IN ('completed', 'failed') "
+                    "WHERE id = ? AND status IN "
+                    "('completed', 'failed', 'expired', 'late') "
                     "AND result_delivered_at IS NULL AND "
                     "(result_attempted_at IS NULL OR result_attempted_at <= ?)",
                     (
@@ -234,11 +304,15 @@ class AgentJobWorker:
         agent: FridayAgent,
         hub: DeviceHub,
         timeout_seconds: float = 120.0,
+        max_age_seconds: float = 300.0,
+        concurrency: int = 4,
     ) -> None:
         self.store = store
         self.agent = agent
         self.hub = hub
         self.timeout_seconds = timeout_seconds
+        self.max_age_seconds = max(10.0, max_age_seconds)
+        self.concurrency = max(1, min(16, concurrency))
 
     async def _publish(self, job: AgentJob, reply: AgentReply) -> int:
         if reply.tool:
@@ -271,7 +345,20 @@ class AgentJobWorker:
                 job.id, datetime.now(timezone.utc)
             ):
                 continue
-            if job.status == "failed":
+            if job.status in {"expired", "late"}:
+                recipients = await self.hub.broadcast(
+                    job.device_id,
+                    {
+                        "type": "error",
+                        "code": "agent_stale",
+                        "message": "That request is no longer current, so I discarded its result.",
+                        "job_id": job.id,
+                    },
+                )
+                await self.hub.broadcast(
+                    job.device_id, {"type": "state", "state": "idle"}
+                )
+            elif job.status == "failed":
                 recipients = await self.hub.broadcast(
                     job.device_id,
                     {
@@ -295,8 +382,10 @@ class AgentJobWorker:
         return delivered
 
     async def process_once(self) -> bool:
+        self.store.expire_stale(max_age_seconds=self.max_age_seconds)
         job = self.store.claim_next(
-            lease_seconds=max(180.0, self.timeout_seconds + 30.0)
+            lease_seconds=max(180.0, self.timeout_seconds + 30.0),
+            max_age_seconds=self.max_age_seconds,
         )
         if job is None:
             return False
@@ -317,16 +406,38 @@ class AgentJobWorker:
                 )
             return True
 
-        self.store.complete(job.id, reply)
+        self.store.complete(job.id, reply, max_age_seconds=self.max_age_seconds)
         if job.device_id in self.hub.device_ids():
             await self.deliver_pending(job.device_id)
         return True
 
-    async def run(self) -> None:
+    async def _run_slot(self) -> None:
         while True:
-            self.store.recover_interrupted()
             worked = await self.process_once()
-            for device_id in self.hub.device_ids():
-                await self.deliver_pending(device_id)
             if not worked:
                 await asyncio.sleep(0.1)
+
+    async def _run_maintenance(self) -> None:
+        while True:
+            self.store.recover_interrupted()
+            self.store.expire_stale(max_age_seconds=self.max_age_seconds)
+            for device_id in self.hub.device_ids():
+                await self.deliver_pending(device_id)
+            await asyncio.sleep(0.5)
+
+    async def run(self) -> None:
+        tasks = [
+            asyncio.create_task(self._run_slot(), name=f"friday-agent-slot-{index}")
+            for index in range(self.concurrency)
+        ]
+        tasks.append(
+            asyncio.create_task(
+                self._run_maintenance(), name="friday-agent-maintenance"
+            )
+        )
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
