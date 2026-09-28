@@ -146,6 +146,7 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reply.surface.kind, "reminder")
         self.assertEqual(self.store.pending()[0].text, "prepare")
+        self.assertEqual(self.store.pending()[0].device_id, "reminder-device")
 
     async def test_ollama_provider_sends_personality_and_prompt(self):
         response = MagicMock()

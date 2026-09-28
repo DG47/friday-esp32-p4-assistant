@@ -11,9 +11,10 @@ FastAPI realtime gateway
                          │               │       │
                          ▼               ▼       ▼
                local faster-whisper   history  tools
-                                         │
-                                         ▼
+                                         │       │
+                                         ▼       ▼
                                 Ollama / GPT / Claude
+                                             reminder scheduler ──► alert
 ```
 
 ## Design boundaries
@@ -39,3 +40,6 @@ FastAPI realtime gateway
 4. Server sends `thinking`, an optional transcript, tool activity, a dynamic
    surface, assistant text, and `speaking`/`idle` state transitions.
 5. Reminder writes are committed to SQLite before success is announced.
+6. The background scheduler delivers due reminders to the originating device,
+   records delivery only after a connected peer receives the alert, and does
+   not repeat delivered reminders after restart.

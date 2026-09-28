@@ -14,6 +14,8 @@ scene generation.
 - model-driven tool loop for Ollama, GPT, and Claude, with bounded per-device
   conversation history and structured calendar/reminder calls
 - SQLite-backed reminders that survive backend restarts
+- proactive reminder delivery that pushes an alert surface to the originating
+  device, waits through disconnects, and prevents duplicate delivery
 - mock calendar data exposed through the same tool interface intended for a
   future real calendar adapter
 - pluggable local Ollama and cloud GPT/Claude provider boundary
@@ -76,6 +78,9 @@ or cloud transcriber can be added without changing the device protocol.
 
 Cloud GPT and Claude adapters remain available by adding their keys locally and
 choosing `openai`, `anthropic`, or `auto`. Never commit `.env`.
+
+The reminder scheduler checks for due work once per second by default. Override
+this with `ASSISTANT_REMINDER_POLL_SECONDS` when needed.
 
 ## Verify
 

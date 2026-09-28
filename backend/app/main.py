@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -14,6 +15,7 @@ from .audio_session import AudioSession, AudioSessionError
 from .config import get_settings
 from .db import ReminderStore
 from .device_hub import DeviceHub
+from .reminder_scheduler import ReminderScheduler
 from .stt import TranscriptionError, create_transcriber
 from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
 
@@ -24,12 +26,27 @@ agent = FridayAgent(settings, store)
 transcriber = create_transcriber(settings)
 static_dir = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
-
-app = FastAPI(title="Friday Assistant", version="0.1.0")
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-
 hub = DeviceHub()
+reminder_scheduler = ReminderScheduler(
+    store, hub, poll_seconds=settings.assistant_reminder_poll_seconds
+)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    scheduler_task = asyncio.create_task(
+        reminder_scheduler.run(), name="friday-reminder-scheduler"
+    )
+    try:
+        yield
+    finally:
+        scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await scheduler_task
+
+
+app = FastAPI(title="Friday Assistant", version="0.1.0", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 async def handle_utterance(device_id: str, text: str) -> None:

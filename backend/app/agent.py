@@ -160,7 +160,9 @@ to resolve follow-up questions and references."""
                 )
 
             for call in turn.tool_calls:
-                outcome = self._execute_tool(call.name, call.arguments)
+                outcome = self._execute_tool(
+                    call.name, call.arguments, device_id=session_id
+                )
                 last_surface = outcome.surface or last_surface
                 last_tool = call.name
                 messages.append(
@@ -185,7 +187,9 @@ to resolve follow-up questions and references."""
             tool=last_tool,
         )
 
-    def _execute_tool(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+    def _execute_tool(
+        self, name: str, arguments: dict[str, Any], device_id: str
+    ) -> ToolOutcome:
         if name == "get_calendar":
             events = self.calendar.today()
             selected = [self.calendar.next_event()] if arguments.get("range") == "next" else events
@@ -221,7 +225,7 @@ to resolve follow-up questions and references."""
                     raise ValueError("Reminder due time must be in the future")
             except ValueError as error:
                 return ToolOutcome(content=json.dumps({"ok": False, "error": str(error)}))
-            saved = self.store.create(reminder_text, due_at)
+            saved = self.store.create(reminder_text, due_at, device_id=device_id)
             return ToolOutcome(
                 content=json.dumps({"ok": True, "reminder": saved.model_dump(mode="json")}),
                 surface=Surface(
@@ -233,7 +237,7 @@ to resolve follow-up questions and references."""
             )
 
         if name == "list_reminders":
-            pending = self.store.pending()
+            pending = self.store.pending(device_id=device_id)
             result = {
                 "ok": True,
                 "reminders": [item.model_dump(mode="json") for item in pending],
@@ -301,7 +305,7 @@ to resolve follow-up questions and references."""
         reminder = self._parse_reminder(text)
         if reminder:
             reminder_text, due_at = reminder
-            saved = self.store.create(reminder_text, due_at)
+            saved = self.store.create(reminder_text, due_at, device_id=session_id)
             context.last_topic = "reminder"
             return AgentReply(
                 text=f"Done. I’ll remind you at {saved.due_at.strftime('%-I:%M %p').lower()}.",
@@ -315,7 +319,7 @@ to resolve follow-up questions and references."""
             )
 
         if "reminder" in normalized or "reminders" in normalized:
-            pending = self.store.pending()
+            pending = self.store.pending(device_id=session_id)
             if not pending:
                 text_out = "No pending reminders. Against all odds, future-you is currently safe."
             else:

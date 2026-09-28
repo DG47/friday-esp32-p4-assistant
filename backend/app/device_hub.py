@@ -20,9 +20,12 @@ class DeviceHub:
         if not peers:
             self.connections.pop(device_id, None)
 
-    async def broadcast(self, device_id: str, message: dict) -> None:
+    async def broadcast(self, device_id: str, message: dict) -> int:
+        delivered = 0
         for peer in list(self.connections.get(device_id, [])):
             try:
                 await peer.send_json(message)
+                delivered += 1
             except (RuntimeError, WebSocketDisconnect):
                 self.disconnect(device_id, peer)
+        return delivered

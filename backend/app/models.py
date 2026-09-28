@@ -24,6 +24,8 @@ class Reminder(BaseModel):
     text: str
     due_at: datetime
     created_at: datetime
+    device_id: str = "friday-p3a"
+    delivered_at: datetime | None = None
     completed: bool = False
 
 
@@ -40,4 +42,3 @@ class AgentReply(BaseModel):
     surface: Surface
     provider: str = "mock"
     tool: str | None = None
-

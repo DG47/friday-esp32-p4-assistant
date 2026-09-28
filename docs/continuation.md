@@ -77,7 +77,11 @@ Backend and simulator:
 - The personality now reads `ASSISTANT_USER_NAME` instead of hardcoding a user
   name. A live Ollama check selected `get_calendar`, consumed its result, and
   produced the expected grounded response and timeline surface.
-- Verification passed: 19 backend unit tests, the HTTP/WebSocket smoke test,
+- A background scheduler polls durable reminders, sends an `alert` state plus
+  reminder surface and text to the originating device, and records delivery to
+  prevent repeats. Due reminders remain pending while that device is offline,
+  and existing databases migrate in place with device and delivery columns.
+- Verification passed: 22 backend unit tests, the HTTP/WebSocket smoke test,
   ESP-IDF build, flash, boot, display, touch, Wi-Fi, and microphone capture.
 
 Voice-loop implementation added on 2026-09-25:
@@ -139,14 +143,13 @@ Voice-loop implementation added on 2026-09-25:
 Do not confuse working microphone capture with a complete voice assistant. The
 following remain:
 
-1. Add reminder scheduling/notifications rather than storage alone.
-2. Optimize wake-word latency or replace the rolling transcription probe with
+1. Optimize wake-word latency or replace the rolling transcription probe with
    a dedicated on-device wake model if needed.
-3. Replace mock calendar data with an authorized calendar integration.
-4. Add a true streaming/cloud STT adapter if lower latency is needed.
-5. Add TTS and interruption/barge-in after a speaker is attached.
-6. Move the compile-time backend address into provisioning or local discovery.
-7. Add authentication and transport security before using the service outside
+2. Replace mock calendar data with an authorized calendar integration.
+3. Add a true streaming/cloud STT adapter if lower latency is needed.
+4. Add TTS and interruption/barge-in after a speaker is attached.
+5. Move the compile-time backend address into provisioning or local discovery.
+6. Add authentication and transport security before using the service outside
    a trusted LAN.
 
 ## Resume commands
