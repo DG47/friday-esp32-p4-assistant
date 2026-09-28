@@ -90,7 +90,8 @@ function sendUtterance(value) {
   const text = value.trim();
   if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
   transcript.textContent = `“${text}”`;
-  socket.send(JSON.stringify({ type: "utterance", text }));
+  const requestId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  socket.send(JSON.stringify({ type: "utterance", text, request_id: requestId }));
 }
 
 form.addEventListener("submit", event => {

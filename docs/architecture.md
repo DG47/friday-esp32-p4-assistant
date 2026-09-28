@@ -7,14 +7,14 @@ P3A device / 720×720 simulator
                  │ WebSocket: control JSON + PCM audio frames
                  ▼
 FastAPI realtime gateway
-  audio-turn buffer ─ STT adapter ─ tool-calling agent ─ scene composer
-                         │               │       │
-                         ▼               ▼       ▼
-               local faster-whisper   history  tools
-                                         │       │
-                                         ▼       ▼
-                                Ollama / GPT / Claude
-                                             reminder scheduler ──► alert
+  audio-turn buffer ─ STT adapter ─ durable agent queue ─ tool-calling agent
+                         │                 │                  │       │
+                         ▼                 ▼                  ▼       ▼
+               local faster-whisper   lease/retry      SQLite history/tools
+                                                              │
+                                                              ▼
+                                                    Ollama / GPT / Claude
+                                 reminder scheduler ──► alert ──► device ack
 ```
 
 ## Design boundaries
@@ -34,12 +34,15 @@ FastAPI realtime gateway
 2. Client either sends a recognized text utterance or brackets binary PCM
    frames with `audio.start` and `audio.end`. The STT adapter emits the same
    text-utterance boundary used by typed input.
-3. The selected model receives bounded conversation history and structured
-   tool definitions. It may call calendar or reminder tools before composing
-   the final response.
-4. Server sends `thinking`, an optional transcript, tool activity, a dynamic
-   surface, assistant text, and `speaking`/`idle` state transitions.
-5. Reminder writes are committed to SQLite before success is announced.
-6. The background scheduler delivers due reminders to the originating device,
-   records delivery only after a connected peer receives the alert, and does
-   not repeat delivered reminders after restart.
+3. The gateway persists the request as a job and immediately returns
+   `job.accepted`; model and tool work no longer blocks the device socket.
+4. A leased worker runs the selected model with bounded SQLite conversation
+   history and structured tool definitions. Expired work is recovered, failed
+   attempts back off, and completed results survive device disconnects.
+5. Server sends tool activity, a dynamic surface, assistant text, and
+   `speaking`/`idle` state transitions. A reconnect triggers pending-result
+   delivery.
+6. Reminder writes are committed idempotently before success is announced.
+7. The background scheduler claims due reminders, sends `reminder.alert` only
+   to capable firmware, retries unacknowledged delivery, and records delivery
+   only after `reminder.ack`.

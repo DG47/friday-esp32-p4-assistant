@@ -46,12 +46,15 @@ Firmware and networking:
   address and must not be treated as permanent.
 - A local factory flash backup exists only in ignored `work/`; it is intentionally
   not uploaded because it may contain device-specific state.
-- The physical firmware now connects to
-  `ws://192.168.4.60:8000/ws/device/friday-p3a`, retries automatically, sends
+- The physical firmware now targets
+  `ws://192.168.4.38:8000/ws/device/friday-p3a`, retries automatically, sends
   touch or wake-word activation, and renders backend state, surface, tool,
   error, and assistant-text messages. It reconnects after both transport
   failures and a clean backend shutdown. This was flashed and verified on the
-  real board.
+  real board. The 2026-09-28 build was flashed and boot-verified with this new
+  address, but the board had no saved credentials and entered factory setup
+  mode; reconnect it to Wi-Fi before claiming the newest reminder-ack path is
+  physically verified end to end.
 - Dynamic labels are re-anchored after every text change. This matters in LVGL:
   labels resize to their content and otherwise retain coordinates calculated
   for the previous size, which can place response text partly off-screen.
@@ -61,14 +64,14 @@ Backend and simulator:
 - The FastAPI service binds to `0.0.0.0:8000` under `make dev-local`, allowing
   the ESP32 to reach it over the LAN. It remains available as
   `http://localhost:8000` on the Mac.
-- At the final check, the Mac LAN address was `192.168.4.60` and the health
+- At the final check, the Mac LAN address was `192.168.4.38` and the health
   endpoint was reachable there. This is also a DHCP address and may change.
 - The browser simulator supports typed interaction plus browser speech APIs.
 - The JSON WebSocket protocol is implemented at `/ws/device/{device_id}`.
   Multiple peers sharing an ID receive the same server messages; the browser
   and P3A use `friday-p3a` and were verified to stay synchronized.
 - The configured model now drives a provider-neutral tool loop with bounded
-  per-device conversation history. Calendar reads, reminder creation, and
+  per-device conversation history persisted in SQLite. Calendar reads, reminder creation, and
   reminder listing are structured tools; mock mode retains its deterministic
   acceptance path. Ollama is the selected keyless provider on the development
   Mac, using `qwen3.6:latest` at `http://127.0.0.1:11434`. OpenAI and Anthropic
@@ -77,12 +80,18 @@ Backend and simulator:
 - The personality now reads `ASSISTANT_USER_NAME` instead of hardcoding a user
   name. A live Ollama check selected `get_calendar`, consumed its result, and
   produced the expected grounded response and timeline surface.
-- A background scheduler polls durable reminders, sends an `alert` state plus
-  reminder surface and text to the originating device, and records delivery to
-  prevent repeats. Due reminders remain pending while that device is offline,
-  and existing databases migrate in place with device and delivery columns.
-- Verification passed: 22 backend unit tests, the HTTP/WebSocket smoke test,
-  ESP-IDF build, flash, boot, display, touch, Wi-Fi, and microphone capture.
+- Agent requests are persisted before acceptance. A leased background worker
+  executes them with a timeout, retry/backoff, restart recovery, and delivery
+  of completed results when the device reconnects. Request IDs make enqueue and
+  reminder creation idempotent.
+- A background scheduler atomically claims durable reminders and sends
+  `reminder.alert` only to firmware advertising `reminder_ack`. It retries after
+  disconnect or a missing acknowledgement and records delivery only when the
+  firmware returns `reminder.ack`.
+- Verification for this hardening milestone passed 33 backend unit tests, a
+  live Ollama tool turn, and an ESP-IDF build/flash/boot. The final physical
+  reminder acknowledgement remains pending because the freshly booted board is
+  in factory Wi-Fi setup mode.
 
 Voice-loop implementation added on 2026-09-25:
 
@@ -151,6 +160,10 @@ following remain:
 5. Move the compile-time backend address into provisioning or local discovery.
 6. Add authentication and transport security before using the service outside
    a trusted LAN.
+7. Add metrics, alerting, backup/retention policy, and load/failure testing.
+8. Add device acknowledgement for completed agent results if exactly-once
+   presentation is required; current result delivery is reconnect-safe but
+   server-send acknowledged only.
 
 ## Resume commands
 

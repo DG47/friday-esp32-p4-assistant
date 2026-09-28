@@ -83,6 +83,6 @@ The browser simulator is the source of truth for interaction behavior; the
 firmware renderer consumes the same scene/state protocol.
 
 The development backend URI is configured through `FRIDAY_BACKEND_WS_URI` and
-currently defaults to `ws://192.168.4.60:8000/ws/device/friday-p3a`. Rebuild and
+currently defaults to `ws://192.168.4.38:8000/ws/device/friday-p3a`. Rebuild and
 flash if the Mac's DHCP address changes. A later provisioning milestone should
 replace this compile-time address with discovery or an editable device setting.

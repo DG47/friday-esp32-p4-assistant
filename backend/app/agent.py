@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -73,7 +74,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 class SessionContext:
     last_event: CalendarEvent | None = None
     last_topic: str = ""
-    messages: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -93,11 +93,16 @@ class FridayAgent:
     def _context(self, session_id: str) -> SessionContext:
         return self.sessions.setdefault(session_id, SessionContext())
 
-    async def handle(self, session_id: str, text: str) -> AgentReply:
+    async def handle(
+        self, session_id: str, text: str, request_id: str | None = None
+    ) -> AgentReply:
+        request_id = request_id or str(uuid.uuid4())
         provider = self.providers.select(text)
         if provider is not None:
-            return await self._handle_with_model(session_id, text, provider)
-        return await self._handle_mock(session_id, text)
+            return await self._handle_with_model(
+                session_id, text, provider, request_id=request_id
+            )
+        return await self._handle_mock(session_id, text, request_id=request_id)
 
     def _instructions(self) -> str:
         timezone = ZoneInfo(self.settings.assistant_timezone)
@@ -115,13 +120,20 @@ succeeded until its result confirms success. Use prior conversation messages
 to resolve follow-up questions and references."""
 
     async def _handle_with_model(
-        self, session_id: str, text: str, provider: TextProvider
+        self,
+        session_id: str,
+        text: str,
+        provider: TextProvider,
+        request_id: str,
     ) -> AgentReply:
-        context = self._context(session_id)
         user_message = {"role": "user", "content": text}
-        messages: list[dict[str, Any]] = [*context.messages[-10:], user_message]
+        messages: list[dict[str, Any]] = [
+            *self.store.conversation(session_id, limit=10),
+            user_message,
+        ]
         last_surface: Surface | None = None
         last_tool: str | None = None
+        tool_sequence = 0
 
         for _ in range(4):
             turn = await provider.complete(messages, self._instructions(), TOOL_DEFINITIONS)
@@ -142,10 +154,7 @@ to resolve follow-up questions and references."""
 
             if not turn.tool_calls:
                 answer = turn.text.strip() or "Done."
-                context.messages.extend(
-                    [user_message, {"role": "assistant", "content": answer}]
-                )
-                context.messages = context.messages[-12:]
+                self.store.append_exchange(session_id, request_id, text, answer)
                 return AgentReply(
                     text=answer,
                     surface=last_surface
@@ -161,8 +170,13 @@ to resolve follow-up questions and references."""
 
             for call in turn.tool_calls:
                 outcome = self._execute_tool(
-                    call.name, call.arguments, device_id=session_id
+                    call.name,
+                    call.arguments,
+                    device_id=session_id,
+                    request_id=request_id,
+                    operation_index=tool_sequence,
                 )
+                tool_sequence += 1
                 last_surface = outcome.surface or last_surface
                 last_tool = call.name
                 messages.append(
@@ -175,10 +189,7 @@ to resolve follow-up questions and references."""
                 )
 
         answer = "I couldn't complete that request safely. Please try again."
-        context.messages.extend(
-            [user_message, {"role": "assistant", "content": answer}]
-        )
-        context.messages = context.messages[-12:]
+        self.store.append_exchange(session_id, request_id, text, answer)
         return AgentReply(
             text=answer,
             surface=last_surface
@@ -188,7 +199,12 @@ to resolve follow-up questions and references."""
         )
 
     def _execute_tool(
-        self, name: str, arguments: dict[str, Any], device_id: str
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        device_id: str,
+        request_id: str,
+        operation_index: int,
     ) -> ToolOutcome:
         if name == "get_calendar":
             events = self.calendar.today()
@@ -225,7 +241,14 @@ to resolve follow-up questions and references."""
                     raise ValueError("Reminder due time must be in the future")
             except ValueError as error:
                 return ToolOutcome(content=json.dumps({"ok": False, "error": str(error)}))
-            saved = self.store.create(reminder_text, due_at, device_id=device_id)
+            saved = self.store.create(
+                reminder_text,
+                due_at,
+                device_id=device_id,
+                idempotency_key=(
+                    f"{request_id}:create_reminder:{operation_index}"
+                ),
+            )
             return ToolOutcome(
                 content=json.dumps({"ok": True, "reminder": saved.model_dump(mode="json")}),
                 surface=Surface(
@@ -265,7 +288,9 @@ to resolve follow-up questions and references."""
             content=json.dumps({"ok": False, "error": f"Unknown tool: {name}"})
         )
 
-    async def _handle_mock(self, session_id: str, text: str) -> AgentReply:
+    async def _handle_mock(
+        self, session_id: str, text: str, request_id: str
+    ) -> AgentReply:
         normalized = " ".join(text.lower().strip().split())
         context = self._context(session_id)
 
@@ -305,7 +330,12 @@ to resolve follow-up questions and references."""
         reminder = self._parse_reminder(text)
         if reminder:
             reminder_text, due_at = reminder
-            saved = self.store.create(reminder_text, due_at, device_id=session_id)
+            saved = self.store.create(
+                reminder_text,
+                due_at,
+                device_id=session_id,
+                idempotency_key=f"{request_id}:create_reminder:0",
+            )
             context.last_topic = "reminder"
             return AgentReply(
                 text=f"Done. I’ll remind you at {saved.due_at.strftime('%-I:%M %p').lower()}.",

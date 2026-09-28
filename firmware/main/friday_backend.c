@@ -1,5 +1,6 @@
 #include "friday_backend.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -94,6 +95,23 @@ static void handle_message(const char *payload)
         friday_ui_set_state(parse_state(json_string(root, "state")));
     } else if (strcmp(type, "wake.detected") == 0) {
         wake_requested = true;
+    } else if (strcmp(type, "reminder.alert") == 0) {
+        const cJSON *reminder_id = cJSON_GetObjectItemCaseSensitive(
+            root, "reminder_id");
+        handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
+        friday_ui_set_response(json_string(root, "text"));
+        friday_ui_set_state(FRIDAY_STATE_ALERT);
+        if (cJSON_IsNumber(reminder_id)) {
+            char acknowledgement[80];
+            int length = snprintf(
+                acknowledgement, sizeof(acknowledgement),
+                "{\"type\":\"reminder.ack\",\"reminder_id\":%d}",
+                reminder_id->valueint);
+            if (length <= 0 || (size_t)length >= sizeof(acknowledgement) ||
+                send_text(acknowledgement, pdMS_TO_TICKS(1000)) < 0) {
+                ESP_LOGW(TAG, "Could not acknowledge reminder");
+            }
+        }
     } else if (strcmp(type, "surface") == 0) {
         handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
     } else if (strcmp(type, "assistant.text") == 0) {
@@ -148,7 +166,8 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     case WEBSOCKET_EVENT_CONNECTED: {
         const char hello[] =
             "{\"type\":\"hello\",\"protocol\":1,"
-            "\"capabilities\":[\"display\",\"touch\",\"microphone\"]}";
+            "\"capabilities\":[\"display\",\"touch\",\"microphone\","
+            "\"reminder_ack\"]}";
         ESP_LOGI(TAG, "Connected to Friday backend");
         friday_ui_set_backend("FRIDAY ONLINE");
         send_text(hello, pdMS_TO_TICKS(1000));

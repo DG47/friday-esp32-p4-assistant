@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     assistant_provider: Literal["auto", "mock", "ollama", "openai", "anthropic"] = "auto"
     assistant_database_path: Path = Path("data/friday.db")
     assistant_reminder_poll_seconds: float = 1.0
+    assistant_job_timeout_seconds: float = 120.0
 
     openai_api_key: str = ""
     anthropic_api_key: str = ""

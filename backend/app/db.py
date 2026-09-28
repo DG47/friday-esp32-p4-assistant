@@ -31,6 +31,9 @@ class ReminderStore:
                         created_at TEXT NOT NULL,
                         device_id TEXT NOT NULL DEFAULT 'friday-p3a',
                         delivered_at TEXT,
+                        delivery_attempted_at TEXT,
+                        delivery_attempts INTEGER NOT NULL DEFAULT 0,
+                        idempotency_key TEXT,
                         completed INTEGER NOT NULL DEFAULT 0
                     )
                     """
@@ -48,17 +51,65 @@ class ReminderStore:
                     connection.execute(
                         "ALTER TABLE reminders ADD COLUMN delivered_at TEXT"
                     )
+                if "delivery_attempted_at" not in columns:
+                    connection.execute(
+                        "ALTER TABLE reminders ADD COLUMN delivery_attempted_at TEXT"
+                    )
+                if "delivery_attempts" not in columns:
+                    connection.execute(
+                        "ALTER TABLE reminders ADD COLUMN delivery_attempts INTEGER "
+                        "NOT NULL DEFAULT 0"
+                    )
+                if "idempotency_key" not in columns:
+                    connection.execute(
+                        "ALTER TABLE reminders ADD COLUMN idempotency_key TEXT"
+                    )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS reminders_idempotency_key "
+                    "ON reminders(idempotency_key) WHERE idempotency_key IS NOT NULL"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS conversation_messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        device_id TEXT NOT NULL,
+                        request_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        UNIQUE(request_id, role)
+                    )
+                    """
+                )
 
     def create(
-        self, text: str, due_at: datetime, device_id: str = "friday-p3a"
+        self,
+        text: str,
+        due_at: datetime,
+        device_id: str = "friday-p3a",
+        idempotency_key: str | None = None,
     ) -> Reminder:
         created_at = datetime.now(tz=due_at.tzinfo)
         with closing(self._connect()) as connection:
             with connection:
+                if idempotency_key:
+                    existing = connection.execute(
+                        "SELECT * FROM reminders WHERE idempotency_key = ?",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if existing is not None:
+                        return self._from_row(existing)
                 cursor = connection.execute(
-                    "INSERT INTO reminders (text, due_at, created_at, device_id) "
-                    "VALUES (?, ?, ?, ?)",
-                    (text, due_at.isoformat(), created_at.isoformat(), device_id),
+                    "INSERT INTO reminders "
+                    "(text, due_at, created_at, device_id, idempotency_key) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        text,
+                        due_at.isoformat(),
+                        created_at.isoformat(),
+                        device_id,
+                        idempotency_key,
+                    ),
                 )
                 reminder_id = int(cursor.lastrowid)
         return Reminder(
@@ -113,12 +164,59 @@ class ReminderStore:
                 due.append(reminder)
         return due
 
-    def mark_delivered(self, reminder_id: int, delivered_at: datetime) -> bool:
+    def claim_delivery(
+        self, reminder_id: int, attempted_at: datetime, retry_seconds: float = 10.0
+    ) -> bool:
+        retry_before = datetime.fromtimestamp(
+            attempted_at.timestamp() - retry_seconds, tz=attempted_at.tzinfo
+        ).isoformat()
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE reminders SET delivery_attempted_at = ?, "
+                    "delivery_attempts = delivery_attempts + 1 "
+                    "WHERE id = ? AND delivered_at IS NULL "
+                    "AND (delivery_attempted_at IS NULL OR delivery_attempted_at <= ?)",
+                    (attempted_at.isoformat(), reminder_id, retry_before),
+                )
+        return cursor.rowcount == 1
+
+    def mark_delivered(
+        self, reminder_id: int, device_id: str, delivered_at: datetime
+    ) -> bool:
         with closing(self._connect()) as connection:
             with connection:
                 cursor = connection.execute(
                     "UPDATE reminders SET delivered_at = ? "
-                    "WHERE id = ? AND delivered_at IS NULL",
-                    (delivered_at.isoformat(), reminder_id),
+                    "WHERE id = ? AND device_id = ? AND delivered_at IS NULL",
+                    (delivered_at.isoformat(), reminder_id, device_id),
                 )
         return cursor.rowcount == 1
+
+    def conversation(self, device_id: str, limit: int = 10) -> list[dict[str, str]]:
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT role, content FROM conversation_messages "
+                "WHERE device_id = ? ORDER BY id DESC LIMIT ?",
+                (device_id, limit),
+            ).fetchall()
+        return [
+            {"role": row["role"], "content": row["content"]}
+            for row in reversed(rows)
+        ]
+
+    def append_exchange(
+        self, device_id: str, request_id: str, user_text: str, assistant_text: str
+    ) -> None:
+        now = datetime.now().astimezone().isoformat()
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.executemany(
+                    "INSERT OR IGNORE INTO conversation_messages "
+                    "(device_id, request_id, role, content, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (device_id, request_id, "user", user_text, now),
+                        (device_id, request_id, "assistant", assistant_text, now),
+                    ],
+                )

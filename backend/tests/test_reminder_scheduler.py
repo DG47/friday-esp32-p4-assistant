@@ -41,17 +41,17 @@ class ReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
         )
         socket = FakeWebSocket()
         await self.hub.connect("device-1", socket)
+        self.hub.set_capabilities("device-1", socket, {"reminder_ack"})
 
         delivered = await self.scheduler.deliver_due_once(now)
 
         self.assertEqual(delivered, 1)
         self.assertEqual([message["type"] for message in socket.messages], [
-            "state",
-            "surface",
-            "assistant.text",
+            "reminder.alert",
         ])
-        self.assertEqual(socket.messages[0]["state"], "alert")
-        self.assertEqual(socket.messages[1]["surface"]["subtitle"], "join the interview")
+        self.assertEqual(socket.messages[0]["surface"]["subtitle"], "join the interview")
+        reminder_id = socket.messages[0]["reminder_id"]
+        self.store.mark_delivered(reminder_id, "device-1", now)
         self.assertEqual([item.text for item in self.store.pending()], ["future item"])
 
         restarted = ReminderScheduler(ReminderStore(self.path), self.hub)
@@ -68,8 +68,17 @@ class ReminderSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         socket = FakeWebSocket()
         await self.hub.connect("offline", socket)
+        self.hub.set_capabilities("offline", socket, {"reminder_ack"})
         self.assertEqual(await self.scheduler.deliver_due_once(now), 1)
+        self.store.mark_delivered(socket.messages[0]["reminder_id"], "offline", now)
         self.assertEqual(self.store.pending(), [])
+
+    async def test_acknowledgement_is_scoped_to_the_originating_device(self):
+        now = datetime.now(timezone.utc)
+        reminder = self.store.create("private", now, device_id="device-1")
+
+        self.assertFalse(self.store.mark_delivered(reminder.id, "device-2", now))
+        self.assertTrue(self.store.mark_delivered(reminder.id, "device-1", now))
 
     async def test_migrates_existing_reminder_database(self):
         legacy_path = Path(self.tempdir.name) / "legacy.db"

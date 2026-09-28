@@ -12,13 +12,14 @@ is `friday-p3a`.
 ## Client messages
 
 ```json
-{"type":"hello","protocol":1,"capabilities":["display","touch"]}
+{"type":"hello","protocol":1,"capabilities":["display","touch","reminder_ack"]}
 {"type":"wake.start","format":"pcm_s16le","sample_rate":12000,"channels":1}
 {"type":"activate","source":"touch"}
 {"type":"activate","source":"wake_word"}
-{"type":"utterance","text":"What's next?"}
+{"type":"utterance","request_id":"7b1...","text":"What's next?"}
 {"type":"audio.start","format":"pcm_s16le","sample_rate":12000,"channels":1}
 {"type":"audio.end"}
+{"type":"reminder.ack","reminder_id":42}
 ```
 
 For a voice turn, send `audio.start`, one or more binary PCM frames, then
@@ -41,13 +42,25 @@ turns from streaming forever. The capture boundary remains separate from STT.
 
 ```json
 {"type":"wake.detected","wake_word":"Friday"}
+{"type":"job.accepted","job_id":"7b1..."}
 {"type":"state","state":"thinking"}
 {"type":"transcript","text":"What's next?","provider":"faster-whisper"}
 {"type":"assistant.text","text":"Your interview is at two."}
 {"type":"surface","surface":{"kind":"timeline","title":"Today","items":[]}}
 {"type":"tool.activity","name":"calendar","status":"working"}
+{"type":"reminder.alert","reminder_id":42,"text":"Reminder: prepare","surface":{"kind":"reminder","title":"Reminder","subtitle":"prepare"}}
 {"type":"error","code":"bad_message","message":"..."}
 ```
+
+Utterances become durable agent jobs. Supplying a stable `request_id` makes
+retries idempotent; the server returns the corresponding `job.accepted` event
+without running the same request twice. Jobs interrupted by a backend restart
+are retried after their lease expires, and completed results are retained until
+they can be sent to a connected peer.
+
+`reminder.alert` is sent only to peers advertising `reminder_ack`. The physical
+device renders the alert before replying with `reminder.ack`; until that
+acknowledgement is stored, the backend retries delivery with a bounded cadence.
 
 States are `idle`, `listening`, `thinking`, `speaking`, and `alert`. Surface
 kinds currently implemented by the simulator are `ambient`, `timeline`,

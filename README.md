@@ -12,10 +12,13 @@ scene generation.
 - WebSocket device protocol shared by the simulator and firmware
 - deterministic mock agent for the complete acceptance flow
 - model-driven tool loop for Ollama, GPT, and Claude, with bounded per-device
-  conversation history and structured calendar/reminder calls
+  conversation history persisted in SQLite and structured calendar/reminder calls
+- durable SQLite-backed agent jobs with immediate acceptance, bounded execution,
+  retry/backoff, expired-lease recovery, and result delivery after reconnection
 - SQLite-backed reminders that survive backend restarts
-- proactive reminder delivery that pushes an alert surface to the originating
-  device, waits through disconnects, and prevents duplicate delivery
+- idempotent reminder creation keyed to the originating request
+- proactive reminder delivery that retries through disconnects and records
+  delivery only after an acknowledgement from reminder-capable firmware
 - mock calendar data exposed through the same tool interface intended for a
   future real calendar adapter
 - pluggable local Ollama and cloud GPT/Claude provider boundary
@@ -82,6 +85,21 @@ choosing `openai`, `anthropic`, or `auto`. Never commit `.env`.
 The reminder scheduler checks for due work once per second by default. Override
 this with `ASSISTANT_REMINDER_POLL_SECONDS` when needed.
 
+Agent turns are accepted before model work begins and run from a durable local
+queue. `ASSISTANT_JOB_TIMEOUT_SECONDS` bounds each attempt. Interrupted leases
+are recovered after restart, transient failures retry with backoff, and a
+completed response remains pending until a matching device reconnects.
+
+## Production-readiness boundary
+
+This is a hardened local prototype, not yet an internet-facing production
+service. The durable job/reminder paths now cover process restart, retry, and
+device disconnect scenarios, but production deployment still requires device
+authentication, TLS, secrets management, operational metrics/alerting, backup
+and retention policy, load/failure testing, and live validation of any selected
+cloud providers. Agent results also need a device-level acknowledgement if
+exactly-once presentation is required; reminder alerts already have one.
+
 ## Verify
 
 Run `make test-local` (or `make test` with Docker). With the service running,
@@ -95,8 +113,11 @@ The connected serial device is expected to look like
 `/dev/cu.usbmodem...`. Firmware setup instructions are in
 [`firmware/README.md`](firmware/README.md). The native display/touch firmware
 has been flashed and boot-verified on the connected ESP32-P4 revision 1.0. The
-current board joined Wi-Fi successfully and its microphone capture was verified
-with continuously changing, nonzero audio samples. The tap-to-talk → local
+board has joined Wi-Fi successfully in earlier physical tests and its microphone
+capture was verified with continuously changing, nonzero audio samples. After
+the latest flash it entered factory Wi-Fi setup mode, so the new reminder-alert
+acknowledgement path is build/boot tested but still awaits a joined-network
+end-to-end check. The tap-to-talk → local
 Whisper → Ollama → display loop was confirmed by the user on the physical P3A.
 The automatic VAD endpoint was also confirmed on the physical P3A through a
 complete one-tap voice turn without a WebSocket drop.

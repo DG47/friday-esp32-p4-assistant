@@ -36,30 +36,26 @@ class ReminderScheduler:
         delivered = 0
         check_time = now or datetime.now(timezone.utc)
         for reminder in self.store.due(check_time):
-            recipients = await self.hub.broadcast(
-                reminder.device_id, {"type": "state", "state": "alert"}
-            )
-            if recipients == 0:
+            if not self.hub.has_capability(reminder.device_id, "reminder_ack"):
                 continue
-            await self.hub.broadcast(
+            if not self.store.claim_delivery(reminder.id, check_time):
+                continue
+            recipients = await self.hub.broadcast(
                 reminder.device_id,
                 {
-                    "type": "surface",
+                    "type": "reminder.alert",
+                    "reminder_id": reminder.id,
+                    "text": f"Reminder: {reminder.text}",
                     "surface": self._surface(reminder).model_dump(mode="json"),
                 },
+                required_capability="reminder_ack",
             )
-            recipients = await self.hub.broadcast(
-                reminder.device_id,
-                {
-                    "type": "assistant.text",
-                    "text": f"Reminder: {reminder.text}",
-                    "provider": "scheduler",
-                },
-            )
-            if recipients > 0 and self.store.mark_delivered(reminder.id, check_time):
+            if recipients > 0:
                 delivered += 1
                 logger.info(
-                    "Delivered reminder %s to %s", reminder.id, reminder.device_id
+                    "Sent reminder %s to %s; awaiting acknowledgement",
+                    reminder.id,
+                    reminder.device_id,
                 )
         return delivered
 

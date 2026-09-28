@@ -34,12 +34,12 @@ class FakeToolProvider(TextProvider):
 class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        settings = Settings(
+        self.settings = Settings(
             assistant_provider="mock",
             assistant_database_path=Path(self.tempdir.name) / "test.db",
         )
-        self.store = ReminderStore(settings.assistant_database_path)
-        self.agent = FridayAgent(settings, self.store)
+        self.store = ReminderStore(self.settings.assistant_database_path)
+        self.agent = FridayAgent(self.settings, self.store)
 
     async def asyncTearDown(self):
         self.tempdir.cleanup()
@@ -114,8 +114,9 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         second_provider = FakeToolProvider([ProviderTurn(text="It is with David.")])
         with patch.object(self.agent.providers, "select", return_value=first_provider):
             await self.agent.handle("history-device", "What's next?")
-        with patch.object(self.agent.providers, "select", return_value=second_provider):
-            reply = await self.agent.handle("history-device", "Who is it with?")
+        restarted_agent = FridayAgent(self.settings, ReminderStore(self.settings.assistant_database_path))
+        with patch.object(restarted_agent.providers, "select", return_value=second_provider):
+            reply = await restarted_agent.handle("history-device", "Who is it with?")
 
         history = second_provider.requests[0]["messages"]
         self.assertEqual(history[0]["content"], "What's next?")
@@ -147,6 +148,75 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply.surface.kind, "reminder")
         self.assertEqual(self.store.pending()[0].text, "prepare")
         self.assertEqual(self.store.pending()[0].device_id, "reminder-device")
+
+    async def test_reminder_tool_is_idempotent_for_a_retried_request(self):
+        def provider():
+            return FakeToolProvider(
+                [
+                    ProviderTurn(
+                        tool_calls=[
+                            ToolCall(
+                                id="call-reminder",
+                                name="create_reminder",
+                                arguments={
+                                    "text": "prepare",
+                                    "due_at": "2030-01-02T12:00:00-05:00",
+                                },
+                            )
+                        ]
+                    ),
+                    ProviderTurn(text="I'll remind you."),
+                ]
+            )
+
+        first = provider()
+        with patch.object(self.agent.providers, "select", return_value=first):
+            await self.agent.handle(
+                "retry-device", "Remind me to prepare", request_id="stable-request"
+            )
+        second = provider()
+        with patch.object(self.agent.providers, "select", return_value=second):
+            await self.agent.handle(
+                "retry-device", "Remind me to prepare", request_id="stable-request"
+            )
+
+        self.assertEqual(len(self.store.pending(device_id="retry-device")), 1)
+
+    async def test_one_request_can_create_multiple_distinct_reminders(self):
+        provider = FakeToolProvider(
+            [
+                ProviderTurn(
+                    tool_calls=[
+                        ToolCall(
+                            id="call-first",
+                            name="create_reminder",
+                            arguments={
+                                "text": "prepare",
+                                "due_at": "2030-01-02T12:00:00-05:00",
+                            },
+                        ),
+                        ToolCall(
+                            id="call-second",
+                            name="create_reminder",
+                            arguments={
+                                "text": "leave",
+                                "due_at": "2030-01-02T13:00:00-05:00",
+                            },
+                        ),
+                    ]
+                ),
+                ProviderTurn(text="Both reminders are set."),
+            ]
+        )
+        with patch.object(self.agent.providers, "select", return_value=provider):
+            await self.agent.handle(
+                "multi-device", "Set two reminders", request_id="multi-request"
+            )
+
+        self.assertEqual(
+            [item.text for item in self.store.pending(device_id="multi-device")],
+            ["prepare", "leave"],
+        )
 
     async def test_ollama_provider_sends_personality_and_prompt(self):
         response = MagicMock()

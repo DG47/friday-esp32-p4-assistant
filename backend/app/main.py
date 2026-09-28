@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -11,6 +12,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .agent import FridayAgent
+from .agent_jobs import AgentJobStore, AgentJobWorker
 from .audio_session import AudioSession, AudioSessionError
 from .config import get_settings
 from .db import ReminderStore
@@ -23,6 +25,7 @@ from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
 settings = get_settings()
 store = ReminderStore(settings.assistant_database_path)
 agent = FridayAgent(settings, store)
+job_store = AgentJobStore(settings.assistant_database_path)
 transcriber = create_transcriber(settings)
 static_dir = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
@@ -30,48 +33,43 @@ hub = DeviceHub()
 reminder_scheduler = ReminderScheduler(
     store, hub, poll_seconds=settings.assistant_reminder_poll_seconds
 )
+job_worker = AgentJobWorker(
+    job_store, agent, hub, timeout_seconds=settings.assistant_job_timeout_seconds
+)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    scheduler_task = asyncio.create_task(
-        reminder_scheduler.run(), name="friday-reminder-scheduler"
-    )
+    tasks = [
+        asyncio.create_task(
+            reminder_scheduler.run(), name="friday-reminder-scheduler"
+        ),
+        asyncio.create_task(job_worker.run(), name="friday-agent-job-worker"),
+    ]
     try:
         yield
     finally:
-        scheduler_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await scheduler_task
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="Friday Assistant", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
-async def handle_utterance(device_id: str, text: str) -> None:
+async def handle_utterance(
+    device_id: str, text: str, request_id: str | None = None
+) -> str:
+    job = job_store.enqueue(device_id, text, request_id=request_id)
     await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
-    reply = await agent.handle(device_id, text)
-    if reply.tool:
-        await hub.broadcast(
-            device_id,
-            {"type": "tool.activity", "name": reply.tool, "status": "complete"},
-        )
     await hub.broadcast(
         device_id,
-        {"type": "surface", "surface": reply.surface.model_dump(mode="json")},
+        {"type": "job.accepted", "job_id": job.id},
     )
-    await hub.broadcast(
-        device_id,
-        {
-            "type": "assistant.text",
-            "text": reply.text,
-            "provider": reply.provider,
-        },
-    )
-    await hub.broadcast(device_id, {"type": "state", "state": "speaking"})
-    await asyncio.sleep(min(0.9, max(0.25, len(reply.text) / 180)))
-    await hub.broadcast(device_id, {"type": "state", "state": "idle"})
+    return job.id
 
 
 async def send_error(websocket: WebSocket, code: str, message: str) -> None:
@@ -173,9 +171,16 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             message_type = message.get("type")
 
             if message_type == "hello":
+                capabilities = {
+                    str(item)
+                    for item in message.get("capabilities", [])
+                    if isinstance(item, str)
+                }
+                hub.set_capabilities(device_id, websocket, capabilities)
                 wake_audio.reset()
                 wake_enabled = transcriber is not None
                 await hub.broadcast(device_id, {"type": "state", "state": "idle"})
+                await job_worker.deliver_pending(device_id)
             elif message_type == "activate":
                 wake_enabled = False
                 wake_audio.reset()
@@ -193,7 +198,41 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                 if not text:
                     await send_error(websocket, "empty_utterance", "I heard a truly immaculate silence.")
                     continue
-                await handle_utterance(device_id, text)
+                request_id = message.get("request_id")
+                if request_id is not None and (
+                    not isinstance(request_id, str) or len(request_id) > 128
+                ):
+                    await send_error(
+                        websocket, "bad_message", "request_id must be a short string"
+                    )
+                    continue
+                try:
+                    await handle_utterance(
+                        device_id,
+                        text,
+                        request_id=request_id,
+                    )
+                except ValueError as error:
+                    await send_error(websocket, "request_conflict", str(error))
+            elif message_type == "reminder.ack":
+                if not hub.peer_has_capability(
+                    device_id, websocket, "reminder_ack"
+                ):
+                    await send_error(
+                        websocket,
+                        "capability_required",
+                        "reminder_ack capability was not declared",
+                    )
+                    continue
+                reminder_id = message.get("reminder_id")
+                if not isinstance(reminder_id, int):
+                    await send_error(
+                        websocket, "bad_message", "reminder_id must be an integer"
+                    )
+                    continue
+                store.mark_delivered(
+                    reminder_id, device_id, datetime.now(timezone.utc)
+                )
             elif message_type == "audio.start":
                 try:
                     wake_enabled = False
