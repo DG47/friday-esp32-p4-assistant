@@ -35,6 +35,24 @@ class FridayDiscoveryProtocolTests(unittest.TestCase):
             },
         )
 
+    def test_explicit_public_host_overrides_route_resolution(self):
+        protocol = FridayDiscoveryProtocol(
+            public_port=8000,
+            resolver=lambda _: "192.168.4.38",
+            public_host="192.168.7.250",
+        )
+        protocol.connection_made(self.transport)
+
+        protocol.datagram_received(
+            b"FRIDAY_DISCOVER_V1 friday-p3a", ("192.168.4.46", 49152)
+        )
+
+        data, _ = self.transport.packets[0]
+        self.assertEqual(
+            json.loads(data)["ws_url"],
+            "wss://192.168.7.250:8000/ws/device/friday-p3a",
+        )
+
     def test_ignores_invalid_discovery_packets(self):
         self.protocol.datagram_received(b"not-friday", ("192.168.4.46", 49152))
         self.protocol.datagram_received(

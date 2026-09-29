@@ -96,8 +96,18 @@ Firmware and networking:
   without unrelated field garbage. After the backend restarted, Friday
   reauthenticated automatically and remained connected for another minute.
   This verifies bounded fallback discovery and short idle/recovery stability,
-  but not switching to a genuinely different LAN address or long-running soak
-  stability; both remain explicit TODO items.
+  but not long-running soak stability.
+- Authenticated address switching was physically verified on 2026-09-29. The
+  Mac temporarily served the trusted backend only at `192.168.7.250`, while
+  Friday still held `192.168.4.38`. After five failed reconnects, the device
+  discovered `192.168.7.250`, completed TLS and device authentication, received
+  `ready`, saved the replacement endpoint, and returned to idle. A device
+  reboot then connected directly to the saved replacement. The reverse test
+  moved the backend back to `192.168.4.38`; Friday again rediscovered,
+  authenticated, saved the normal address, and returned to idle. The temporary
+  address was removed afterward. The backend's optional
+  `ASSISTANT_PUBLIC_HOST` setting supports this multi-homed test/deployment
+  case, and all 83 backend tests passed.
 - Dynamic labels are re-anchored after every text change. This matters in LVGL:
   labels resize to their content and otherwise retain coordinates calculated
   for the previous size, which can place response text partly off-screen.

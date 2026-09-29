@@ -24,10 +24,12 @@ class FridayDiscoveryProtocol(asyncio.DatagramProtocol):
         public_port: int,
         public_scheme: str = "wss",
         resolver: Callable[[str], str] = local_ip_for_peer,
+        public_host: str | None = None,
     ) -> None:
         self.public_port = public_port
         self.public_scheme = public_scheme
         self.resolver = resolver
+        self.public_host = public_host
         self.transport: asyncio.DatagramTransport | None = None
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
@@ -44,7 +46,7 @@ class FridayDiscoveryProtocol(asyncio.DatagramProtocol):
         if not DEVICE_ID_PATTERN.fullmatch(device_id):
             return
         try:
-            host = self.resolver(address[0])
+            host = self.public_host or self.resolver(address[0])
         except OSError:
             return
         response = json.dumps(

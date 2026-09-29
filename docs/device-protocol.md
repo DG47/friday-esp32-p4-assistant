@@ -24,6 +24,10 @@ consecutive reconnects that never authenticate, firmware reruns discovery,
 switches the live client to the returned TLS URL, and persists that address
 only after the normal authenticated `ready` boundary.
 
+By default, the backend advertises the interface selected for the requesting
+device. A multi-homed deployment can set `ASSISTANT_PUBLIC_HOST` to advertise a
+specific LAN address; that address must be present in the backend certificate.
+
 On first boot, firmware creates a random 32-byte token and stores it in NVS.
 The backend stores only its SHA-256 hash. If enrollment is required, Friday
 shows an eight-character code derived from that token. An unpaired LAN device

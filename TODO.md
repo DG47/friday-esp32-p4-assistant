@@ -22,7 +22,7 @@ P3A has been tested.
   whichever unpaired device connects first.
 - [x] Fall back to authenticated discovery after repeated failures to reconnect
   to a saved backend address.
-- [ ] Physically verify that authenticated rediscovery switches Friday to a
+- [x] Physically verify that authenticated rediscovery switches Friday to a
   backend whose LAN address changed.
 - [x] Reduce idle WebSocket write pressure and verify that the recurring
   `transport_poll_write(0)` disconnect does not reproduce during a bounded

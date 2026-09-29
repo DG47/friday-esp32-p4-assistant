@@ -63,6 +63,7 @@ async def lifespan(_: FastAPI):
             lambda: FridayDiscoveryProtocol(
                 settings.assistant_public_port,
                 settings.assistant_public_scheme,
+                public_host=settings.assistant_public_host or None,
             ),
             local_addr=("0.0.0.0", settings.assistant_discovery_port),
             allow_broadcast=True,

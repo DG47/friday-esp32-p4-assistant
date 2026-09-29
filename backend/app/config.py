@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     assistant_job_concurrency: int = 4
     assistant_confirmation_timeout_seconds: float = 300.0
     assistant_discovery_port: int = 8334
+    assistant_public_host: str = ""
     assistant_public_port: int = 8000
     assistant_public_scheme: Literal["ws", "wss"] = "wss"
     assistant_simulator_token: str = ""
