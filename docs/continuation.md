@@ -220,6 +220,9 @@ Discovery and pairing milestone added on 2026-09-28:
   identity and no open pairing window. The first display attempt exposed and
   fixed an ordering bug where alert state overwrote the code with a generic
   message; `02fc1f8` applies alert state before the specific error surface.
+- The post-enrollment display was physically verified on 2026-09-29 against
+  backend revision `b1ca4c2`: after authenticated `ready`, Friday replaced the
+  pairing code with `Paired and ready.` and returned to idle.
 
 Voice-loop implementation added on 2026-09-25:
 

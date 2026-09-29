@@ -33,7 +33,7 @@ P3A has been tested.
 - [x] Require a short code shown by the physical P3A when opening a first-time
   or rotated pairing window; a public device ID alone must not authorize
   enrollment.
-- [ ] Replace the pairing-code screen with an explicit paired confirmation
+- [x] Replace the pairing-code screen with an explicit paired confirmation
   after the physical device receives authenticated `ready`.
 
 ## Agent durability and concurrency
