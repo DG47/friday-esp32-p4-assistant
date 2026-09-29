@@ -127,7 +127,11 @@ input. The STT interface is independent of the agent provider so another local
 or cloud transcriber can be added without changing the device protocol.
 
 Cloud GPT and Claude adapters remain available by adding their keys locally and
-choosing `openai`, `anthropic`, or `auto`. Never commit `.env`.
+choosing `openai`, `anthropic`, or `auto`. When both keys exist in `auto` mode,
+`ASSISTANT_AUTO_PROVIDER_PREFERENCE` makes the choice explicit instead of
+guessing from prompt length. The verified defaults are `gpt-5.4-mini` and
+`claude-sonnet-5`; `ANTHROPIC_MAX_TOKENS` controls Claude's bounded response
+budget and defaults to 1024. Never commit `.env`.
 
 The reminder scheduler checks for due work once per second by default. Override
 this with `ASSISTANT_REMINDER_POLL_SECONDS` when needed. An alert remains on

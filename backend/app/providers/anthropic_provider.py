@@ -8,9 +8,10 @@ from .base import ProviderTurn, TextProvider, ToolCall
 class AnthropicProvider(TextProvider):
     name = "anthropic"
 
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, max_tokens: int = 1024):
         self.client = AsyncAnthropic(api_key=api_key)
         self.model = model
+        self.max_tokens = max_tokens
 
     @staticmethod
     def _messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -55,7 +56,7 @@ class AnthropicProvider(TextProvider):
     ) -> ProviderTurn:
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": 500,
+            "max_tokens": self.max_tokens,
             "system": instructions,
             "messages": self._messages(messages),
         }

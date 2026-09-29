@@ -1,7 +1,11 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+from app.config import Settings
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.openai_provider import OpenAIProvider
+from app.providers.router import ProviderRouter
 
 
 class ProviderMessageTests(unittest.TestCase):
@@ -45,6 +49,46 @@ class ProviderMessageTests(unittest.TestCase):
         tool_result = messages[2]["content"][0]
         self.assertEqual(tool_use["id"], self.call_id)
         self.assertEqual(tool_result["tool_use_id"], self.call_id)
+
+    def test_auto_router_uses_explicit_preference_regardless_of_prompt_length(self):
+        settings = Settings(
+            assistant_provider="auto",
+            assistant_auto_provider_preference="anthropic",
+            anthropic_api_key="anthropic-test-key",
+            openai_api_key="openai-test-key",
+        )
+        router = ProviderRouter(settings)
+
+        short = router.select("Hello")
+        long = router.select("Analyze this architecture. " * 100)
+
+        self.assertIsInstance(short, AnthropicProvider)
+        self.assertIsInstance(long, AnthropicProvider)
+
+    def test_explicit_provider_does_not_fall_back_to_another_vendor(self):
+        settings = Settings(
+            assistant_provider="openai",
+            openai_api_key="",
+            anthropic_api_key="anthropic-test-key",
+        )
+
+        self.assertIsNone(ProviderRouter(settings).select("Hello"))
+
+
+class AnthropicProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_output_limit_is_sent(self):
+        provider = AnthropicProvider("anthropic-test-key", "claude-test", 2048)
+        client = MagicMock()
+        client.messages.create = AsyncMock(return_value=SimpleNamespace(content=[]))
+        provider.client = client
+
+        await provider.complete(
+            [{"role": "user", "content": "Hello"}],
+            "Be concise.",
+            [],
+        )
+
+        self.assertEqual(client.messages.create.await_args.kwargs["max_tokens"], 2048)
 
 
 if __name__ == "__main__":

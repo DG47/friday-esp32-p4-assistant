@@ -2,6 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +15,7 @@ class Settings(BaseSettings):
     assistant_timezone: str = "America/New_York"
     assistant_user_name: str = "Dhruv"
     assistant_provider: Literal["auto", "mock", "ollama", "openai", "anthropic"] = "auto"
+    assistant_auto_provider_preference: Literal["openai", "anthropic"] = "openai"
     assistant_database_path: Path = Path("data/friday.db")
     assistant_reminder_poll_seconds: float = 1.0
     assistant_reminder_retry_seconds: float = 90.0
@@ -34,7 +36,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3.6:latest"
     openai_text_model: str = "gpt-5.4-mini"
-    anthropic_text_model: str = "claude-sonnet-4-5"
+    anthropic_text_model: str = "claude-sonnet-5"
+    anthropic_max_tokens: int = Field(default=1024, ge=256, le=128000)
     openai_realtime_model: str = "gpt-realtime-2.1"
 
     stt_provider: Literal["none", "faster-whisper"] = "faster-whisper"

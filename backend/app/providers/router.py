@@ -22,26 +22,40 @@ class ProviderRouter:
                 self.settings.ollama_model,
             )
 
-        wants_long_form = len(prompt) > 800 or any(
-            word in prompt.lower() for word in ("document", "analyze", "architecture")
-        )
-
-        if requested in ("auto", "anthropic") and wants_long_form:
-            if self.settings.anthropic_api_key:
-                return AnthropicProvider(
-                    self.settings.anthropic_api_key,
-                    self.settings.anthropic_text_model,
-                )
-
-        if requested in ("auto", "openai") and self.settings.openai_api_key:
+        if requested == "openai":
+            if not self.settings.openai_api_key:
+                return None
             return OpenAIProvider(
                 self.settings.openai_api_key,
                 self.settings.openai_text_model,
             )
 
-        if self.settings.anthropic_api_key:
+        if requested == "anthropic":
+            if not self.settings.anthropic_api_key:
+                return None
             return AnthropicProvider(
                 self.settings.anthropic_api_key,
                 self.settings.anthropic_text_model,
+                self.settings.anthropic_max_tokens,
             )
+
+        providers = {
+            "openai": lambda: OpenAIProvider(
+                self.settings.openai_api_key,
+                self.settings.openai_text_model,
+            ),
+            "anthropic": lambda: AnthropicProvider(
+                self.settings.anthropic_api_key,
+                self.settings.anthropic_text_model,
+                self.settings.anthropic_max_tokens,
+            ),
+        }
+        available = {
+            "openai": bool(self.settings.openai_api_key),
+            "anthropic": bool(self.settings.anthropic_api_key),
+        }
+        preference = self.settings.assistant_auto_provider_preference
+        for provider_name in (preference, "anthropic" if preference == "openai" else "openai"):
+            if available[provider_name]:
+                return providers[provider_name]()
         return None

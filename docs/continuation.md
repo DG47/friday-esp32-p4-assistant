@@ -99,6 +99,13 @@ Backend and simulator:
   persists equivalent structured exchanges. Ollama is the selected keyless provider on the development
   Mac, using `qwen3.6:latest` at `http://127.0.0.1:11434`. OpenAI and Anthropic
   use the same tool-loop contract.
+- Auto routing no longer switches vendors based on prompt wording or length.
+  `ASSISTANT_AUTO_PROVIDER_PREFERENCE` explicitly selects OpenAI or Anthropic
+  when both keys are configured, and an explicitly selected vendor never falls
+  back to a different one. The reviewed defaults are `gpt-5.4-mini` and
+  `claude-sonnet-5`; Claude's output budget is configurable with
+  `ANTHROPIC_MAX_TOKENS` (default 1024). Cloud behavior still requires a live
+  key-backed verification before production enablement.
 - Personality instructions live in `backend/app/agent.py`.
 - The personality now reads `ASSISTANT_USER_NAME` instead of hardcoding a user
   name. A live Ollama check selected `get_calendar`, consumed its result, and

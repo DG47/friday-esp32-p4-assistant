@@ -55,9 +55,9 @@ P3A has been tested.
 
 ## Provider configuration
 
-- [ ] Revisit automatic provider preference instead of implicitly preferring
+- [x] Revisit automatic provider preference instead of implicitly preferring
   OpenAI for short prompts when both cloud providers are configured.
-- [ ] Review the default Anthropic model and output-token limit against the
+- [x] Review the default Anthropic model and output-token limit against the
   currently supported models before enabling it in production.
 
 ## Product roadmap
