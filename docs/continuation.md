@@ -211,6 +211,15 @@ Discovery and pairing milestone added on 2026-09-28:
   real backend reconnected automatically. A live rotation command then cleared
   the old device token, rebooted Friday, enrolled a new token during the
   bounded window, and returned to authenticated idle.
+- Secure display-code pairing was physically verified on 2026-09-29 with
+  firmware revision `02fc1f8`. A rotation cleared the old identity and rebooted
+  Friday; the unpaired device rendered its new eight-character code without
+  writing it to the serial log. Opening a loopback-only window with the code
+  supplied from the physical screen allowed the next reconnect to enroll,
+  receive `ready`, and return to idle. SQLite then held exactly one paired
+  identity and no open pairing window. The first display attempt exposed and
+  fixed an ordering bug where alert state overwrote the code with a generic
+  message; `02fc1f8` applies alert state before the specific error surface.
 
 Voice-loop implementation added on 2026-09-25:
 

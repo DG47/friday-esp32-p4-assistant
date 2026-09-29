@@ -30,7 +30,7 @@ P3A has been tested.
 - [ ] Run an extended physical soak/load test before treating
   `transport_poll_write(0)` stability as production-proven for long-running
   operation.
-- [ ] Require a short code shown by the physical P3A when opening a first-time
+- [x] Require a short code shown by the physical P3A when opening a first-time
   or rotated pairing window; a public device ID alone must not authorize
   enrollment.
 
