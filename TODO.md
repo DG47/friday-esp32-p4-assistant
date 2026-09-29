@@ -30,6 +30,9 @@ P3A has been tested.
 - [ ] Run an extended physical soak/load test before treating
   `transport_poll_write(0)` stability as production-proven for long-running
   operation.
+- [ ] Require a short code shown by the physical P3A when opening a first-time
+  or rotated pairing window; a public device ID alone must not authorize
+  enrollment.
 
 ## Agent durability and concurrency
 
@@ -46,6 +49,14 @@ P3A has been tested.
 - [x] Expand natural spoken confirmation and cancellation vocabulary.
 - [x] Let unrelated requests proceed normally instead of trapping every turn
   behind a pending confirmation.
+- [ ] Treat confirmation words as decisions only when the whole utterance is a
+  confirmation, so requests beginning with `okay`, `sure`, or `yes` cannot run
+  a pending destructive action.
+- [ ] Tell the user when a new request supersedes and drops a pending action.
+- [ ] Migrate stored legacy tool-call IDs to the provider-safe `call_<24 hex>`
+  format before sending conversation history to Claude or OpenAI.
+- [ ] Run a live Claude confirmed-action turn after the stored-history migration
+  when an Anthropic API key is available.
 
 ## Reminders
 
