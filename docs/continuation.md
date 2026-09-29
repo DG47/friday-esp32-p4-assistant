@@ -80,6 +80,15 @@ Firmware and networking:
   `transport_poll_write(0)` recurrences. The ESP-IDF 5.5.5 build passed; stale
   endpoint recovery and the new diagnostics still require physical-device
   observation before their TODO items can be checked.
+- The first physical disconnect injection exposed two follow-up issues before
+  completion: failed discovery retried after every disconnect once the
+  threshold was crossed, and server-close events printed fields that are valid
+  only for transport errors. The fix resets the five-failure budget after an
+  unsuccessful discovery and logs fields by error type. Because a subsequent
+  idle connection reproduced `transport_poll_write(0)`, idle wake audio is now
+  batched into 500 ms frames instead of 100 ms frames and gets a two-second send
+  timeout, reducing WebSocket write pressure by 80 percent while preserving the
+  backend's three-second wake probe.
 - Dynamic labels are re-anchored after every text change. This matters in LVGL:
   labels resize to their content and otherwise retain coordinates calculated
   for the previous size, which can place response text partly off-screen.

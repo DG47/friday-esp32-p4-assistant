@@ -27,6 +27,7 @@
 static const char *TAG = "friday_backend";
 extern const char friday_backend_ca_pem_start[] asm("_binary_friday_backend_ca_pem_start");
 #define FRIDAY_AUDIO_SEND_TIMEOUT_MS 1000
+#define FRIDAY_IDLE_AUDIO_SEND_TIMEOUT_MS 2000
 #define FRIDAY_DEVICE_ID "friday-p3a"
 #define FRIDAY_BACKEND_URI_MAX 192
 #define FRIDAY_DEVICE_TOKEN_BYTES 32
@@ -176,6 +177,7 @@ static void backend_rediscovery_task(void *argument)
     friday_ui_set_backend("FRIDAY SEARCHING");
     if (!discover_backend(discovered_uri, sizeof(discovered_uri))) {
         ESP_LOGW(TAG, "Backend rediscovery did not find a trusted endpoint");
+        reconnect_failures = 0;
         rediscovery_pending = false;
         vTaskDelete(NULL);
         return;
@@ -193,6 +195,7 @@ static void backend_rediscovery_task(void *argument)
     if (stop_result != ESP_OK) {
         ESP_LOGW(TAG, "Could not pause WebSocket for rediscovery: %s",
                  esp_err_to_name(stop_result));
+        reconnect_failures = 0;
         rediscovery_pending = false;
         vTaskDelete(NULL);
         return;
@@ -430,15 +433,29 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         break;
     case WEBSOCKET_EVENT_ERROR:
         backend_ready = false;
-        ESP_LOGW(TAG,
-                 "Backend connection error type=%d tls=%s stack=%d verify=%d "
-                 "socket_errno=%d handshake=%d",
-                 event->error_handle.error_type,
-                 esp_err_to_name(event->error_handle.esp_tls_last_esp_err),
-                 event->error_handle.esp_tls_stack_err,
-                 event->error_handle.esp_tls_cert_verify_flags,
-                 event->error_handle.esp_transport_sock_errno,
-                 event->error_handle.esp_ws_handshake_status_code);
+        if (event->error_handle.error_type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT) {
+            ESP_LOGW(TAG,
+                     "Backend transport error tls=%s stack=%d verify=%d "
+                     "socket_errno=%d",
+                     esp_err_to_name(event->error_handle.esp_tls_last_esp_err),
+                     event->error_handle.esp_tls_stack_err,
+                     event->error_handle.esp_tls_cert_verify_flags,
+                     event->error_handle.esp_transport_sock_errno);
+        } else if (event->error_handle.error_type ==
+                   WEBSOCKET_ERROR_TYPE_HANDSHAKE) {
+            ESP_LOGW(TAG, "Backend handshake failed with HTTP status %d",
+                     event->error_handle.esp_ws_handshake_status_code);
+        } else if (event->error_handle.error_type ==
+                   WEBSOCKET_ERROR_TYPE_SERVER_CLOSE) {
+            ESP_LOGW(TAG, "Backend closed WebSocket with status %d",
+                     event->close_status_code);
+        } else if (event->error_handle.error_type ==
+                   WEBSOCKET_ERROR_TYPE_PONG_TIMEOUT) {
+            ESP_LOGW(TAG, "Backend WebSocket pong timed out");
+        } else {
+            ESP_LOGW(TAG, "Backend connection error type=%d",
+                     event->error_handle.error_type);
+        }
         friday_ui_set_backend("FRIDAY OFFLINE");
         break;
     default:
@@ -587,18 +604,19 @@ bool friday_backend_take_wake_request(void)
     return requested;
 }
 
-static esp_err_t send_audio_binary(const int16_t *samples, size_t sample_count)
+static esp_err_t send_audio_binary(const int16_t *samples, size_t sample_count,
+                                   int timeout_ms)
 {
     if (client == NULL || !esp_websocket_client_is_connected(client)) {
         return ESP_ERR_INVALID_STATE;
     }
     if (send_lock == NULL ||
-        xSemaphoreTake(send_lock, pdMS_TO_TICKS(FRIDAY_AUDIO_SEND_TIMEOUT_MS)) != pdTRUE) {
+        xSemaphoreTake(send_lock, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
     int sent = esp_websocket_client_send_bin(
         client, (const char *)samples, sample_count * sizeof(*samples),
-        pdMS_TO_TICKS(FRIDAY_AUDIO_SEND_TIMEOUT_MS));
+        pdMS_TO_TICKS(timeout_ms));
     xSemaphoreGive(send_lock);
     return sent < 0 ? ESP_FAIL : ESP_OK;
 }
@@ -608,7 +626,7 @@ esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count)
     if (!audio_active) {
         return ESP_ERR_INVALID_STATE;
     }
-    return send_audio_binary(samples, sample_count);
+    return send_audio_binary(samples, sample_count, FRIDAY_AUDIO_SEND_TIMEOUT_MS);
 }
 
 esp_err_t friday_backend_send_idle_audio(const int16_t *samples, size_t sample_count)
@@ -616,7 +634,8 @@ esp_err_t friday_backend_send_idle_audio(const int16_t *samples, size_t sample_c
     if (audio_active || !backend_ready) {
         return ESP_ERR_INVALID_STATE;
     }
-    return send_audio_binary(samples, sample_count);
+    return send_audio_binary(samples, sample_count,
+                             FRIDAY_IDLE_AUDIO_SEND_TIMEOUT_MS);
 }
 
 void friday_backend_end_audio(void)
