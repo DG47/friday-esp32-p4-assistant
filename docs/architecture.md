@@ -43,6 +43,8 @@ FastAPI realtime gateway
    it only after the saved identity verifies, then sends `ready` and the
    ambient state. Loopback simulator clients use their separate explicit
    credential instead of hardware pairing.
+   If the saved endpoint cannot authenticate after five reconnects, firmware
+   reruns discovery and saves the replacement only after authenticated `ready`.
 2. Client either sends a recognized text utterance or brackets binary PCM
    frames with `audio.start` and `audio.end`. The STT adapter emits the same
    text-utterance boundary used by typed input.

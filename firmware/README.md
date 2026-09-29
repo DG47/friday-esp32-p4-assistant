@@ -93,6 +93,7 @@ backend, open a two-minute enrollment window locally, and boot/reconnect Friday:
 curl --cacert data/tls/friday-ca.crt -X POST \
   -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" \
   -H 'X-Friday-Pairing: open' \
+  -H 'X-Friday-Device-ID: friday-p3a' \
   https://127.0.0.1:8000/api/devices/pairing-window
 ```
 
@@ -115,4 +116,8 @@ order: last authenticated/setup-page endpoint, UDP discovery on port 8334,
 compile-time `FRIDAY_BACKEND_WS_URI` fallback. Run
 `make tls-local LAN_IP=<new-address>` after a Mac DHCP address change to issue a
 new server certificate from the same CA. That does not require a firmware
-rebuild unless the CA itself changes.
+rebuild unless the CA itself changes. If a saved endpoint repeatedly fails
+before authentication, the firmware retries UDP discovery after five
+disconnects, switches the running WebSocket client to the discovered address,
+and persists it only after receiving authenticated `ready`. The threshold is
+`CONFIG_FRIDAY_REDISCOVERY_FAILURES`.

@@ -16,6 +16,15 @@ config FRIDAY_DISCOVERY_PORT
         UDP port used to discover the backend on the current LAN before falling
         back to FRIDAY_BACKEND_WS_URI.
 
+config FRIDAY_REDISCOVERY_FAILURES
+    int "Reconnect failures before backend rediscovery"
+    range 2 20
+    default 5
+    help
+        Consecutive unauthenticated WebSocket disconnects allowed before the
+        device retries UDP discovery and replaces its saved endpoint only after
+        the discovered backend authenticates successfully.
+
 config FRIDAY_AUDIO_DIGITAL_GAIN
     int "Digital gain applied to streamed microphone PCM"
     range 1 32

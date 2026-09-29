@@ -43,6 +43,8 @@ scene generation.
   as the default keyless adapter
 - first-boot Wi-Fi provisioning with host libraries matched to the factory C6
 - local UDP backend discovery with an optional setup-page WebSocket override
+- automatic return to authenticated UDP discovery after five consecutive
+  unauthenticated reconnect failures at a saved endpoint
 - persistent per-device pairing: Friday generates its identity on-device,
   while the backend stores only a hash and requires an explicit local pairing
   window for first enrollment

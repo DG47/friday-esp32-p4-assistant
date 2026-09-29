@@ -19,7 +19,10 @@ UDP port 8334. The backend replies directly with protocol version 1 and the
 verifies the server against the Friday CA embedded at build time. After the
 first authenticated `ready`, it persists the endpoint and prefers it on later
 boots, so an untrusted discovery responder cannot redirect an already-paired
-device. Its compile-time URL remains a recovery fallback.
+device. Its compile-time URL remains a recovery fallback. After five
+consecutive reconnects that never authenticate, firmware reruns discovery,
+switches the live client to the returned TLS URL, and persists that address
+only after the normal authenticated `ready` boundary.
 
 On first boot, firmware creates a random 32-byte token and stores it in NVS.
 The backend stores only its SHA-256 hash. An unpaired LAN device is accepted

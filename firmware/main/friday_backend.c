@@ -43,6 +43,8 @@ static volatile bool backend_ready;
 static char backend_uri[FRIDAY_BACKEND_URI_MAX];
 static char device_token[FRIDAY_DEVICE_TOKEN_LENGTH + 1];
 static bool persist_backend_uri;
+static volatile unsigned int reconnect_failures;
+static volatile bool rediscovery_pending;
 static esp_timer_handle_t reminder_expiry_timer;
 static volatile int pending_reminder_id = -1;
 
@@ -165,6 +167,59 @@ static bool discover_backend(char *uri, size_t uri_size)
     return found;
 }
 
+static void backend_rediscovery_task(void *argument)
+{
+    (void)argument;
+    char discovered_uri[FRIDAY_BACKEND_URI_MAX] = {0};
+
+    ESP_LOGW(TAG, "Saved backend remains unavailable; retrying discovery");
+    friday_ui_set_backend("FRIDAY SEARCHING");
+    if (!discover_backend(discovered_uri, sizeof(discovered_uri))) {
+        ESP_LOGW(TAG, "Backend rediscovery did not find a trusted endpoint");
+        rediscovery_pending = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (backend_ready) {
+        ESP_LOGI(TAG, "Backend recovered while discovery was running");
+        reconnect_failures = 0;
+        rediscovery_pending = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_err_t stop_result = esp_websocket_client_stop(client);
+    if (stop_result != ESP_OK) {
+        ESP_LOGW(TAG, "Could not pause WebSocket for rediscovery: %s",
+                 esp_err_to_name(stop_result));
+        rediscovery_pending = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_err_t uri_result = esp_websocket_client_set_uri(client, discovered_uri);
+    if (uri_result != ESP_OK) {
+        ESP_LOGE(TAG, "Could not apply discovered backend endpoint: %s",
+                 esp_err_to_name(uri_result));
+        esp_websocket_client_start(client);
+        rediscovery_pending = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    strlcpy(backend_uri, discovered_uri, sizeof(backend_uri));
+    persist_backend_uri = true;
+    reconnect_failures = 0;
+    ESP_LOGI(TAG, "Retrying with discovered backend endpoint: %s", backend_uri);
+    if (esp_websocket_client_start(client) != ESP_OK) {
+        ESP_LOGE(TAG, "Could not restart WebSocket after rediscovery");
+        friday_ui_set_backend("FRIDAY OFFLINE");
+    }
+    rediscovery_pending = false;
+    vTaskDelete(NULL);
+}
+
 static int send_text(const char *message, TickType_t timeout)
 {
     if (client == NULL || !esp_websocket_client_is_connected(client) ||
@@ -230,6 +285,7 @@ static void handle_message(const char *payload)
 
     if (strcmp(type, "ready") == 0) {
         backend_ready = true;
+        reconnect_failures = 0;
         if (persist_backend_uri) {
             if (friday_wifi_set_backend_uri(backend_uri) == ESP_OK) {
                 persist_backend_uri = false;
@@ -357,6 +413,15 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         wake_requested = false;
         ESP_LOGW(TAG, "Backend disconnected; automatic reconnect pending");
         friday_ui_set_backend("FRIDAY RECONNECTING");
+        if (!rediscovery_pending &&
+            ++reconnect_failures >= CONFIG_FRIDAY_REDISCOVERY_FAILURES) {
+            rediscovery_pending = true;
+            if (xTaskCreate(backend_rediscovery_task, "friday_rediscovery",
+                            6144, NULL, 5, NULL) != pdPASS) {
+                rediscovery_pending = false;
+                ESP_LOGE(TAG, "Could not start backend rediscovery task");
+            }
+        }
         break;
     case WEBSOCKET_EVENT_DATA:
         if (event->op_code == 0x1 || event->op_code == 0x0) {
@@ -365,7 +430,15 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         break;
     case WEBSOCKET_EVENT_ERROR:
         backend_ready = false;
-        ESP_LOGW(TAG, "Backend connection error");
+        ESP_LOGW(TAG,
+                 "Backend connection error type=%d tls=%s stack=%d verify=%d "
+                 "socket_errno=%d handshake=%d",
+                 event->error_handle.error_type,
+                 esp_err_to_name(event->error_handle.esp_tls_last_esp_err),
+                 event->error_handle.esp_tls_stack_err,
+                 event->error_handle.esp_tls_cert_verify_flags,
+                 event->error_handle.esp_transport_sock_errno,
+                 event->error_handle.esp_ws_handshake_status_code);
         friday_ui_set_backend("FRIDAY OFFLINE");
         break;
     default:

@@ -72,6 +72,14 @@ Firmware and networking:
   state, surface, tool, error, and assistant-text messages. It waits for an
   authenticated `ready` message before enabling activation or idle audio. It
   reconnects after both transport failures and a clean backend shutdown.
+- Firmware now builds with bounded saved-endpoint recovery: after five
+  consecutive disconnects without authenticated `ready`, it retries UDP
+  discovery, switches the stopped WebSocket client to the discovered TLS URL,
+  and persists it only after authentication. Error logs now include the
+  WebSocket/TLS/socket/handshake fields needed to diagnose future
+  `transport_poll_write(0)` recurrences. The ESP-IDF 5.5.5 build passed; stale
+  endpoint recovery and the new diagnostics still require physical-device
+  observation before their TODO items can be checked.
 - Dynamic labels are re-anchored after every text change. This matters in LVGL:
   labels resize to their content and otherwise retain coordinates calculated
   for the previous size, which can place response text partly off-screen.
