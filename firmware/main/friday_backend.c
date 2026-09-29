@@ -352,6 +352,9 @@ static void handle_message(const char *payload)
         friday_ui_set_tool(json_string(root, "name"), json_string(root, "status"));
     } else if (strcmp(type, "error") == 0) {
         const char *code = json_string(root, "code");
+        /* Alert state installs a generic message, so apply it before the
+         * specific error surface rather than overwriting the useful detail. */
+        friday_ui_set_state(FRIDAY_STATE_ALERT);
         if (code != NULL && strcmp(code, "pairing_required") == 0) {
             char pairing_message[32];
             snprintf(pairing_message, sizeof(pairing_message),
@@ -361,7 +364,6 @@ static void handle_message(const char *payload)
         } else {
             friday_ui_set_surface("ERROR", "Friday", json_string(root, "message"));
         }
-        friday_ui_set_state(FRIDAY_STATE_ALERT);
     }
 
     cJSON_Delete(root);
