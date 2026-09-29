@@ -363,7 +363,11 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             "protocol": 1,
                             "device_id": device_id,
                             "state": "idle",
-                            "surface": {"kind": "ambient", "title": "Friday"},
+                            "surface": {
+                                "kind": "ambient",
+                                "title": "Friday",
+                                "subtitle": "Paired and ready.",
+                            },
                         }
                     )
                 else:

@@ -58,7 +58,9 @@ class DeviceSocketTests(unittest.TestCase):
         message = {"type": "hello", "capabilities": capabilities or []}
         message["device_token"] = token
         socket.send_json(message)
-        self.assertEqual(socket.receive_json()["type"], "ready")
+        ready = socket.receive_json()
+        self.assertEqual(ready["type"], "ready")
+        self.assertEqual(ready["surface"]["subtitle"], "Paired and ready.")
         self.assertEqual(
             socket.receive_json(), {"type": "state", "state": "idle"}
         )

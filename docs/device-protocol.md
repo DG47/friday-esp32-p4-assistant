@@ -90,7 +90,7 @@ turns from streaming forever. The capture boundary remains separate from STT.
 
 ```json
 {"type":"hello.required","protocol":1,"device_id":"friday-p3a"}
-{"type":"ready","protocol":1,"device_id":"friday-p3a","state":"idle","surface":{"kind":"ambient"}}
+{"type":"ready","protocol":1,"device_id":"friday-p3a","state":"idle","surface":{"kind":"ambient","title":"Friday","subtitle":"Paired and ready."}}
 {"type":"wake.detected","wake_word":"Friday"}
 {"type":"job.accepted","job_id":"7b1..."}
 {"type":"state","state":"thinking"}
@@ -104,7 +104,8 @@ turns from streaming forever. The capture boundary remains separate from STT.
 
 The server sends `hello.required` immediately after accepting the WebSocket.
 The client must answer with `hello`. Only after successful authentication does
-the server register the connection and send `ready`; firmware does not stream
+the server register the connection and send `ready`. Its ambient surface
+explicitly replaces any pairing code with `Paired and ready.`; firmware does not stream
 idle audio or enable activation before that boundary.
 
 Utterances become durable agent jobs. Supplying a stable `request_id` makes
