@@ -84,6 +84,7 @@ playback still requires the external speaker.
    curl --cacert data/tls/friday-ca.crt -X POST \
      -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" \
      -H 'X-Friday-Pairing: open' \
+     -H 'X-Friday-Device-ID: friday-p3a' \
      https://127.0.0.1:8000/api/devices/pairing-window
    ```
 
@@ -92,6 +93,9 @@ playback still requires the external speaker.
    device and do not require another pairing window.
 3. Open <https://localhost:8000>, accept/trust the private Friday CA locally,
    and paste `ASSISTANT_SIMULATOR_TOKEN` into the simulator credential field.
+   The simulator credential is accepted only from loopback for
+   `ASSISTANT_SIMULATOR_DEVICE_ID` (default `friday-p3a`). Private calendar and
+   reminder HTTP reads also require the simulator or admin token from loopback.
 4. Tap the orb and say or type: `What's next?`
 5. Continue with: `With who?`
 6. Then: `Remind me at noon to prepare.` Friday creates it immediately.
@@ -165,7 +169,8 @@ reminder alerts already have one.
 ## Verify
 
 Run `make test-local` (or `make test` with Docker). With the service running,
-run `make smoke`. Run `make firmware-build` to reproduce the verified P4
+run `ASSISTANT_READ_TOKEN="$ASSISTANT_SIMULATOR_TOKEN" make smoke`. Run
+`make firmware-build` to reproduce the verified P4
 firmware build using the repository-local toolchain. A fresh local environment
 must first install `backend/requirements.txt` into `.venv`.
 

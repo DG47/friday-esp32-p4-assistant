@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     assistant_public_port: int = 8000
     assistant_public_scheme: Literal["ws", "wss"] = "wss"
     assistant_simulator_token: str = ""
+    assistant_simulator_device_id: str = "friday-p3a"
     assistant_admin_token: str = ""
 
     openai_api_key: str = ""

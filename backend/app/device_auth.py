@@ -40,34 +40,59 @@ class DeviceCredentialStore:
                     """
                     CREATE TABLE IF NOT EXISTS device_pairing_window (
                         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                        expires_at TEXT NOT NULL
+                        expires_at TEXT NOT NULL,
+                        expected_device_id TEXT NOT NULL
                     )
                     """
                 )
+                pairing_columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(device_pairing_window)"
+                    ).fetchall()
+                }
+                if "expected_device_id" not in pairing_columns:
+                    connection.execute(
+                        "ALTER TABLE device_pairing_window "
+                        "ADD COLUMN expected_device_id TEXT"
+                    )
 
     @staticmethod
     def _hash(token: str) -> str:
         return hashlib.sha256(token.encode("ascii")).hexdigest()
 
-    def open_pairing_window(self, seconds: int = 120) -> datetime:
+    def open_pairing_window(self, device_id: str, seconds: int = 120) -> datetime:
+        if not device_id:
+            raise ValueError("Pairing requires a device ID")
         duration = max(15, min(seconds, 600))
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=duration)
         with closing(self._connect()) as connection:
             with connection:
                 connection.execute(
-                    "INSERT INTO device_pairing_window (singleton, expires_at) "
-                    "VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET expires_at = excluded.expires_at",
-                    (expires_at.isoformat(),),
+                    "INSERT INTO device_pairing_window "
+                    "(singleton, expires_at, expected_device_id) VALUES (1, ?, ?) "
+                    "ON CONFLICT(singleton) DO UPDATE SET "
+                    "expires_at = excluded.expires_at, "
+                    "expected_device_id = excluded.expected_device_id",
+                    (expires_at.isoformat(), device_id),
                 )
         return expires_at
 
-    def pairing_open(self, now: datetime | None = None) -> bool:
+    def pairing_open(
+        self, device_id: str | None = None, now: datetime | None = None
+    ) -> bool:
         check_time = now or datetime.now(timezone.utc)
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT expires_at FROM device_pairing_window WHERE singleton = 1"
+                "SELECT expires_at, expected_device_id FROM device_pairing_window "
+                "WHERE singleton = 1"
             ).fetchone()
-        return row is not None and datetime.fromisoformat(row["expires_at"]) > check_time
+        return (
+            row is not None
+            and bool(row["expected_device_id"])
+            and datetime.fromisoformat(row["expires_at"]) > check_time
+            and (device_id is None or row["expected_device_id"] == device_id)
+        )
 
     def is_paired(self, device_id: str) -> bool:
         with closing(self._connect()) as connection:
@@ -109,9 +134,14 @@ class DeviceCredentialStore:
                 return "verified"
 
             window = connection.execute(
-                "SELECT expires_at FROM device_pairing_window WHERE singleton = 1"
+                "SELECT expires_at, expected_device_id FROM device_pairing_window "
+                "WHERE singleton = 1"
             ).fetchone()
-            if window is None or datetime.fromisoformat(window["expires_at"]) <= now:
+            if (
+                window is None
+                or window["expected_device_id"] != device_id
+                or datetime.fromisoformat(window["expires_at"]) <= now
+            ):
                 connection.rollback()
                 return None
             connection.execute(

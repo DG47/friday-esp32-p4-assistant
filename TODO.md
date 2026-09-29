@@ -14,11 +14,11 @@ P3A has been tested.
   authentication bypass; give the browser simulator an explicit credential.
 - [x] Add device credential revocation and rotation.
 - [x] Document certificate and credential recovery/rotation procedures.
-- [ ] Restrict the simulator credential to loopback and its configured device
+- [x] Restrict the simulator credential to loopback and its configured device
   identity.
-- [ ] Require authenticated loopback access for private calendar and reminder
+- [x] Require authenticated loopback access for private calendar and reminder
   read APIs.
-- [ ] Bind each pairing window to the intended device ID instead of enrolling
+- [x] Bind each pairing window to the intended device ID instead of enrolling
   whichever unpaired device connects first.
 - [ ] Fall back to authenticated discovery after repeated failures to reconnect
   to a saved backend address.

@@ -29,13 +29,19 @@ only during the two-minute, loopback-opened pairing window:
 curl --cacert data/tls/friday-ca.crt -X POST \
   -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" \
   -H 'X-Friday-Pairing: open' \
+  -H 'X-Friday-Device-ID: friday-p3a' \
   https://127.0.0.1:8000/api/devices/pairing-window
 ```
 
-The window closes as soon as one device enrolls. The stored identity is reused
-after device and backend restarts. All WebSocket peers, including loopback
-clients, must authenticate. The browser simulator uses a separate configured
-credential rather than bypassing authentication.
+Only the named device can use the window, and it closes as soon as that device
+enrolls. The stored identity is reused after device and backend restarts. All
+WebSocket peers, including loopback clients, must authenticate. The browser
+simulator credential is accepted only from loopback for the configured
+simulator device ID rather than acting as a global device credential.
+
+`GET /api/calendar/today` and `GET /api/reminders` are loopback-only and require
+either `X-Friday-Simulator-Token` or `X-Friday-Admin-Token`. Reminder reads are
+scoped to the configured simulator device ID.
 
 Rotate an online physical identity with `X-Friday-Device-Action: rotate` at
 `POST /api/devices/{device_id}/rotate`; this clears the device token, opens a

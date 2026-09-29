@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import re
 import secrets
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
@@ -50,6 +51,7 @@ job_worker = AgentJobWorker(
     max_age_seconds=settings.assistant_job_max_age_seconds,
     concurrency=settings.assistant_job_concurrency,
 )
+DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 @asynccontextmanager
@@ -119,11 +121,28 @@ def admin_token_valid(token: str) -> bool:
     )
 
 
+def simulator_access_valid(token: str, device_id: str, host: str | None) -> bool:
+    return (
+        is_local_host(host)
+        and device_id == settings.assistant_simulator_device_id
+        and simulator_token_valid(token)
+    )
+
+
 def require_local_admin(request: Request) -> None:
     if not is_local_host(request.client.host if request.client else None):
         raise HTTPException(status_code=403, detail="Administration is loopback-only")
     if not admin_token_valid(request.headers.get("x-friday-admin-token", "")):
         raise HTTPException(status_code=401, detail="Valid Friday admin token required")
+
+
+def require_local_read_access(request: Request) -> None:
+    if not is_local_host(request.client.host if request.client else None):
+        raise HTTPException(status_code=403, detail="Private APIs are loopback-only")
+    simulator_token = request.headers.get("x-friday-simulator-token", "")
+    admin_token = request.headers.get("x-friday-admin-token", "")
+    if not (simulator_token_valid(simulator_token) or admin_token_valid(admin_token)):
+        raise HTTPException(status_code=401, detail="Valid Friday read token required")
 
 
 async def handle_utterance(
@@ -154,13 +173,18 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/api/calendar/today")
-async def calendar_today() -> list[dict]:
+async def calendar_today(request: Request) -> list[dict]:
+    require_local_read_access(request)
     return [event.model_dump(mode="json") for event in agent.calendar.today()]
 
 
 @app.get("/api/reminders")
-async def reminders() -> list[dict]:
-    return [item.model_dump(mode="json") for item in store.pending()]
+async def reminders(request: Request) -> list[dict]:
+    require_local_read_access(request)
+    return [
+        item.model_dump(mode="json")
+        for item in store.pending(device_id=settings.assistant_simulator_device_id)
+    ]
 
 
 @app.post("/api/devices/pairing-window")
@@ -168,9 +192,20 @@ async def open_pairing_window(request: Request) -> dict[str, str]:
     require_local_admin(request)
     if request.headers.get("x-friday-pairing") != "open":
         raise HTTPException(status_code=400, detail="Pairing confirmation header required")
-    expires_at = credential_store.open_pairing_window()
-    logger.info("Device pairing window opened until %s", expires_at.isoformat())
-    return {"status": "pairing", "expires_at": expires_at.isoformat()}
+    device_id = request.headers.get("x-friday-device-id", "")
+    if not DEVICE_ID_PATTERN.fullmatch(device_id):
+        raise HTTPException(status_code=400, detail="Valid target device ID required")
+    expires_at = credential_store.open_pairing_window(device_id)
+    logger.info(
+        "Device pairing window for %s opened until %s",
+        device_id,
+        expires_at.isoformat(),
+    )
+    return {
+        "status": "pairing",
+        "device_id": device_id,
+        "expires_at": expires_at.isoformat(),
+    }
 
 
 def require_local_device_action(request: Request, action: str) -> None:
@@ -192,7 +227,7 @@ async def rotate_device_identity(device_id: str, request: Request) -> dict[str, 
     if recipients == 0:
         raise HTTPException(status_code=409, detail="Device must be online to rotate")
     credential_store.revoke(device_id)
-    expires_at = credential_store.open_pairing_window()
+    expires_at = credential_store.open_pairing_window(device_id)
     logger.warning("Rotating identity for device %s", device_id)
     return {"status": "rotating", "expires_at": expires_at.isoformat()}
 
@@ -299,9 +334,10 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                 }
                 if not registered:
                     token = str(message.get("device_token", ""))
+                    client_host = websocket.client.host if websocket.client else None
                     auth_status = (
                         "simulator"
-                        if simulator_token_valid(token)
+                        if simulator_access_valid(token, device_id, client_host)
                         else credential_store.authorize(device_id, token)
                     )
                     if auth_status is None:

@@ -26,10 +26,12 @@ FastAPI realtime gateway
   confirmation. Explicit creation and snoozing execute immediately.
 - Audio, STT, LLM, TTS, and tools are independent provider interfaces.
 - LAN hardware generates a persistent random identity in NVS and must enroll
-  during a locally opened pairing window. The backend stores only the token
-  hash. Device traffic uses `wss://` and validates a build-pinned Friday CA;
-  the browser simulator has an independent explicit credential. Private CA and
-  server keys remain outside Git.
+  during a locally opened window bound to its device ID. The backend stores only
+  the token hash. Device traffic uses `wss://` and validates a build-pinned
+  Friday CA; the browser simulator has a loopback-only credential bound to its
+  configured device ID. Private HTTP reads require that simulator credential or
+  the admin credential from loopback. Private CA and server keys remain outside
+  Git.
 - VAD endpointing runs on the ESP32. The current wake-word implementation sends
   idle microphone audio to the trusted local backend; moving exact `Friday`
   detection on-device remains the privacy target.

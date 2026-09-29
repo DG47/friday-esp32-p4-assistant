@@ -52,6 +52,10 @@ Firmware and networking:
   only its SHA-256 hash in SQLite. First enrollment requires a two-minute
   pairing window opened from loopback with the documented confirmation header;
   it closes after one device enrolls. Later reconnects verify the stored token.
+- Pairing windows are now bound to the intended `X-Friday-Device-ID`, so a
+  different unpaired client cannot claim an open window. The simulator token is
+  accepted only over loopback for `ASSISTANT_SIMULATOR_DEVICE_ID`; private
+  calendar/reminder reads are also loopback-only and token-authenticated.
 - The device now accepts only `wss://`, verifies a Friday CA embedded in the
   firmware, and saves the endpoint only after authenticated `ready`. The local
   CA/server private keys live in ignored `data/tls/`; the public CA is embedded
@@ -85,9 +89,9 @@ Backend and simulator:
   and P3A use `friday-p3a` and were verified to stay synchronized.
 - LAN and loopback peers are not registered and cannot send device data until
   they answer `hello.required` with a valid device token. Loopback connections retain a
-  separately configured simulator credential; there is no address-based
-  WebSocket bypass. Administrative endpoints are loopback-only and require a
-  64-hex admin token plus an explicit action header.
+  separately configured, device-bound simulator credential; there is no
+  address-based WebSocket bypass. Administrative endpoints are loopback-only
+  and require a 64-hex admin token plus an explicit action header.
 - The configured model now drives a provider-neutral tool loop with bounded
   per-device structured history persisted in SQLite. User/assistant messages,
   exact tool arguments, and exact tool results survive restart. Calendar reads,
