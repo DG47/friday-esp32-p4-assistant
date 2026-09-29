@@ -20,10 +20,16 @@ P3A has been tested.
   read APIs.
 - [x] Bind each pairing window to the intended device ID instead of enrolling
   whichever unpaired device connects first.
-- [ ] Fall back to authenticated discovery after repeated failures to reconnect
+- [x] Fall back to authenticated discovery after repeated failures to reconnect
   to a saved backend address.
-- [ ] Investigate and eliminate recurring `transport_poll_write(0)` disconnects
-  under normal device operation.
+- [ ] Physically verify that authenticated rediscovery switches Friday to a
+  backend whose LAN address changed.
+- [x] Reduce idle WebSocket write pressure and verify that the recurring
+  `transport_poll_write(0)` disconnect does not reproduce during a bounded
+  physical idle/recovery check.
+- [ ] Run an extended physical soak/load test before treating
+  `transport_poll_write(0)` stability as production-proven for long-running
+  operation.
 
 ## Agent durability and concurrency
 

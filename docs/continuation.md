@@ -77,9 +77,7 @@ Firmware and networking:
   discovery, switches the stopped WebSocket client to the discovered TLS URL,
   and persists it only after authentication. Error logs now include the
   WebSocket/TLS/socket/handshake fields needed to diagnose future
-  `transport_poll_write(0)` recurrences. The ESP-IDF 5.5.5 build passed; stale
-  endpoint recovery and the new diagnostics still require physical-device
-  observation before their TODO items can be checked.
+  `transport_poll_write(0)` recurrences. The ESP-IDF 5.5.5 build passed.
 - The first physical disconnect injection exposed two follow-up issues before
   completion: failed discovery retried after every disconnect once the
   threshold was crossed, and server-close events printed fields that are valid
@@ -89,6 +87,17 @@ Firmware and networking:
   batched into 500 ms frames instead of 100 ms frames and gets a two-second send
   timeout, reducing WebSocket write pressure by 80 percent while preserving the
   backend's three-second wake probe.
+- Revision `4779307` was then flashed to the physical P3A on 2026-09-29. Friday
+  authenticated and stayed idle for about 107 seconds without reproducing
+  `transport_poll_write(0)`. With the backend stopped, discovery ran after five
+  failed reconnects; when that discovery found no trusted endpoint, the retry
+  budget reset and the next discovery waited for another five failures. The
+  conditional diagnostics reported the expected close and TLS/socket errors
+  without unrelated field garbage. After the backend restarted, Friday
+  reauthenticated automatically and remained connected for another minute.
+  This verifies bounded fallback discovery and short idle/recovery stability,
+  but not switching to a genuinely different LAN address or long-running soak
+  stability; both remain explicit TODO items.
 - Dynamic labels are re-anchored after every text change. This matters in LVGL:
   labels resize to their content and otherwise retain coordinates calculated
   for the previous size, which can place response text partly off-screen.
