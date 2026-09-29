@@ -87,18 +87,22 @@ not enabled in this MVP. After five failed connection attempts, the device
 clears the saved network settings and returns to setup mode.
 
 For a device that has not previously paired with this backend, start the
-backend, open a two-minute enrollment window locally, and boot/reconnect Friday:
+backend and boot Friday. When it shows an eight-character pairing code, open a
+two-minute enrollment window locally with that code:
 
 ```sh
 curl --cacert data/tls/friday-ca.crt -X POST \
   -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" \
   -H 'X-Friday-Pairing: open' \
   -H 'X-Friday-Device-ID: friday-p3a' \
+  -H 'X-Friday-Pairing-Code: ABCD-1234' \
   https://127.0.0.1:8000/api/devices/pairing-window
 ```
 
 Friday generates its 32-byte device token on-device and never writes it to the
-log. The backend retains only a hash. Pairing closes after the first enrollment
+log. The displayed code is derived from that secret token and is sent only to
+the loopback management endpoint. The backend retains only hashes of both.
+Pairing closes after the first enrollment
 and normal reconnects require no operator action. The server must present a
 certificate signed by the Friday CA embedded in the firmware.
 

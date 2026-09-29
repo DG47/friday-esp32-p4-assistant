@@ -351,7 +351,16 @@ static void handle_message(const char *payload)
     } else if (strcmp(type, "tool.activity") == 0) {
         friday_ui_set_tool(json_string(root, "name"), json_string(root, "status"));
     } else if (strcmp(type, "error") == 0) {
-        friday_ui_set_surface("ERROR", "Friday", json_string(root, "message"));
+        const char *code = json_string(root, "code");
+        if (code != NULL && strcmp(code, "pairing_required") == 0) {
+            char pairing_message[32];
+            snprintf(pairing_message, sizeof(pairing_message),
+                     "Pairing code: %.4s-%.4s", device_token, device_token + 4);
+            friday_ui_set_surface("PAIRING", "FRIDAY", pairing_message);
+            ESP_LOGW(TAG, "Pairing required; code shown on the physical display");
+        } else {
+            friday_ui_set_surface("ERROR", "Friday", json_string(root, "message"));
+        }
         friday_ui_set_state(FRIDAY_STATE_ALERT);
     }
 

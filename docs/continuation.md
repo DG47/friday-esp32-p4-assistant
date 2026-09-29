@@ -155,9 +155,14 @@ Backend and simulator:
 - The follow-up hardening pass changed the active policy: explicit reminder
   creation and snoozing now execute immediately, while cancellation and
   completion retain restart-safe confirmation. Confirmation language accepts
-  common speech variants, unrelated requests supersede stale pending actions,
-  and generated history uses deterministic provider-safe tool-call IDs. The
-  earlier physical lifecycle record below describes the policy at test time.
+  complete common speech variants; longer requests merely beginning with
+  `okay`, `sure`, or `yes` supersede rather than confirm. Friday tells the user
+  which pending action it dropped. Generated and migrated history uses
+  deterministic provider-safe tool-call IDs. The 82-test backend suite passed,
+  and the live SQLite database contains zero invalid IDs across six stored tool
+  calls/results. A real Claude confirmed-action turn remains unverified until an
+  Anthropic API key is available. The earlier physical lifecycle record below
+  describes the policy at test time.
 - A background scheduler atomically claims durable reminders and sends
   `reminder.alert` only to firmware advertising `reminder_ack`. It retries after
   disconnect or a missing acknowledgement at a configurable bounded cadence
@@ -283,7 +288,7 @@ From the repository root:
 ```sh
 make tls-local LAN_IP=192.168.4.38
 make dev-local
-curl --cacert data/tls/friday-ca.crt -X POST -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" -H 'X-Friday-Pairing: open' https://127.0.0.1:8000/api/devices/pairing-window
+curl --cacert data/tls/friday-ca.crt -X POST -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" -H 'X-Friday-Pairing: open' -H 'X-Friday-Device-ID: friday-p3a' -H 'X-Friday-Pairing-Code: ABCD-1234' https://127.0.0.1:8000/api/devices/pairing-window
 make test-local
 make smoke
 make firmware-build

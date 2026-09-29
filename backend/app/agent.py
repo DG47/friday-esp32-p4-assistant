@@ -154,6 +154,8 @@ AFFIRMATIVE_CONFIRMATIONS = {
     "please do",
     "go ahead",
     "sounds good",
+    "yes please",
+    "yeah go ahead",
 }
 NEGATIVE_CONFIRMATIONS = {
     "no",
@@ -164,6 +166,9 @@ NEGATIVE_CONFIRMATIONS = {
     "never mind",
     "nevermind",
     "stop",
+    "no thanks",
+    "dont do that",
+    "nope dont do that",
 }
 
 
@@ -183,6 +188,7 @@ class FridayAgent:
     ) -> AgentReply:
         request_id = request_id or str(uuid.uuid4())
         confirmation = self.store.pending_confirmation(session_id)
+        dropped_confirmation: PendingConfirmation | None = None
         if confirmation is not None:
             decision = self._confirmation_decision(text)
             if decision is not None:
@@ -195,12 +201,20 @@ class FridayAgent:
             # A new request supersedes an unanswered confirmation. Cancelling it
             # prevents an unrelated later "yes" from executing a stale action.
             self.store.finish_confirmation(confirmation.id, "cancelled")
+            dropped_confirmation = confirmation
         provider = self.providers.select(text)
         if provider is not None:
-            return await self._handle_with_model(
+            reply = await self._handle_with_model(
                 session_id, text, provider, request_id=request_id
             )
-        return await self._handle_mock(session_id, text, request_id=request_id)
+        else:
+            reply = await self._handle_mock(session_id, text, request_id=request_id)
+        if dropped_confirmation is not None:
+            reply.text = (
+                f"I dropped the pending request to {dropped_confirmation.summary}. "
+                f"{reply.text}"
+            )
+        return reply
 
     def _instructions(self) -> str:
         timezone = ZoneInfo(self.settings.assistant_timezone)
@@ -575,26 +589,9 @@ matches and ask which one; never guess."""
     def _confirmation_decision(text: str) -> bool | None:
         normalized = " ".join(text.lower().strip().split())
         decision_text = re.sub(r"[^a-z ]", "", normalized).strip()
-        if decision_text in NEGATIVE_CONFIRMATIONS or decision_text.startswith(
-            ("no ", "nope ", "cancel ", "dont ", "do not ", "never mind ")
-        ):
+        if decision_text in NEGATIVE_CONFIRMATIONS:
             return False
-        if decision_text in AFFIRMATIVE_CONFIRMATIONS or decision_text.startswith(
-            (
-                "yes ",
-                "yeah ",
-                "yep ",
-                "confirm ",
-                "proceed ",
-                "do it ",
-                "sure ",
-                "okay ",
-                "ok ",
-                "please do ",
-                "go ahead ",
-                "sounds good ",
-            )
-        ):
+        if decision_text in AFFIRMATIVE_CONFIRMATIONS:
             return True
         return None
 

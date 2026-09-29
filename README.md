@@ -80,17 +80,19 @@ playback still requires the external speaker.
    the ESP32 can reach it over Wi-Fi. You can instead run `make dev`.
    Export the same admin value in the shell running the management request.
    On a device's first authenticated connection, open a two-minute pairing
-   window from the same Mac:
+   window from the same Mac using the code shown on Friday's display:
 
    ```sh
    curl --cacert data/tls/friday-ca.crt -X POST \
      -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" \
      -H 'X-Friday-Pairing: open' \
      -H 'X-Friday-Device-ID: friday-p3a' \
+     -H 'X-Friday-Pairing-Code: ABCD-1234' \
      https://127.0.0.1:8000/api/devices/pairing-window
    ```
 
-   Then boot or reconnect Friday. The window closes after the first device
+   Replace `ABCD-1234` with the current display code, then reconnect Friday.
+   The window closes after the first device
    enrolls. Later reconnects and backend restarts use the identity saved in the
    device and do not require another pairing window.
 3. Open <https://localhost:8000>, accept/trust the private Friday CA locally,
@@ -153,8 +155,10 @@ serial. Destructive tool confirmations expire after
 `ASSISTANT_CONFIRMATION_TIMEOUT_SECONDS` and survive backend restarts.
 Reminder mutations are stored transactionally with their request identity, so
 a retried confirmation returns the original result instead of applying twice.
-An unrelated request cancels a pending confirmation before being handled, so a
-later affirmative cannot execute a stale action.
+Confirmation phrases must occupy the whole reply, so a longer request beginning
+with `okay`, `sure`, or `yes` cannot execute a pending action. An unrelated
+request cancels a pending confirmation before being handled and Friday says
+which action it dropped, so a later affirmative cannot execute stale work.
 Cancelled and completed reminders are excluded from scheduler delivery.
 
 ## Production-readiness boundary

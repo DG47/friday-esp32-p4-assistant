@@ -195,7 +195,12 @@ async def open_pairing_window(request: Request) -> dict[str, str]:
     device_id = request.headers.get("x-friday-device-id", "")
     if not DEVICE_ID_PATTERN.fullmatch(device_id):
         raise HTTPException(status_code=400, detail="Valid target device ID required")
-    expires_at = credential_store.open_pairing_window(device_id)
+    try:
+        expires_at = credential_store.open_pairing_window(
+            device_id, request.headers.get("x-friday-pairing-code", "")
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     logger.info(
         "Device pairing window for %s opened until %s",
         device_id,
@@ -227,9 +232,8 @@ async def rotate_device_identity(device_id: str, request: Request) -> dict[str, 
     if recipients == 0:
         raise HTTPException(status_code=409, detail="Device must be online to rotate")
     credential_store.revoke(device_id)
-    expires_at = credential_store.open_pairing_window(device_id)
     logger.warning("Rotating identity for device %s", device_id)
-    return {"status": "rotating", "expires_at": expires_at.isoformat()}
+    return {"status": "awaiting_pairing_code"}
 
 
 @app.post("/api/devices/{device_id}/revoke")
@@ -344,7 +348,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                         await send_error(
                             websocket,
                             "pairing_required",
-                            "Open a local pairing window, then reconnect Friday",
+                            "Enter the pairing code shown on Friday, then reconnect",
                         )
                         await websocket.close(code=1008)
                         return

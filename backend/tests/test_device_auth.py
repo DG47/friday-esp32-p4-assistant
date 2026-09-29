@@ -17,7 +17,7 @@ class DeviceCredentialStoreTests(unittest.TestCase):
 
     def test_pairing_window_enrolls_one_device_then_verifies_it(self):
         token = "a" * 64
-        self.store.open_pairing_window("friday-p3a")
+        self.store.open_pairing_window("friday-p3a", "aaaaaaaa")
 
         self.assertEqual(self.store.authorize("friday-p3a", token), "paired")
         self.assertEqual(self.store.authorize("friday-p3a", token), "verified")
@@ -28,12 +28,12 @@ class DeviceCredentialStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.authorize("friday-p3a", "b" * 64))
 
     def test_rejects_changed_token_after_pairing(self):
-        self.store.open_pairing_window("friday-p3a")
+        self.store.open_pairing_window("friday-p3a", "cccccccc")
         self.assertEqual(self.store.authorize("friday-p3a", "c" * 64), "paired")
         self.assertIsNone(self.store.authorize("friday-p3a", "d" * 64))
 
     def test_revoke_removes_paired_identity(self):
-        self.store.open_pairing_window("friday-p3a")
+        self.store.open_pairing_window("friday-p3a", "eeeeeeee")
         self.assertEqual(self.store.authorize("friday-p3a", "e" * 64), "paired")
         self.assertTrue(self.store.is_paired("friday-p3a"))
         self.assertTrue(self.store.revoke("friday-p3a"))
@@ -41,7 +41,7 @@ class DeviceCredentialStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.authorize("friday-p3a", "e" * 64))
 
     def test_pairing_window_rejects_a_different_device(self):
-        self.store.open_pairing_window("friday-p3a")
+        self.store.open_pairing_window("friday-p3a", "aaaaaaaa")
 
         self.assertFalse(self.store.pairing_open("impostor"))
         self.assertIsNone(self.store.authorize("impostor", "f" * 64))
@@ -57,10 +57,22 @@ class DeviceCredentialStoreTests(unittest.TestCase):
             )
 
         migrated = DeviceCredentialStore(legacy_path)
-        migrated.open_pairing_window("friday-p3a")
+        migrated.open_pairing_window("friday-p3a", "aaaaaaaa")
 
         self.assertTrue(migrated.pairing_open("friday-p3a"))
         self.assertFalse(migrated.pairing_open("other-device"))
+
+    def test_pairing_rejects_a_token_that_does_not_match_displayed_code(self):
+        self.store.open_pairing_window("friday-p3a", "abcd-1234")
+
+        self.assertIsNone(self.store.authorize("friday-p3a", "f" * 64))
+        self.assertEqual(
+            self.store.authorize("friday-p3a", "abcd1234" + "0" * 56), "paired"
+        )
+
+    def test_pairing_requires_an_eight_character_hex_code(self):
+        with self.assertRaises(ValueError):
+            self.store.open_pairing_window("friday-p3a", "1234")
 
 
 if __name__ == "__main__":

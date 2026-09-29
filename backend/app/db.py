@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import json
 from pathlib import Path
 from typing import Any
 
 from .models import Reminder
+
+
+SAFE_TOOL_CALL_ID = re.compile(r"^call_[0-9a-f]{24}$")
 
 
 @dataclass
@@ -136,6 +141,7 @@ class ReminderStore:
                             "ORDER BY id"
                         )
                         connection.execute("DROP TABLE conversation_messages_legacy")
+                self._migrate_tool_call_ids(connection)
                 connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS pending_confirmations (
@@ -178,6 +184,61 @@ class ReminderStore:
             )
             """
         )
+
+    @staticmethod
+    def _migrate_tool_call_ids(connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            "SELECT id, device_id, request_id, tool_call_id, tool_calls_json "
+            "FROM conversation_messages "
+            "WHERE tool_call_id IS NOT NULL OR tool_calls_json IS NOT NULL"
+        ).fetchall()
+        replacements: dict[tuple[str, str, str], str] = {}
+
+        def safe_id(device_id: str, request_id: str, old_id: str) -> str:
+            if SAFE_TOOL_CALL_ID.fullmatch(old_id):
+                return old_id
+            key = (device_id, request_id, old_id)
+            if key not in replacements:
+                digest = hashlib.sha256("\x1f".join(key).encode("utf-8")).hexdigest()[:24]
+                replacements[key] = f"call_{digest}"
+            return replacements[key]
+
+        for row in rows:
+            tool_call_id = row["tool_call_id"]
+            migrated_tool_call_id = (
+                safe_id(row["device_id"], row["request_id"], tool_call_id)
+                if tool_call_id
+                else None
+            )
+            tool_calls_json = row["tool_calls_json"]
+            migrated_tool_calls_json = tool_calls_json
+            if tool_calls_json:
+                try:
+                    tool_calls = json.loads(tool_calls_json)
+                except (json.JSONDecodeError, TypeError):
+                    tool_calls = None
+                if isinstance(tool_calls, list):
+                    changed = False
+                    for call in tool_calls:
+                        if not isinstance(call, dict) or not isinstance(call.get("id"), str):
+                            continue
+                        migrated_id = safe_id(
+                            row["device_id"], row["request_id"], call["id"]
+                        )
+                        if migrated_id != call["id"]:
+                            call["id"] = migrated_id
+                            changed = True
+                    if changed:
+                        migrated_tool_calls_json = json.dumps(tool_calls, sort_keys=True)
+            if (
+                migrated_tool_call_id != tool_call_id
+                or migrated_tool_calls_json != tool_calls_json
+            ):
+                connection.execute(
+                    "UPDATE conversation_messages SET tool_call_id = ?, "
+                    "tool_calls_json = ? WHERE id = ?",
+                    (migrated_tool_call_id, migrated_tool_calls_json, row["id"]),
+                )
 
     def create(
         self,

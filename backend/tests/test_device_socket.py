@@ -54,7 +54,7 @@ class DeviceSocketTests(unittest.TestCase):
     def authenticate(self, socket, device_id, capabilities=None, token=None):
         self.assertEqual(socket.receive_json()["type"], "hello.required")
         token = token or "a" * 64
-        self.credential_store.open_pairing_window(device_id)
+        self.credential_store.open_pairing_window(device_id, token[:8])
         message = {"type": "hello", "capabilities": capabilities or []}
         message["device_token"] = token
         socket.send_json(message)
@@ -155,7 +155,7 @@ class DeviceSocketTests(unittest.TestCase):
 
     def test_physical_device_requires_pairing_then_reuses_its_identity(self):
         token = "e" * 64
-        self.credential_store.open_pairing_window("friday-p3a")
+        self.credential_store.open_pairing_window("friday-p3a", token[:8])
         with TestClient(app) as client:
             with client.websocket_connect("/ws/device/friday-p3a") as socket:
                 self.authenticate(socket, "friday-p3a", ["display"], token)
@@ -264,7 +264,7 @@ class DeviceSocketTests(unittest.TestCase):
         ):
             with TestClient(app) as client:
                 self.assertEqual(client.post("/api/devices/pairing-window").status_code, 401)
-                response = client.post(
+                missing_code = client.post(
                     "/api/devices/pairing-window",
                     headers={
                         "X-Friday-Pairing": "open",
@@ -272,7 +272,17 @@ class DeviceSocketTests(unittest.TestCase):
                         "X-Friday-Admin-Token": "9" * 64,
                     },
                 )
+                response = client.post(
+                    "/api/devices/pairing-window",
+                    headers={
+                        "X-Friday-Pairing": "open",
+                        "X-Friday-Device-ID": "friday-p3a",
+                        "X-Friday-Pairing-Code": "abcd-1234",
+                        "X-Friday-Admin-Token": "9" * 64,
+                    },
+                )
 
+        self.assertEqual(missing_code.status_code, 400)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "pairing")
         self.assertEqual(response.json()["device_id"], "friday-p3a")
@@ -287,13 +297,14 @@ class DeviceSocketTests(unittest.TestCase):
                     headers={
                         "X-Friday-Pairing": "open",
                         "X-Friday-Device-ID": "friday-p3a",
+                        "X-Friday-Pairing-Code": "abcd-1234",
                         "X-Friday-Admin-Token": "9" * 64,
                     },
                 )
         self.assertEqual(response.status_code, 403)
 
     def test_online_device_identity_can_be_rotated_locally(self):
-        self.credential_store.open_pairing_window("friday-p3a")
+        self.credential_store.open_pairing_window("friday-p3a", "cccccccc")
         self.credential_store.authorize("friday-p3a", "c" * 64)
         with patch("app.main.is_local_host", return_value=True), patch.object(
             settings, "assistant_admin_token", "9" * 64
@@ -310,11 +321,12 @@ class DeviceSocketTests(unittest.TestCase):
                 )
         self.assertEqual(response.status_code, 200)
         self.assertFalse(self.credential_store.is_paired("friday-p3a"))
-        self.assertTrue(self.credential_store.pairing_open("friday-p3a"))
+        self.assertFalse(self.credential_store.pairing_open("friday-p3a"))
+        self.assertEqual(response.json()["status"], "awaiting_pairing_code")
         self.assertEqual(broadcast.await_args.kwargs["required_capability"], "identity_rotate")
 
     def test_device_identity_can_be_revoked_locally(self):
-        self.credential_store.open_pairing_window("friday-p3a")
+        self.credential_store.open_pairing_window("friday-p3a", "dddddddd")
         self.credential_store.authorize("friday-p3a", "d" * 64)
         with patch("app.main.is_local_host", return_value=True), patch.object(
             settings, "assistant_admin_token", "9" * 64

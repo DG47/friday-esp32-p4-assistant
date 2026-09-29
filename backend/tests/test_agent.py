@@ -248,8 +248,46 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(reply.surface.kind, "timeline")
+        self.assertIn("I dropped the pending request to", reply.text)
         self.assertIsNone(self.store.pending_confirmation("supersede-device"))
         self.assertEqual(len(self.store.active("supersede-device")), 1)
+
+    async def test_request_prefixed_with_confirmation_word_does_not_run_action(self):
+        for index, text in enumerate(
+            (
+                "Okay, what's next?",
+                "Sure, and remind me to call mom at 5",
+                "Yes and also what is on my calendar",
+                "ok google",
+            )
+        ):
+            device_id = f"prefixed-confirmation-{index}"
+            original = self.store.create(
+                "keep me",
+                datetime.now(timezone.utc) + timedelta(minutes=10),
+                device_id=device_id,
+            )
+            await self.agent.handle(
+                device_id,
+                "Cancel the keep me reminder",
+                request_id=f"pending-{index}",
+            )
+
+            reply = await self.agent.handle(
+                device_id, text, request_id=f"replacement-{index}"
+            )
+
+            self.assertNotEqual(reply.provider, "confirmation")
+            self.assertIn("I dropped the pending request to", reply.text)
+            self.assertIsNotNone(self.store.active_by_id(original.id, device_id))
+
+    async def test_confirmation_decision_requires_a_complete_reply(self):
+        self.assertTrue(self.agent._confirmation_decision("Yeah, go ahead."))
+        self.assertFalse(self.agent._confirmation_decision("Nope, don't do that."))
+        self.assertIsNone(self.agent._confirmation_decision("Okay, what's next?"))
+        self.assertIsNone(
+            self.agent._confirmation_decision("Sure, and remind me to call mom at 5")
+        )
 
     async def test_legacy_text_history_is_migrated(self):
         legacy_path = Path(self.tempdir.name) / "legacy-conversation.db"
@@ -274,6 +312,40 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
             migrated.conversation("legacy-device"),
             [{"role": "user", "content": "hello"}],
         )
+
+    async def test_legacy_tool_call_ids_are_migrated_consistently(self):
+        legacy_path = Path(self.tempdir.name) / "legacy-tool-calls.db"
+        store = ReminderStore(legacy_path)
+        store.append_messages(
+            "legacy-device",
+            "legacy-request",
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "confirmation:legacy:0",
+                            "name": "cancel_reminder",
+                            "arguments": {"reminder_id": 13},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "confirmation:legacy:0",
+                    "name": "cancel_reminder",
+                    "content": '{"ok": true}',
+                },
+            ],
+        )
+
+        migrated = ReminderStore(legacy_path)
+        history = migrated.conversation("legacy-device")
+        call_id = history[0]["tool_calls"][0]["id"]
+
+        self.assertRegex(call_id, r"^call_[0-9a-f]{24}$")
+        self.assertEqual(history[1]["tool_call_id"], call_id)
 
     async def test_model_can_create_a_reminder_tool(self):
         provider = FakeToolProvider(

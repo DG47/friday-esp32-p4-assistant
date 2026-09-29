@@ -25,19 +25,23 @@ switches the live client to the returned TLS URL, and persists that address
 only after the normal authenticated `ready` boundary.
 
 On first boot, firmware creates a random 32-byte token and stores it in NVS.
-The backend stores only its SHA-256 hash. An unpaired LAN device is accepted
-only during the two-minute, loopback-opened pairing window:
+The backend stores only its SHA-256 hash. If enrollment is required, Friday
+shows an eight-character code derived from that token. An unpaired LAN device
+is accepted only when its ID and code match a two-minute, loopback-opened
+pairing window:
 
 ```sh
 curl --cacert data/tls/friday-ca.crt -X POST \
   -H "X-Friday-Admin-Token: $ASSISTANT_ADMIN_TOKEN" \
   -H 'X-Friday-Pairing: open' \
   -H 'X-Friday-Device-ID: friday-p3a' \
+  -H 'X-Friday-Pairing-Code: ABCD-1234' \
   https://127.0.0.1:8000/api/devices/pairing-window
 ```
 
-Only the named device can use the window, and it closes as soon as that device
-enrolls. The stored identity is reused after device and backend restarts. All
+Replace the example with the code on the physical display. A client that knows
+only the public device ID cannot use the window. It closes as soon as the
+matching device enrolls. The stored identity is reused after device and backend restarts. All
 WebSocket peers, including loopback clients, must authenticate. The browser
 simulator credential is accepted only from loopback for the configured
 simulator device ID rather than acting as a global device credential.
@@ -47,8 +51,9 @@ either `X-Friday-Simulator-Token` or `X-Friday-Admin-Token`. Reminder reads are
 scoped to the configured simulator device ID.
 
 Rotate an online physical identity with `X-Friday-Device-Action: rotate` at
-`POST /api/devices/{device_id}/rotate`; this clears the device token, opens a
-new one-device window, reboots, and enrolls a new token. `revoke` uses the same
+`POST /api/devices/{device_id}/rotate`; this clears the device token and
+reboots. Wait for the new display code, then use the pairing-window request
+above. `revoke` uses the same
 endpoint shape but does not open a pairing window. Both actions are loopback
 only and require `X-Friday-Admin-Token`.
 
@@ -114,8 +119,10 @@ turns for one device ID are always serialized.
 Destructive reminder tools use the normal message/surface protocol to request
 confirmation. Creation and snoozing execute immediately when explicitly
 requested; cancellation and completion are stored in SQLite and execute only
-after a natural affirmative follow-up. A negative response cancels them, and
-an unrelated request supersedes them before being handled normally.
+after a complete affirmative reply such as `yes` or `go ahead`. Merely starting
+a longer request with `okay`, `sure`, or `yes` does not confirm. A negative
+response cancels the action. An unrelated request supersedes it, is handled
+normally, and receives an explicit notice that the pending action was dropped.
 
 `reminder.alert` is sent only to peers advertising `reminder_ack`. The physical
 device renders the alert for `expires_ms` and returns to idle without replying
