@@ -33,6 +33,9 @@ extern const char friday_backend_ca_pem_start[] asm("_binary_friday_backend_ca_p
 #define FRIDAY_DEVICE_TOKEN_BYTES 32
 #define FRIDAY_DEVICE_TOKEN_LENGTH (FRIDAY_DEVICE_TOKEN_BYTES * 2)
 #define FRIDAY_DISCOVERY_ATTEMPTS 3
+/* One 500 ms, 12 kHz mono s16 idle-audio batch is 12,000 bytes. Keep the
+ * WebSocket buffer large enough to send it as one frame instead of six. */
+#define FRIDAY_WEBSOCKET_BUFFER_SIZE 12288
 
 static esp_websocket_client_handle_t client;
 static char *message_buffer;
@@ -506,7 +509,7 @@ static void backend_start_task(void *argument)
     const esp_websocket_client_config_t config = {
         .uri = backend_uri,
         .cert_pem = friday_backend_ca_pem_start,
-        .buffer_size = 2048,
+        .buffer_size = FRIDAY_WEBSOCKET_BUFFER_SIZE,
         .enable_close_reconnect = true,
         .reconnect_timeout_ms = 3000,
         .network_timeout_ms = 5000,

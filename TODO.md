@@ -30,6 +30,8 @@ P3A has been tested.
 - [ ] Run an extended physical soak/load test before treating
   `transport_poll_write(0)` stability as production-proven for long-running
   operation.
+- [ ] Verify the 12 KiB WebSocket buffer fix after the first extended soak
+  reproduced `transport_poll_write(0)` at 108 seconds with a 2 KiB buffer.
 - [x] Require a short code shown by the physical P3A when opening a first-time
   or rotated pairing window; a public device ID alone must not authorize
   enrollment.

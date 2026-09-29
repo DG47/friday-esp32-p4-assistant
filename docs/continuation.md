@@ -97,6 +97,14 @@ Firmware and networking:
   reauthenticated automatically and remained connected for another minute.
   This verifies bounded fallback discovery and short idle/recovery stability,
   but not long-running soak stability.
+- The first extended soak attempt on 2026-09-29 reproduced
+  `transport_poll_write(0)` after 108 seconds of authenticated idle-audio
+  streaming; Friday recovered and reauthenticated about 3.4 seconds later.
+  Inspection showed that each 12,000-byte idle batch was still split across six
+  writes by the 2,048-byte WebSocket buffer, defeating the intended reduction
+  in write frequency. The follow-up raises that buffer to 12 KiB so one idle
+  batch fits in one WebSocket frame. The extended soak remains incomplete until
+  the rebuilt firmware passes it physically.
 - Authenticated address switching was physically verified on 2026-09-29. The
   Mac temporarily served the trusted backend only at `192.168.7.250`, while
   Friday still held `192.168.4.38`. After five failed reconnects, the device
