@@ -22,8 +22,8 @@ FastAPI realtime gateway
 - The device never knows which model provider is active.
 - Every visual is a temporary `surface`; there is no app launcher.
 - Tools return structured data. The scene composer decides how to visualize it.
-- Consequential tools require a persisted confirmation before execution. Mock
-  read-only tools do not.
+- Destructive reminder cancellation and completion require persisted
+  confirmation. Explicit creation and snoozing execute immediately.
 - Audio, STT, LLM, TTS, and tools are independent provider interfaces.
 - LAN hardware generates a persistent random identity in NVS and must enroll
   during a locally opened pairing window. The backend stores only the token
@@ -50,13 +50,14 @@ FastAPI realtime gateway
    claims serialize turns for the same device. Each turn uses durable structured
    conversation history. Expired work is recovered, failed attempts back off,
    stale results are discarded, and current results survive disconnects.
-   Consequential tool calls pause on a restart-safe confirmation record.
+   Destructive tool calls pause on a restart-safe confirmation record.
 5. Server sends tool activity, a dynamic surface, assistant text, and
    `speaking`/`idle` state transitions. A reconnect triggers pending-result
    delivery.
 6. Reminder writes and state transitions are committed idempotently before
-   success is announced. Cancel, complete, and snooze actions are device-scoped,
-   require confirmation, and operate on stable reminder IDs. Ambiguous mock-mode
+   success is announced. Cancel, complete, and snooze actions are device-scoped
+   and operate on stable reminder IDs. Cancel and complete require
+   confirmation; an explicit snooze executes immediately. Ambiguous mock-mode
    matches stop for clarification. Snoozing resets delivery state atomically.
 7. The background scheduler claims due reminders, sends `reminder.alert` only
    to capable firmware, and retries at a bounded cadence. Firmware honors the

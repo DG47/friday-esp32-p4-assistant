@@ -35,10 +35,10 @@ P3A has been tested.
 - [x] Allow bounded parallel job execution without running two turns for the
   same device concurrently.
 - [x] Add confirmation before consequential tool actions.
-- [ ] Generate provider-safe deterministic tool-call IDs for confirmed action
+- [x] Generate provider-safe deterministic tool-call IDs for confirmed action
   history.
-- [ ] Expand natural spoken confirmation and cancellation vocabulary.
-- [ ] Let unrelated requests proceed normally instead of trapping every turn
+- [x] Expand natural spoken confirmation and cancellation vocabulary.
+- [x] Let unrelated requests proceed normally instead of trapping every turn
   behind a pending confirmation.
 
 ## Reminders
@@ -50,7 +50,7 @@ P3A has been tested.
   a tap before marking a reminder seen.
 - [x] Add a retry/expiry policy so permanently unacknowledged reminders do not
   retry forever.
-- [ ] Apply risk-tiered confirmation: create and snooze explicit reminders
+- [x] Apply risk-tiered confirmation: create and snooze explicit reminders
   immediately, while cancel and complete remain confirmed actions.
 
 ## Provider configuration

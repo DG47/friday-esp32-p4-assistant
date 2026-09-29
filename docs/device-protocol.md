@@ -102,9 +102,11 @@ configured useful lifetime produce an `agent_stale` error instead of presenting
 an outdated answer as current. Different device IDs can run concurrently, but
 turns for one device ID are always serialized.
 
-Consequential tools use the normal message/surface protocol to request a `yes`
-or `no` confirmation. The pending action is stored in SQLite, expires after a
-bounded interval, and is executed only after an affirmative follow-up.
+Destructive reminder tools use the normal message/surface protocol to request
+confirmation. Creation and snoozing execute immediately when explicitly
+requested; cancellation and completion are stored in SQLite and execute only
+after a natural affirmative follow-up. A negative response cancels them, and
+an unrelated request supersedes them before being handled normally.
 
 `reminder.alert` is sent only to peers advertising `reminder_ack`. The physical
 device renders the alert for `expires_ms` and returns to idle without replying

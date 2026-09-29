@@ -79,11 +79,6 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reminder_persists(self):
         reply = await self.agent.handle("device-1", "Remind me at noon to prepare")
-        self.assertEqual(reply.surface.title, "Confirmation required")
-        self.assertEqual(self.store.pending(), [])
-        reply = await self.agent.handle(
-            "device-1", "yes", request_id="confirm-reminder"
-        )
         pending = self.store.pending()
 
         self.assertEqual(reply.surface.kind, "reminder")
@@ -94,7 +89,6 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
     async def test_relative_reminder(self):
         before = datetime.now().astimezone()
         await self.agent.handle("device-1", "Remind me to stretch in 10 minutes")
-        await self.agent.handle("device-1", "yes", request_id="confirm-relative")
         reminder = self.store.pending()[0]
 
         self.assertEqual(reminder.text, "stretch")
@@ -186,38 +180,76 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"events"', tool_result["content"])
 
     async def test_confirmation_survives_restart(self):
+        reminder = self.store.create(
+            "stretch",
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+            device_id="confirmation-device",
+        )
         await self.agent.handle(
             "confirmation-device",
-            "Remind me to stretch in 10 minutes",
+            "Cancel the stretch reminder",
             request_id="confirmation-request",
         )
-        self.assertEqual(self.store.pending(device_id="confirmation-device"), [])
+        self.assertEqual(len(self.store.active("confirmation-device")), 1)
 
         restarted = FridayAgent(
             self.settings, ReminderStore(self.settings.assistant_database_path)
         )
         reply = await restarted.handle(
-            "confirmation-device", "Yes, do it.", request_id="confirmation-yes"
+            "confirmation-device", "Yeah, go ahead.", request_id="confirmation-yes"
         )
 
         self.assertEqual(reply.provider, "confirmation")
-        self.assertEqual(
-            self.store.pending(device_id="confirmation-device")[0].text, "stretch"
+        self.assertEqual(self.store.active("confirmation-device"), [])
+        history = self.store.conversation("confirmation-device", limit=10)
+        confirmed_call = next(
+            call
+            for message in history
+            for call in message.get("tool_calls", [])
+            if call["name"] == "cancel_reminder"
+            and call["arguments"]["reminder_id"] == reminder.id
+            and message["content"] == ""
         )
+        self.assertRegex(confirmed_call["id"], r"^call_[0-9a-f]{24}$")
 
     async def test_confirmation_can_be_cancelled_without_side_effects(self):
+        self.store.create(
+            "stretch",
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+            device_id="cancel-device",
+        )
         await self.agent.handle(
             "cancel-device",
-            "Remind me to stretch in 10 minutes",
+            "Cancel the stretch reminder",
             request_id="cancel-request",
         )
 
         reply = await self.agent.handle(
-            "cancel-device", "No, cancel that.", request_id="cancel-response"
+            "cancel-device", "Nope, don't do that.", request_id="cancel-response"
         )
 
         self.assertEqual(reply.surface.title, "Cancelled")
-        self.assertEqual(self.store.pending(device_id="cancel-device"), [])
+        self.assertEqual(len(self.store.active("cancel-device")), 1)
+
+    async def test_unrelated_request_cancels_stale_confirmation_and_proceeds(self):
+        self.store.create(
+            "stretch",
+            datetime.now(timezone.utc) + timedelta(minutes=10),
+            device_id="supersede-device",
+        )
+        await self.agent.handle(
+            "supersede-device",
+            "Cancel the stretch reminder",
+            request_id="supersede-request",
+        )
+
+        reply = await self.agent.handle(
+            "supersede-device", "What's next?", request_id="new-request"
+        )
+
+        self.assertEqual(reply.surface.kind, "timeline")
+        self.assertIsNone(self.store.pending_confirmation("supersede-device"))
+        self.assertEqual(len(self.store.active("supersede-device")), 1)
 
     async def test_legacy_text_history_is_migrated(self):
         legacy_path = Path(self.tempdir.name) / "legacy-conversation.db"
@@ -263,10 +295,6 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.object(self.agent.providers, "select", return_value=provider):
             reply = await self.agent.handle("reminder-device", "Remind me to prepare.")
-        self.assertEqual(reply.surface.title, "Confirmation required")
-        reply = await self.agent.handle(
-            "reminder-device", "yes", request_id="confirm-model-reminder"
-        )
 
         self.assertEqual(reply.surface.kind, "reminder")
         self.assertEqual(self.store.pending()[0].text, "prepare")
@@ -337,9 +365,6 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
             await self.agent.handle(
                 "retry-device", "Remind me to prepare", request_id="stable-request"
             )
-        await self.agent.handle(
-            "retry-device", "yes", request_id="stable-confirmation"
-        )
         second = provider()
         with patch.object(self.agent.providers, "select", return_value=second):
             await self.agent.handle(
@@ -378,9 +403,6 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
             await self.agent.handle(
                 "multi-device", "Set two reminders", request_id="multi-request"
             )
-        await self.agent.handle(
-            "multi-device", "yes", request_id="multi-confirmation"
-        )
 
         self.assertEqual(
             [item.text for item in self.store.pending(device_id="multi-device")],
@@ -454,13 +476,10 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         )
         self.store.mark_delivered(reminder.id, "snooze-device", now)
 
-        await self.agent.handle(
+        reply = await self.agent.handle(
             "snooze-device",
             "Snooze the call the dentist reminder for 20 minutes",
             request_id="snooze-request",
-        )
-        reply = await self.agent.handle(
-            "snooze-device", "yes", request_id="snooze-confirm"
         )
 
         snoozed = self.store.active("snooze-device")[0]

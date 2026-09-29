@@ -17,8 +17,8 @@ scene generation.
   retry/backoff, expired-lease recovery, stale-result suppression, and result
   delivery after reconnection
 - bounded cross-device worker concurrency with strict per-device turn ordering
-- restart-safe confirmation before reminder creation, cancellation, completion,
-  snoozing, and other consequential tool actions
+- restart-safe confirmation before destructive reminder cancellation and
+  completion; explicit creation and snoozing execute immediately
 - SQLite-backed reminders that survive backend restarts
 - idempotent reminder creation keyed to the originating request
 - device-scoped, idempotent reminder cancellation, completion, and snoozing;
@@ -94,11 +94,11 @@ playback still requires the external speaker.
    and paste `ASSISTANT_SIMULATOR_TOKEN` into the simulator credential field.
 4. Tap the orb and say or type: `What's next?`
 5. Continue with: `With who?`
-6. Then: `Remind me at noon to prepare.` Friday asks for confirmation; answer
-   `yes` to create it or `no` to cancel it.
+6. Then: `Remind me at noon to prepare.` Friday creates it immediately.
 7. Try `Snooze the prepare reminder for 20 minutes`, `Mark the prepare reminder
    complete`, or `Cancel the prepare reminder`. Friday resolves exactly one
-   reminder and asks for confirmation before changing it.
+   reminder, snoozes immediately, and asks for confirmation before cancel or
+   complete.
 
 When the P3A is online, the browser and physical display share the same session;
 browser text or speech drives the scenes shown on both displays.
@@ -139,10 +139,12 @@ completed response remains pending until a matching device reconnects.
 `ASSISTANT_JOB_MAX_AGE_SECONDS` prevents an old queued or offline result from
 being presented as current. `ASSISTANT_JOB_CONCURRENCY` controls cross-device
 parallelism while SQLite claims guarantee that one device's turns remain
-serial. Consequential tool confirmations expire after
+serial. Destructive tool confirmations expire after
 `ASSISTANT_CONFIRMATION_TIMEOUT_SECONDS` and survive backend restarts.
 Reminder mutations are stored transactionally with their request identity, so
 a retried confirmation returns the original result instead of applying twice.
+An unrelated request cancels a pending confirmation before being handled, so a
+later affirmative cannot execute a stale action.
 Cancelled and completed reminders are excluded from scheduler delivery.
 
 ## Production-readiness boundary

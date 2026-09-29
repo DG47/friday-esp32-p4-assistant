@@ -13,13 +13,11 @@ class OpenAIProvider(TextProvider):
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
 
-    async def complete(
-        self,
-        messages: list[dict[str, Any]],
-        instructions: str,
-        tools: list[dict[str, Any]],
-    ) -> ProviderTurn:
-        openai_messages: list[dict[str, Any]] = [
+    @staticmethod
+    def _messages(
+        messages: list[dict[str, Any]], instructions: str
+    ) -> list[dict[str, Any]]:
+        converted_messages: list[dict[str, Any]] = [
             {"role": "system", "content": instructions}
         ]
         for message in messages:
@@ -38,10 +36,18 @@ class OpenAIProvider(TextProvider):
                 ]
             elif converted.get("role") == "tool":
                 converted.pop("name", None)
-            openai_messages.append(converted)
+            converted_messages.append(converted)
+        return converted_messages
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        instructions: str,
+        tools: list[dict[str, Any]],
+    ) -> ProviderTurn:
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "messages": openai_messages,
+            "messages": self._messages(messages, instructions),
         }
         if tools:
             kwargs["tools"] = tools

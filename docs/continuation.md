@@ -115,6 +115,12 @@ Backend and simulator:
   idempotently. A durable action ledger makes state transitions replay-safe;
   snoozing resets acknowledgement and retry state for the new due time, while
   cancelled and completed reminders are never scheduled again.
+- The follow-up hardening pass changed the active policy: explicit reminder
+  creation and snoozing now execute immediately, while cancellation and
+  completion retain restart-safe confirmation. Confirmation language accepts
+  common speech variants, unrelated requests supersede stale pending actions,
+  and generated history uses deterministic provider-safe tool-call IDs. The
+  earlier physical lifecycle record below describes the policy at test time.
 - A background scheduler atomically claims durable reminders and sends
   `reminder.alert` only to firmware advertising `reminder_ack`. It retries after
   disconnect or a missing acknowledgement at a configurable bounded cadence

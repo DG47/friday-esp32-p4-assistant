@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -136,13 +137,34 @@ class ToolOutcome:
 
 
 CONSEQUENTIAL_TOOLS = {
-    "create_reminder",
     "cancel_reminder",
     "complete_reminder",
-    "snooze_reminder",
 }
-AFFIRMATIVE_CONFIRMATIONS = {"yes", "confirm", "confirmed", "do it", "proceed"}
-NEGATIVE_CONFIRMATIONS = {"no", "cancel", "never mind", "nevermind", "stop"}
+AFFIRMATIVE_CONFIRMATIONS = {
+    "yes",
+    "yeah",
+    "yep",
+    "confirm",
+    "confirmed",
+    "do it",
+    "proceed",
+    "sure",
+    "okay",
+    "ok",
+    "please do",
+    "go ahead",
+    "sounds good",
+}
+NEGATIVE_CONFIRMATIONS = {
+    "no",
+    "nope",
+    "cancel",
+    "dont",
+    "do not",
+    "never mind",
+    "nevermind",
+    "stop",
+}
 
 
 class FridayAgent:
@@ -162,9 +184,17 @@ class FridayAgent:
         request_id = request_id or str(uuid.uuid4())
         confirmation = self.store.pending_confirmation(session_id)
         if confirmation is not None:
-            return self._handle_confirmation(
-                confirmation, text, response_request_id=request_id
-            )
+            decision = self._confirmation_decision(text)
+            if decision is not None:
+                return self._handle_confirmation(
+                    confirmation,
+                    text,
+                    response_request_id=request_id,
+                    decision=decision,
+                )
+            # A new request supersedes an unanswered confirmation. Cancelling it
+            # prevents an unrelated later "yes" from executing a stale action.
+            self.store.finish_confirmation(confirmation.id, "cancelled")
         provider = self.providers.select(text)
         if provider is not None:
             return await self._handle_with_model(
@@ -436,17 +466,9 @@ matches and ask which one; never guess."""
         confirmation: PendingConfirmation,
         text: str,
         response_request_id: str,
+        decision: bool,
     ) -> AgentReply:
-        normalized = " ".join(text.lower().strip().split())
-        decision_text = re.sub(r"[^a-z ]", "", normalized).strip()
-        negative = decision_text in NEGATIVE_CONFIRMATIONS or decision_text.startswith(
-            ("no ", "cancel ", "never mind ")
-        )
-        affirmative = (
-            decision_text in AFFIRMATIVE_CONFIRMATIONS
-            or decision_text.startswith(("yes ", "confirm ", "proceed ", "do it "))
-        )
-        if negative:
+        if not decision:
             self.store.finish_confirmation(confirmation.id, "cancelled")
             answer = "Cancelled. No changes were made."
             self.store.append_exchange(
@@ -459,25 +481,6 @@ matches and ask which one; never guess."""
                     title="Cancelled",
                     subtitle="No changes were made.",
                     expires_ms=10000,
-                ),
-                provider="confirmation",
-            )
-
-        if not affirmative:
-            answer = (
-                f"I’m waiting to {confirmation.summary}. "
-                "Say yes to continue or no to cancel."
-            )
-            self.store.append_exchange(
-                confirmation.device_id, response_request_id, text, answer
-            )
-            return AgentReply(
-                text=answer,
-                surface=Surface(
-                    kind="message",
-                    title="Confirmation required",
-                    subtitle=confirmation.summary,
-                    expires_ms=30000,
                 ),
                 provider="confirmation",
             )
@@ -500,7 +503,7 @@ matches and ask which one; never guess."""
         last_surface: Surface | None = None
         all_succeeded = True
         for index, action in enumerate(confirmation.actions):
-            call_id = f"{confirmation.id}:confirmed:{index}"
+            call_id = self._tool_call_id(confirmation.id, "confirmed", str(index))
             tool_calls.append(
                 {
                     "id": call_id,
@@ -567,6 +570,38 @@ matches and ask which one; never guess."""
             provider="confirmation",
             tool=confirmation.actions[-1]["name"],
         )
+
+    @staticmethod
+    def _confirmation_decision(text: str) -> bool | None:
+        normalized = " ".join(text.lower().strip().split())
+        decision_text = re.sub(r"[^a-z ]", "", normalized).strip()
+        if decision_text in NEGATIVE_CONFIRMATIONS or decision_text.startswith(
+            ("no ", "nope ", "cancel ", "dont ", "do not ", "never mind ")
+        ):
+            return False
+        if decision_text in AFFIRMATIVE_CONFIRMATIONS or decision_text.startswith(
+            (
+                "yes ",
+                "yeah ",
+                "yep ",
+                "confirm ",
+                "proceed ",
+                "do it ",
+                "sure ",
+                "okay ",
+                "ok ",
+                "please do ",
+                "go ahead ",
+                "sounds good ",
+            )
+        ):
+            return True
+        return None
+
+    @staticmethod
+    def _tool_call_id(*parts: str) -> str:
+        digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:24]
+        return f"call_{digest}"
 
     def _execute_tool(
         self,
@@ -728,6 +763,7 @@ matches and ask which one; never guess."""
             result = json.dumps(
                 {"ok": True, "events": [event.model_dump(mode="json")]}
             )
+            call_id = self._tool_call_id(request_id, "mock-calendar")
             self.store.append_messages(
                 session_id,
                 request_id,
@@ -738,7 +774,7 @@ matches and ask which one; never guess."""
                         "content": "",
                         "tool_calls": [
                             {
-                                "id": f"{request_id}:mock-calendar",
+                                "id": call_id,
                                 "name": "get_calendar",
                                 "arguments": {"range": "next"},
                             }
@@ -746,7 +782,7 @@ matches and ask which one; never guess."""
                     },
                     {
                         "role": "tool",
-                        "tool_call_id": f"{request_id}:mock-calendar",
+                        "tool_call_id": call_id,
                         "name": "get_calendar",
                         "content": result,
                     },
@@ -841,25 +877,22 @@ matches and ask which one; never guess."""
                 arguments["due_at"] = due_at.isoformat()
             actions = [
                 {
-                    "call_id": f"{request_id}:mock-{tool_name}",
+                    "call_id": self._tool_call_id(request_id, f"mock-{tool_name}"),
                     "name": tool_name,
                     "arguments": arguments,
                     "operation_index": 0,
                 }
             ]
-            return self._request_mock_confirmation(
-                session_id=session_id,
-                text=text,
-                request_id=request_id,
-                actions=actions,
-            )
+            if tool_name == "snooze_reminder":
+                return self._execute_mock_actions(session_id, text, request_id, actions)
+            return self._request_mock_confirmation(session_id, text, request_id, actions)
 
         reminder = self._parse_reminder(text)
         if reminder:
             reminder_text, due_at = reminder
             actions = [
                 {
-                    "call_id": f"{request_id}:mock-reminder",
+                    "call_id": self._tool_call_id(request_id, "mock-reminder"),
                     "name": "create_reminder",
                     "arguments": {
                         "text": reminder_text,
@@ -868,12 +901,7 @@ matches and ask which one; never guess."""
                     "operation_index": 0,
                 }
             ]
-            return self._request_mock_confirmation(
-                session_id=session_id,
-                text=text,
-                request_id=request_id,
-                actions=actions,
-            )
+            return self._execute_mock_actions(session_id, text, request_id, actions)
 
         if "reminder" in normalized or "reminders" in normalized:
             pending = self.store.active(device_id=session_id)
@@ -881,6 +909,7 @@ matches and ask which one; never guess."""
                 text_out = "No pending reminders. Against all odds, future-you is currently safe."
             else:
                 text_out = f"You have {len(pending)} pending reminder{'s' if len(pending) != 1 else ''}."
+            call_id = self._tool_call_id(request_id, "mock-reminders")
             self.store.append_messages(
                 session_id,
                 request_id,
@@ -891,7 +920,7 @@ matches and ask which one; never guess."""
                         "content": "",
                         "tool_calls": [
                             {
-                                "id": f"{request_id}:mock-reminders",
+                                "id": call_id,
                                 "name": "list_reminders",
                                 "arguments": {},
                             }
@@ -899,7 +928,7 @@ matches and ask which one; never guess."""
                     },
                     {
                         "role": "tool",
-                        "tool_call_id": f"{request_id}:mock-reminders",
+                        "tool_call_id": call_id,
                         "name": "list_reminders",
                         "content": json.dumps(
                             {
@@ -938,6 +967,75 @@ matches and ask which one; never guess."""
                 subtitle="Calendar and reminders are ready",
                 expires_ms=10000,
             ),
+        )
+
+    def _execute_mock_actions(
+        self,
+        session_id: str,
+        text: str,
+        request_id: str,
+        actions: list[dict[str, Any]],
+    ) -> AgentReply:
+        tool_messages: list[dict[str, Any]] = []
+        last_surface: Surface | None = None
+        all_succeeded = True
+        for action in actions:
+            outcome = self._execute_tool(
+                action["name"],
+                action["arguments"],
+                device_id=session_id,
+                request_id=request_id,
+                operation_index=int(action["operation_index"]),
+            )
+            all_succeeded = all_succeeded and outcome.success
+            last_surface = outcome.surface or last_surface
+            tool_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": action["call_id"],
+                    "name": action["name"],
+                    "content": outcome.content,
+                }
+            )
+
+        action_names = [action["name"] for action in actions]
+        if all_succeeded and all(name == "create_reminder" for name in action_names):
+            answer = (
+                "The reminder is set."
+                if len(actions) == 1
+                else f"{len(actions)} reminders are set."
+            )
+        elif all_succeeded and action_names == ["snooze_reminder"]:
+            answer = "The reminder is snoozed."
+        else:
+            answer = "I couldn’t complete that reminder action safely."
+
+        self.store.append_messages(
+            session_id,
+            request_id,
+            [
+                {"role": "user", "content": text},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": action["call_id"],
+                            "name": action["name"],
+                            "arguments": action["arguments"],
+                        }
+                        for action in actions
+                    ],
+                },
+                *tool_messages,
+                {"role": "assistant", "content": answer},
+            ],
+        )
+        return AgentReply(
+            text=answer,
+            surface=last_surface
+            or Surface(kind="message", title="Friday", subtitle=answer, expires_ms=10000),
+            tool=action_names[-1],
         )
 
     def _request_mock_confirmation(
