@@ -196,7 +196,7 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
             self.settings, ReminderStore(self.settings.assistant_database_path)
         )
         reply = await restarted.handle(
-            "confirmation-device", "Yeah, go ahead.", request_id="confirmation-yes"
+            "confirmation-device", "Yes, do it.", request_id="confirmation-yes"
         )
 
         self.assertEqual(reply.provider, "confirmation")
@@ -225,7 +225,7 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         )
 
         reply = await self.agent.handle(
-            "cancel-device", "Nope, don't do that.", request_id="cancel-response"
+            "cancel-device", "Nope, leave it.", request_id="cancel-response"
         )
 
         self.assertEqual(reply.surface.title, "Cancelled")
@@ -249,6 +249,7 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reply.surface.kind, "timeline")
         self.assertIn("I dropped the pending request to", reply.text)
+        self.assertIn("I dropped the pending request to", reply.surface.subtitle)
         self.assertIsNone(self.store.pending_confirmation("supersede-device"))
         self.assertEqual(len(self.store.active("supersede-device")), 1)
 
@@ -282,12 +283,27 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(self.store.active_by_id(original.id, device_id))
 
     async def test_confirmation_decision_requires_a_complete_reply(self):
-        self.assertTrue(self.agent._confirmation_decision("Yeah, go ahead."))
-        self.assertFalse(self.agent._confirmation_decision("Nope, don't do that."))
-        self.assertIsNone(self.agent._confirmation_decision("Okay, what's next?"))
-        self.assertIsNone(
-            self.agent._confirmation_decision("Sure, and remind me to call mom at 5")
-        )
+        for text in (
+            "Yeah, go ahead.",
+            "Yes, do it.",
+            "Yeah, cancel it",
+            "Yes cancel it",
+            "Yeah sure",
+        ):
+            self.assertTrue(self.agent._confirmation_decision(text), text)
+        for text in (
+            "Nope, don't do that.",
+            "No, don't",
+            "Nope, leave it",
+        ):
+            self.assertFalse(self.agent._confirmation_decision(text), text)
+        for text in (
+            "Okay, what's next?",
+            "Sure, and remind me to call mom at 5",
+            "Yes and also what is on my calendar",
+            "ok google",
+        ):
+            self.assertIsNone(self.agent._confirmation_decision(text), text)
 
     async def test_legacy_text_history_is_migrated(self):
         legacy_path = Path(self.tempdir.name) / "legacy-conversation.db"

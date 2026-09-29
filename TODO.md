@@ -54,7 +54,12 @@ P3A has been tested.
 - [x] Treat confirmation words as decisions only when the whole utterance is a
   confirmation, so requests beginning with `okay`, `sure`, or `yes` cannot run
   a pending destructive action.
+- [x] Accept short compound confirmations and cancellations such as `yes, do
+  it` and `nope, leave it` without treating unrelated prefixed requests as
+  decisions.
 - [x] Tell the user when a new request supersedes and drops a pending action.
+- [ ] Show the dropped-pending-action notice in the device surface subtitle as
+  well as the spoken/text response.
 - [x] Migrate stored legacy tool-call IDs to the provider-safe `call_<24 hex>`
   format before sending conversation history to Claude or OpenAI.
 - [ ] Run a live Claude confirmed-action turn after the stored-history migration

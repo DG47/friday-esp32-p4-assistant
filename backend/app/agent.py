@@ -170,6 +170,37 @@ NEGATIVE_CONFIRMATIONS = {
     "dont do that",
     "nope dont do that",
 }
+STRONG_AFFIRMATIVE_PREFIXES = {"yes", "yeah", "yep"}
+AFFIRMATIVE_CONTINUATION_WORDS = {
+    "and",
+    "cancel",
+    "confirm",
+    "do",
+    "go",
+    "ahead",
+    "it",
+    "ok",
+    "okay",
+    "please",
+    "proceed",
+    "sure",
+}
+STRONG_NEGATIVE_PREFIXES = {"no", "nope"}
+NEGATIVE_CONTINUATION_WORDS = {
+    "and",
+    "cancel",
+    "do",
+    "dont",
+    "it",
+    "leave",
+    "mind",
+    "never",
+    "not",
+    "stop",
+    "thank",
+    "thanks",
+    "you",
+}
 
 
 class FridayAgent:
@@ -210,10 +241,9 @@ class FridayAgent:
         else:
             reply = await self._handle_mock(session_id, text, request_id=request_id)
         if dropped_confirmation is not None:
-            reply.text = (
-                f"I dropped the pending request to {dropped_confirmation.summary}. "
-                f"{reply.text}"
-            )
+            notice = f"I dropped the pending request to {dropped_confirmation.summary}."
+            reply.text = f"{notice} {reply.text}"
+            reply.surface.subtitle = f"{notice} {reply.surface.subtitle}".strip()
         return reply
 
     def _instructions(self) -> str:
@@ -593,6 +623,19 @@ matches and ask which one; never guess."""
             return False
         if decision_text in AFFIRMATIVE_CONFIRMATIONS:
             return True
+        words = decision_text.split()
+        if 1 < len(words) <= 4:
+            first, remaining = words[0], set(words[1:])
+            if (
+                first in STRONG_NEGATIVE_PREFIXES
+                and remaining <= NEGATIVE_CONTINUATION_WORDS
+            ):
+                return False
+            if (
+                first in STRONG_AFFIRMATIVE_PREFIXES
+                and remaining <= AFFIRMATIVE_CONTINUATION_WORDS
+            ):
+                return True
         return None
 
     @staticmethod

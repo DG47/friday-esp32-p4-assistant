@@ -173,6 +173,13 @@ Backend and simulator:
   calls/results. A real Claude confirmed-action turn remains unverified until an
   Anthropic API key is available. The earlier physical lifecycle record below
   describes the policy at test time.
+- The compound-decision follow-up accepts short, strongly prefixed replies such
+  as `yes, do it`, `yeah, cancel it`, and `nope, leave it`, while continuing to
+  reject unrelated requests such as `okay, what's next?` and `yes and also what
+  is on my calendar`. A superseded-action notice is now prepended to both the
+  response text and the device surface subtitle. All 83 backend tests pass;
+  physical display confirmation for the new subtitle remains tracked in
+  `TODO.md`.
 - A background scheduler atomically claims durable reminders and sends
   `reminder.alert` only to firmware advertising `reminder_ack`. It retries after
   disconnect or a missing acknowledgement at a configurable bounded cadence
