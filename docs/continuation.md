@@ -184,10 +184,16 @@ Backend and simulator:
   `okay`, `sure`, or `yes` supersede rather than confirm. Friday tells the user
   which pending action it dropped. Generated and migrated history uses
   deterministic provider-safe tool-call IDs. The 82-test backend suite passed,
-  and the live SQLite database contains zero invalid IDs across six stored tool
-  calls/results. A real Claude confirmed-action turn remains unverified until an
-  Anthropic API key is available. The earlier physical lifecycle record below
-  describes the policy at test time.
+  and the live SQLite database contained zero invalid IDs across six stored tool
+  calls/results at that checkpoint. On 2026-09-30, Claude Opus 5.5 issued a
+  live `cancel_reminder` call for reminder 9, Friday persisted the pending
+  confirmation, and `Yes, do it` executed the cancellation exactly once. The
+  physical device received the confirmation and completion surfaces. After a
+  restart, the stored Anthropic-native tool ID was deterministically migrated
+  to `call_<24 hex>`; the database again contained zero invalid direct tool
+  IDs, and a subsequent Claude turn successfully consumed the migrated history
+  and listed the eight remaining reminders. The earlier physical lifecycle
+  record below describes the policy at test time.
 - The compound-decision follow-up accepts short, strongly prefixed replies such
   as `yes, do it`, `yeah, cancel it`, and `nope, leave it`, while continuing to
   reject unrelated requests such as `okay, what's next?` and `yes and also what

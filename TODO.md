@@ -64,7 +64,7 @@ P3A has been tested.
   well as the spoken/text response.
 - [x] Migrate stored legacy tool-call IDs to the provider-safe `call_<24 hex>`
   format before sending conversation history to Claude or OpenAI.
-- [ ] Run a live Claude confirmed-action turn after the stored-history migration
+- [x] Run a live Claude confirmed-action turn after the stored-history migration
   when an Anthropic API key is available.
 
 ## Reminders
