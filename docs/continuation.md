@@ -320,6 +320,17 @@ Voice-loop implementation added on 2026-09-25:
 
 ## Not implemented yet
 
+2026-09-30 wake transport update: firmware now keeps 500 ms of local pre-roll
+and opens a bounded upload window on sustained energy-VAD speech detection.
+The window feeds at least a complete three-second backend probe, closes after
+silence, and caps sustained speech/noise at approximately twelve seconds.
+New `wake.start` windows clear previous buffered audio and cancel stale probe
+tasks. Touch capture and the existing wake-then-request interaction remain.
+The firmware build and 85 backend tests pass. Physical gate/activation/soak
+verification is still pending; do not infer it from the older continuous-stream
+soak. This reduces quiet-room traffic but still sends ambient speech to the
+local backend. True on-device recognition of `Friday` remains open.
+
 Do not confuse working microphone capture with a complete voice assistant. The
 following remain:
 

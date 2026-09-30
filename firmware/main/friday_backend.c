@@ -652,6 +652,14 @@ esp_err_t friday_backend_send_idle_audio(const int16_t *samples, size_t sample_c
                              FRIDAY_IDLE_AUDIO_SEND_TIMEOUT_MS);
 }
 
+bool friday_backend_begin_wake_window(void)
+{
+    if (audio_active || !backend_ready) {
+        return false;
+    }
+    return send_text("{\"type\":\"wake.start\"}", pdMS_TO_TICKS(500)) >= 0;
+}
+
 void friday_backend_end_audio(void)
 {
     if (!audio_active) {

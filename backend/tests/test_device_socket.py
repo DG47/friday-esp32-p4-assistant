@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -119,6 +120,54 @@ class DeviceSocketTests(unittest.TestCase):
                     )
 
         self.assertEqual(transcriber.audio_format.sample_rate, 12000)
+
+    def test_new_wake_window_does_not_join_separate_speech_segments(self):
+        transcriber = FakeWakeTranscriber()
+        with patch("app.main.transcriber", transcriber):
+            with TestClient(app) as client:
+                with client.websocket_connect("/ws/device/gated-wake") as socket:
+                    self.authenticate(socket, "gated-wake")
+                    old = (2000).to_bytes(2, "little", signed=True)
+                    new = (5000).to_bytes(2, "little", signed=True)
+                    socket.send_bytes(old * 24000)
+                    socket.send_json({"type": "wake.start"})
+                    socket.send_bytes(new * 12000)
+                    socket.send_json({"type": "unsupported"})
+                    self.assertEqual(socket.receive_json()["type"], "error")
+                    self.assertFalse(hasattr(transcriber, "pcm"))
+                    socket.send_bytes(new * 24000)
+                    self.assertEqual(socket.receive_json()["type"], "wake.detected")
+        self.assertEqual(transcriber.pcm, new * 36000)
+
+    def test_new_wake_window_cancels_inflight_detection(self):
+        class SlowFirstProbe(FakeWakeTranscriber):
+            calls = 0
+            cancelled = False
+
+            async def transcribe(self, pcm, audio_format):
+                self.calls += 1
+                if self.calls == 1:
+                    try:
+                        await asyncio.sleep(60)
+                    except asyncio.CancelledError:
+                        self.cancelled = True
+                        raise
+                return await super().transcribe(pcm, audio_format)
+
+        transcriber = SlowFirstProbe()
+        with patch("app.main.transcriber", transcriber):
+            with TestClient(app) as client:
+                with client.websocket_connect("/ws/device/gated-cancel") as socket:
+                    self.authenticate(socket, "gated-cancel")
+                    sample = (5000).to_bytes(2, "little", signed=True)
+                    socket.send_bytes(sample * 36000)
+                    socket.send_json({"type": "unsupported"})
+                    self.assertEqual(socket.receive_json()["type"], "error")
+                    socket.send_json({"type": "wake.start"})
+                    socket.send_bytes(sample * 36000)
+                    self.assertEqual(socket.receive_json()["type"], "wake.detected")
+        self.assertTrue(transcriber.cancelled)
+        self.assertEqual(transcriber.calls, 2)
 
     def test_audio_turn_is_transcribed_and_sent_to_agent(self):
         transcriber = FakeTranscriber()

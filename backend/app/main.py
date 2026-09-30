@@ -393,6 +393,10 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                         websocket, "wake_unavailable", "Local speech transcription is disabled"
                     )
                     continue
+                if wake_probe_task is not None and not wake_probe_task.done():
+                    wake_probe_task.cancel()
+                    await asyncio.gather(wake_probe_task, return_exceptions=True)
+                wake_probe_task = None
                 wake_audio.reset()
                 wake_enabled = True
             elif message_type == "utterance":

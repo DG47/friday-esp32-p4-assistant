@@ -81,7 +81,14 @@ audio turn may be active per connection; turns shorter than 200 ms or longer
 than `STT_MAX_SECONDS` are rejected.
 
 After `hello`, or an explicit `wake.start`, binary PCM received while idle is
-treated as a rolling wake-word stream. The local backend uses faster-whisper to
+treated as a rolling wake-word stream. The firmware retains up to 500 ms of
+pre-roll locally and sends `wake.start` when sustained speech opens the gate.
+Each window resets buffered wake audio and cancels the previous probe task.
+Audio is batched at 500 ms; windows run at least three seconds to fill a probe,
+close after trailing silence, and are capped at roughly twelve seconds (batch
+alignment may add up to 500 ms). Quiet idle periods send no PCM. Ambient speech
+or sustained noise can still open repeated windows; this is an energy gate,
+not on-device keyword recognition. The local backend uses faster-whisper to
 detect the exact word `Friday`, emits `wake.detected`, and discards any wake
 frames that arrive while the device switches modes. The device then sends
 `activate` with source `wake_word`, followed by the same `audio.start` and

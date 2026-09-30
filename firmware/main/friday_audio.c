@@ -72,6 +72,10 @@ static void microphone_task(void *argument)
     size_t idle_audio_used = 0;
     int32_t interval_peak = 0;
     bool was_recording = false;
+    bool wake_window = false;
+    uint32_t wake_frames = 0;
+    friday_vad_t wake_vad;
+    friday_vad_init(&wake_vad, FRIDAY_AUDIO_FRAME_MS);
     friday_vad_t vad;
     friday_vad_init(&vad, FRIDAY_AUDIO_FRAME_MS);
     ESP_LOGI(TAG, "ES7210 capture active: %d Hz, FL+FR", FRIDAY_AUDIO_SAMPLE_RATE);
@@ -117,6 +121,9 @@ static void microphone_task(void *argument)
         bool recording = friday_backend_audio_active();
         if (recording) {
             idle_audio_used = 0;
+            wake_window = false;
+            wake_frames = 0;
+            friday_vad_begin_turn(&wake_vad);
             if (!was_recording) {
                 friday_vad_begin_turn(&vad);
                 ESP_LOGI(TAG, "VAD armed: speech=%ld silence=%ld noise=%.1f",
@@ -154,15 +161,39 @@ static void microphone_task(void *argument)
             friday_vad_observe_idle(&vad, mono_rms);
             if (friday_backend_take_wake_request()) {
                 idle_audio_used = 0;
+                wake_window = false;
+                friday_vad_begin_turn(&wake_vad);
                 if (friday_backend_begin_audio("wake_word")) {
                     friday_ui_set_state(FRIDAY_STATE_LISTENING);
                     wake_vad_guard_frames = FRIDAY_WAKE_VAD_GUARD_FRAMES;
                 }
             } else {
+                if (!wake_window) {
+                    /* Keep a chronological 500 ms pre-roll, including onset. */
+                    if (idle_audio_used == FRIDAY_WAKE_STREAM_SAMPLES) {
+                        memmove(idle_audio, idle_audio + FRIDAY_AUDIO_STREAM_SAMPLES,
+                                (idle_audio_used - FRIDAY_AUDIO_STREAM_SAMPLES) * sizeof(*idle_audio));
+                        idle_audio_used -= FRIDAY_AUDIO_STREAM_SAMPLES;
+                    }
+                    friday_vad_observe_idle(&wake_vad, mono_rms);
+                }
                 memcpy(idle_audio + idle_audio_used, mono,
                        FRIDAY_AUDIO_STREAM_SAMPLES * sizeof(*mono));
                 idle_audio_used += FRIDAY_AUDIO_STREAM_SAMPLES;
-                if (idle_audio_used == FRIDAY_WAKE_STREAM_SAMPLES) {
+                friday_vad_event_t wake_event = friday_vad_process(&wake_vad, mono_rms);
+                if (!wake_window && wake_event == FRIDAY_VAD_EVENT_SPEECH_STARTED) {
+                    wake_window = friday_backend_begin_wake_window();
+                    wake_frames = 0;
+                    if (wake_window) {
+                        ESP_LOGI(TAG, "Wake audio gate opened: speech detected");
+                    } else {
+                        friday_vad_begin_turn(&wake_vad);
+                    }
+                }
+                if (wake_window) {
+                    wake_frames++;
+                }
+                if (wake_window && idle_audio_used == FRIDAY_WAKE_STREAM_SAMPLES) {
                     esp_err_t wake_send_result = friday_backend_send_idle_audio(
                         idle_audio, idle_audio_used);
                     idle_audio_used = 0;
@@ -170,6 +201,18 @@ static void microphone_task(void *argument)
                         wake_send_result != ESP_ERR_INVALID_STATE) {
                         ESP_LOGW(TAG, "Wake audio send failed: %s",
                                  esp_err_to_name(wake_send_result));
+                    }
+                    /* Three seconds minimum feeds one complete Whisper probe;
+                     * a twelve-second cap bounds sustained noise/speech. Close
+                     * only on batch boundaries so a final probe is not lost. */
+                    if (wake_send_result != ESP_OK ||
+                        (wake_frames >= 3000 / FRIDAY_AUDIO_FRAME_MS &&
+                         wake_event == FRIDAY_VAD_EVENT_SPEECH_ENDED) ||
+                        wake_frames >= FRIDAY_AUDIO_MAX_RECORDING_FRAMES) {
+                        wake_window = false;
+                        friday_vad_begin_turn(&wake_vad);
+                        ESP_LOGI(TAG, "Wake audio gate closed after %lu ms",
+                                 (unsigned long)(wake_frames * FRIDAY_AUDIO_FRAME_MS));
                     }
                 }
             }

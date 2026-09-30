@@ -14,4 +14,5 @@ bool friday_backend_audio_active(void);
 bool friday_backend_take_wake_request(void);
 esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count);
 esp_err_t friday_backend_send_idle_audio(const int16_t *samples, size_t sample_count);
+bool friday_backend_begin_wake_window(void);
 void friday_backend_end_audio(void);

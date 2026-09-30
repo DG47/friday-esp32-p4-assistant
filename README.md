@@ -36,7 +36,7 @@ scene generation.
 - adaptive on-device energy VAD that submits a turn after 800 ms of trailing
   silence; a second tap remains available as a manual fallback
 - local-backend `Friday` wake detection using faster-whisper, with touch
-  retained as a fallback
+  retained as a fallback; device VAD gates idle uploads with a 500 ms pre-roll
 - WebSocket audio writes tolerate brief hosted-Wi-Fi backpressure and serialize
   with client keepalive pings
 - provider-neutral speech transcription with local faster-whisper `base.en`

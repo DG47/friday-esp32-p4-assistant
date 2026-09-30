@@ -94,6 +94,10 @@ P3A has been tested.
   boundaries.
 - [ ] Add a dedicated assistant email identity and authorization policy.
 - [ ] Move wake-word detection on-device.
+- [ ] Physically verify speech-gated local-backend wake detection: quiet-room
+  traffic suppression, exact `Friday` activation, touch fallback, and soak.
+  Firmware implementation and 85 backend tests pass; this is not on-device
+  keyword recognition.
 - [ ] Attach the external speaker, add TTS, and support interruption/barge-in.
 - [ ] Add a streaming STT option if lower latency is needed.
 - [ ] Add metrics, alerting, backups/retention, and load/failure testing.
