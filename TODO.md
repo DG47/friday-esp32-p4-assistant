@@ -60,7 +60,7 @@ P3A has been tested.
   it` and `nope, leave it` without treating unrelated prefixed requests as
   decisions.
 - [x] Tell the user when a new request supersedes and drops a pending action.
-- [ ] Show the dropped-pending-action notice in the device surface subtitle as
+- [x] Show the dropped-pending-action notice in the device surface subtitle as
   well as the spoken/text response.
 - [x] Migrate stored legacy tool-call IDs to the provider-safe `call_<24 hex>`
   format before sending conversation history to Claude or OpenAI.

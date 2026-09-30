@@ -192,9 +192,11 @@ Backend and simulator:
   as `yes, do it`, `yeah, cancel it`, and `nope, leave it`, while continuing to
   reject unrelated requests such as `okay, what's next?` and `yes and also what
   is on my calendar`. A superseded-action notice is now prepended to both the
-  response text and the device surface subtitle. All 83 backend tests pass;
-  physical display confirmation for the new subtitle remains tracked in
-  `TODO.md`.
+  response text and the device surface subtitle. All 83 backend tests pass.
+  On 2026-09-30, the live physical P3A rendered the dropped-action subtitle
+  after an unrelated roadmap request superseded a pending reminder-cancellation
+  confirmation; the user visually confirmed the notice on Friday's display,
+  and the reminder was not cancelled.
 - A background scheduler atomically claims durable reminders and sends
   `reminder.alert` only to firmware advertising `reminder_ack`. It retries after
   disconnect or a missing acknowledgement at a configurable bounded cadence
