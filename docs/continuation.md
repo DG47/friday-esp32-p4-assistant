@@ -326,9 +326,14 @@ The window feeds at least a complete three-second backend probe, closes after
 silence, and caps sustained speech/noise at approximately twelve seconds.
 New `wake.start` windows clear previous buffered audio and cancel stale probe
 tasks. Touch capture and the existing wake-then-request interaction remain.
-The firmware build and 85 backend tests pass. Physical gate/activation/soak
-verification is still pending; do not infer it from the older continuous-stream
-soak. This reduces quiet-room traffic but still sends ambient speech to the
+The firmware build and 85 backend tests pass. Revision `64ca5fa` was flashed
+and authenticated on the P3A. Serial logging showed about 61 seconds after
+`ready` with live microphone readings and no wake gate opening, followed by
+two gate open/close cycles (5520 ms and 10760 ms of captured audio) without a
+disconnect. This verifies basic gate operation, not wake accuracy. Spoken
+`Friday` activation, touch fallback, and extended soak are still pending; do
+not infer them from the older continuous-stream soak. This reduces quiet-room
+traffic but still sends ambient speech to the
 local backend. True on-device recognition of `Friday` remains open.
 
 Do not confuse working microphone capture with a complete voice assistant. The
