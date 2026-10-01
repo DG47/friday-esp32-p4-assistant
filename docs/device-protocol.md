@@ -185,3 +185,14 @@ completes delivery; it does not prove every connected display presented it.
 Cache loss/eviction can permit another presentation. Terminal records expire
 at seven days or the global 10,000-row bound. See production-readiness.md for
 the actual delivery guarantee and legacy-client compatibility.
+
+### Read-only calendar scenes
+
+Calendar cards reuse `timeline`, `artifact`, `message` and `ambient`. New accepted
+actions: `calendar` / `calendar:N` (today/page), `calendar_next`,
+`calendar_refresh`, `event:<16hex>` (device-scoped short-lived detail token).
+They do not enqueue calendar writes. Progress uses existing `tool.activity`; scene
+responses retain four cards/four buttons, 64-byte action buffers and a 30-second
+return to ambient. Disconnected/revoked/error scenes contain no stale event cards;
+transient failures may display explicitly stale cached cards within ten minutes.
+There is no new firmware protocol opcode or OAuth endpoint on the LAN.

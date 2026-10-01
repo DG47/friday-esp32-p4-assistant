@@ -113,6 +113,7 @@ async def lifespan(_: FastAPI):
         for task in tasks:
             with suppress(asyncio.CancelledError):
                 await task
+        await agent.calendar.close()
 
 
 app = FastAPI(title="Friday Assistant", version="0.1.0", lifespan=lifespan)
@@ -224,9 +225,9 @@ async def readiness() -> dict[str, str]:
 
 
 @app.get("/api/calendar/today")
-async def calendar_today(request: Request) -> list[dict]:
+async def calendar_today(request: Request) -> dict:
     require_local_read_access(request)
-    return [event.model_dump(mode="json") for event in agent.calendar.today()]
+    return (await agent.calendar.snapshot()).payload()
 
 
 @app.get("/api/diagnostics")
@@ -480,7 +481,12 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             elif message_type == "scene.action":
                 try:
                     action = SurfaceAction(id=message.get("action"), label="Action").id
-                    surface = local_scene(action, device_id, settings, store, agent.calendar)
+                    if action.startswith(("calendar", "event:")):
+                        await publish_tool_progress(device_id, "get_calendar", "working")
+                        surface = await agent.calendar.scene(action, device_id)
+                        await publish_tool_progress(device_id, "get_calendar", "complete" if agent.calendar.last_status in {"ready", "sample"} else "failed")
+                    else:
+                        surface = local_scene(action, device_id, settings, store, agent.calendar)
                     log_scene_action(device_id, action, surface)
                     if surface is not None:
                         await hub.broadcast(device_id, {"type": "surface", "surface": surface.model_dump(mode="json")})

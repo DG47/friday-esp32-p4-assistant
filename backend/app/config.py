@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     anthropic_max_tokens: int = Field(default=1024, ge=256, le=128000)
     openai_realtime_model: str = "gpt-realtime-2.1"
 
+    calendar_provider: Literal["none", "sample", "google"] = "none"
+    calendar_model_context: bool = False
+    calendar_google_id: str = Field(default="primary", min_length=1, max_length=256)
+    calendar_google_credentials_path: Path = Path("data/google-calendar/credentials.json")
+
     weather_provider: Literal["none", "open-meteo"] = "none"
     weather_latitude: float | None = Field(default=None, ge=-90, le=90)
     weather_longitude: float | None = Field(default=None, ge=-180, le=180)

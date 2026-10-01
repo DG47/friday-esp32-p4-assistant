@@ -38,6 +38,7 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.settings = Settings(
             assistant_provider="mock",
+            calendar_provider="sample",
             assistant_database_path=Path(self.tempdir.name) / "test.db",
         )
         self.store = ReminderStore(self.settings.assistant_database_path)
@@ -121,7 +122,8 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reply.provider, "test-model")
         self.assertEqual(reply.tool, "get_calendar")
-        self.assertEqual(reply.surface.kind, "timeline")
+        self.assertEqual(reply.surface.kind, "artifact")
+        self.assertIn("Sample event", reply.surface.subtitle)
         self.assertIn("interview", reply.text)
         tool_result = provider.requests[1]["messages"][-1]
         self.assertEqual(tool_result["role"], "tool")

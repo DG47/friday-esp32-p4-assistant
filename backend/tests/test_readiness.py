@@ -106,7 +106,9 @@ class SceneSocketTests(unittest.TestCase):
                 self.assertEqual(surface['kind'], 'metric')
                 self.assertIn('Not connected', str(surface['items']))
                 socket.send_json({'type': 'scene.action', 'action': 'calendar'})
-                self.assertIn('Sample data', socket.receive_json()['surface']['subtitle'])
+                # Calendar touch now announces progress before an honest unconnected scene.
+                messages = [socket.receive_json() for _ in range(3)]
+                self.assertEqual(messages[-1]['surface']['title'], 'Calendar not connected')
                 socket.send_json({'type': 'scene.action', 'action': 'shell:rm'})
                 self.assertEqual(socket.receive_json()['code'], 'bad_action')
 
