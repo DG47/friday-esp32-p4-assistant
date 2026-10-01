@@ -28,6 +28,7 @@ from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
 from .scenes import local_scene
 from .models import SurfaceAction
 from .speech import OpenAISpeech, SpeechDirector
+from .local_speech import MacSpeech
 from .scene_diagnostics import log_scene_action
 
 
@@ -62,7 +63,12 @@ job_worker = AgentJobWorker(
     max_age_seconds=settings.assistant_job_max_age_seconds,
     concurrency=settings.assistant_job_concurrency,
 )
-speech = SpeechDirector(hub, OpenAISpeech(settings.openai_api_key, settings.tts_model, settings.tts_voice) if settings.tts_provider == "openai" else None)
+speech_provider = None
+if settings.tts_provider == "macos":
+    speech_provider = MacSpeech(settings.tts_local_voice, settings.tts_local_rate, settings.tts_local_gain)
+elif settings.tts_provider == "openai":
+    speech_provider = OpenAISpeech(settings.openai_api_key, settings.tts_model, settings.tts_voice)
+speech = SpeechDirector(hub, speech_provider)
 job_worker.on_reply = speech.speak
 DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 active_sockets: set[WebSocket] = set()

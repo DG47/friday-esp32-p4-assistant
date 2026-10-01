@@ -28,6 +28,9 @@ class MacServiceTests(unittest.TestCase):
             self.assertEqual(value['EnvironmentVariables']['TTS_PROVIDER'], 'none')
             self.assertEqual(value['EnvironmentVariables']['WEATHER_PROVIDER'], 'none')
             self.assertNotIn('--reload', value['ProgramArguments'])
+            self.assertEqual(service.service_definition(root, 'macos')['EnvironmentVariables']['TTS_PROVIDER'], 'macos')
+            with self.assertRaises(ValueError):
+                service.service_definition(root, 'openai')
             self.assertEqual(destination.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(FileExistsError):
                 service.write_definition(root, destination)

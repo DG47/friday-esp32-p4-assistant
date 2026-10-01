@@ -7,7 +7,7 @@ import uuid
 from openai import AsyncOpenAI
 
 MAX_PCM_BYTES = 24000 * 2 * 30
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("uvicorn.error")
 
 
 class OpenAISpeech:
@@ -66,6 +66,7 @@ class SpeechDirector:
             if status == "failed":
                 self.failed_streams.add(stream_id)
             entry[1].set()
+            logger.info("speech_playback_ack device=%s status=%s", device_id, status)
 
     async def _play(self, device_id, text):
         stream_id = uuid.uuid4().hex
@@ -74,6 +75,7 @@ class SpeechDirector:
                 pcm = await asyncio.wait_for(self.provider.synthesize(text), 35)
             if not pcm or len(pcm) > MAX_PCM_BYTES or len(pcm) % 2:
                 raise ValueError("Invalid synthesized PCM")
+            logger.info("speech_playback_start device=%s bytes=%d sample_rate=24000", device_id, len(pcm))
             done = asyncio.Event()
             self.waiting[device_id] = (stream_id, done)
             async def send(kind, **fields):

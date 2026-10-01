@@ -7,8 +7,9 @@ not provide service before login, while the Mac is asleep, or after logout.
 
 `scripts/run_backend.py` runs one foreground Uvicorn process, without the development
 reloader. It reuses the repository's existing `.env`, database, TLS files, host and
-port. No credentials are copied into the plist. TTS and weather remain explicitly
-disabled until a separately approved setup changes this policy.
+port. No credentials are copied into the plist. The approved runtime now uses local Mac speech (see `local-voice.md`);
+weather remains disabled. The generator defaults to disabled speech unless
+`--tts-provider macos` is explicitly chosen. No OpenAI speech is enabled.
 
 Generate a definition, after checking the runtime and existing TLS files:
 
@@ -53,11 +54,14 @@ replacing live state. Actual recovery requires stopping the service, preserving
 the current database and WAL files, and approving replacement. Off-host encrypted
 backup storage, retention and alert destinations still need operator choices.
 
-The existing local CA lacks the key-usage extension required by Python 3.13+
-strict X.509 verification. The current ESP32 and CA-verified curl client accept
-it. Do not disable verification to work around this. A separately approved CA
-rotation must add critical CA basic constraints and keyCertSign/cRLSign usage,
-issue a matching server certificate, and update/flash device trust together.
+The original CA lacked the key-usage extension required by Python 3.13+ strict
+X.509 verification. The approved local repair reissued the CA public certificate
+with critical CA basic constraints and keyCertSign/cRLSign usage, preserving its
+key, subject, serial, identifiers and validity dates. The server certificate was
+preserved. Normal/strict OpenSSL and strict Python HTTPS verification passed.
+Public device trust was updated together; no system-wide root trust was installed.
+The setup script now specifies these extensions explicitly for future CA creation.
+Do not disable verification or replace credentials to address a compatibility error.
 
 The GitHub workflow runs provider-free backend tests and a native C recoverable
 error policy test. It is not an ESP-IDF cross-build or physical hardware test.

@@ -47,9 +47,12 @@ class Settings(BaseSettings):
     weather_latitude: float | None = Field(default=None, ge=-90, le=90)
     weather_longitude: float | None = Field(default=None, ge=-180, le=180)
 
-    tts_provider: Literal["none", "openai"] = "none"
+    tts_provider: Literal["none", "openai", "macos"] = "none"
     tts_model: str = "tts-1"
     tts_voice: str = "onyx"
+    tts_local_voice: str = Field(default="Daniel (English (UK))", min_length=1, max_length=100)
+    tts_local_rate: int = Field(default=180, ge=100, le=250)
+    tts_local_gain: float = Field(default=0.25, gt=0, le=1)
 
     stt_provider: Literal["none", "faster-whisper"] = "faster-whisper"
     stt_model: str = "base.en"

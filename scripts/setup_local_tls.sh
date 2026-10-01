@@ -20,6 +20,9 @@ chmod 700 "$tls_dir"
 if [ ! -f "$tls_dir/friday-ca.key" ] || [ ! -f "$tls_dir/friday-ca.crt" ]; then
   openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 3650 \
     -subj '/CN=Friday Local Device CA' \
+    -addext 'basicConstraints=critical,CA:TRUE' \
+    -addext 'keyUsage=critical,keyCertSign,cRLSign' \
+    -addext 'subjectKeyIdentifier=hash' \
     -keyout "$tls_dir/friday-ca.key" \
     -out "$tls_dir/friday-ca.crt"
   chmod 600 "$tls_dir/friday-ca.key"
