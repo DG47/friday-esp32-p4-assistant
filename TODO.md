@@ -101,3 +101,21 @@ P3A has been tested.
 - [ ] Attach the external speaker, add TTS, and support interruption/barge-in.
 - [ ] Add a streaming STT option if lower latency is needed.
 - [ ] Add metrics, alerting, backups/retention, and load/failure testing.
+
+## 2026-09-30 release candidate
+
+See [readiness evidence and remaining gates](docs/production-readiness.md).
+
+- [x] Add contextual scene card primitives, scoped reminder actions, local
+  status and durable reminder-backed timers; compile P4 firmware.
+- [x] Bound queue admission and socket writes; validate hostile inputs,
+  worker recovery, configuration privacy and backup restoration.
+- [x] Add standalone non-root production Compose packaging and readiness/diagnostics.
+- [ ] Physically validate the new scenes/actions and voice/timer/reconnect flows.
+- [ ] Run the production container, provider and volume recovery checks.
+- [ ] Implement authorized real service adapters and physical TTS/barge-in.
+- [ ] Choose retention and configure approved monitoring and backup operations.
+
+- [x] Add durable result IDs, UI acceptance acknowledgements, reconnect replay,
+  recent duplicate suppression and bounded terminal-record retention. Physical
+  reboot/reconnect verification remains a release gate.

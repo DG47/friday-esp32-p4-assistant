@@ -31,12 +31,20 @@ class Reminder(BaseModel):
     cancelled_at: datetime | None = None
 
 
+class SurfaceAction(BaseModel):
+    id: str = Field(max_length=64, pattern=r"^(status|reminders(?::[0-9]+)?|calendar|dismiss|confirm|decline|reminder:[1-9][0-9]*|snooze:[1-9][0-9]*|complete:[1-9][0-9]*|cancel:[1-9][0-9]*)$")
+    label: str = Field(min_length=1, max_length=32)
+
+
 class Surface(BaseModel):
-    kind: Literal["ambient", "timeline", "reminder", "message"]
+    kind: Literal["ambient", "timeline", "reminder", "message", "list", "metric", "comparison", "media", "person", "email", "map", "progress", "timer", "graph", "camera", "artifact"]
     title: str = ""
     subtitle: str = ""
     items: list[dict[str, Any]] = Field(default_factory=list)
     expires_ms: int | None = None
+    countdown_ms: int | None = Field(default=None, ge=1000, le=86400000)
+    deadline_at: datetime | None = None
+    actions: list[SurfaceAction] = Field(default_factory=list, max_length=4)
 
 
 class AgentReply(BaseModel):

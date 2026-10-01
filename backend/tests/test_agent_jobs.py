@@ -81,7 +81,7 @@ class AgentJobTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved.attempts, 1)
         self.assertEqual(
             [message["type"] for message in socket.messages],
-            ["surface", "assistant.text", "state", "state"],
+            ["surface", "assistant.text", "state"],
         )
         self.assertEqual(socket.messages[1]["job_id"], "request-1")
         self.assertEqual(self.store.pending_results("device-1"), [])

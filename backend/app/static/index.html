@@ -22,6 +22,7 @@
               <p id="scene-subtitle">Ready when needed.</p>
             </div>
             <div class="scene-items" id="scene-items"></div>
+            <div class="scene-actions" id="scene-actions" aria-label="Contextual actions"></div>
           </div>
 
           <button class="orb" id="orb" type="button" aria-label="Activate Friday">
@@ -54,6 +55,11 @@
           <button type="button" data-utterance="What's next?">What’s next?</button>
           <button type="button" data-utterance="With who?">With who?</button>
           <button type="button" data-utterance="Remind me at noon to prepare">Set reminder</button>
+        </div>
+        <div class="suggestions" aria-label="Local views">
+          <button type="button" data-action="status">Local status</button>
+          <button type="button" data-action="reminders">My reminders</button>
+          <button type="button" data-action="calendar">Sample calendar</button>
         </div>
         <p class="hint" id="speech-hint">Tap the orb for speech input, or type a request.</p>
       </section>

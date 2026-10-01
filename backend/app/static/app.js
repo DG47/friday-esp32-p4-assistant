@@ -15,61 +15,112 @@ const simulatorToken = document.getElementById("simulator-token");
 let socket;
 let reconnectTimer;
 let surfaceTimer;
+let countdownTimer;
 let lastAssistantText = "";
 
-simulatorToken.value = localStorage.getItem("friday-simulator-token") || "";
+let pendingReminderId = null;
+let actionPending = false;
+let authenticated = false;
+let authBlocked = false;
+let reconnectDelay = 1200;
+// Credentials stay in memory for this page; never persist a bearer token.
 simulatorToken.addEventListener("change", () => {
-  localStorage.setItem("friday-simulator-token", simulatorToken.value.trim());
+  authBlocked = false;
+  clearTimeout(reconnectTimer);
   socket?.close();
+  reconnectDelay = 1200;
+  connect();
 });
 
 function connect() {
+  authenticated = false;
+  if (authBlocked) return;
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   const deviceId = new URLSearchParams(location.search).get("device") || "friday-p3a";
   socket = new WebSocket(`${scheme}://${location.host}/ws/device/${encodeURIComponent(deviceId)}`);
   socket.addEventListener("open", () => {
-    dot.classList.add("online");
-    connectionLabel.textContent = "Backend connected";
+    connectionLabel.textContent = "Authenticating";
     socket.send(JSON.stringify({
       type: "hello",
       protocol: 1,
       device_token: simulatorToken.value.trim(),
-      capabilities: ["display", "touch", "speech"],
+      capabilities: ["display", "touch", "speech", "reminder_ack", "result_ack"],
     }));
   });
+  const current = socket;
   socket.addEventListener("close", () => {
+    if (current !== socket) return;
+    authenticated = false;
+    stopSpeech();
+    actionPending = false;
     dot.classList.remove("online");
-    connectionLabel.textContent = "Reconnecting";
+    connectionLabel.textContent = authBlocked ? "Credential required" : "Reconnecting";
     clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connect, 1200);
+    if (!authBlocked) reconnectTimer = setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(30000, reconnectDelay * 1.6);
   });
   socket.addEventListener("message", event => handleMessage(JSON.parse(event.data)));
 }
 
+const acceptedResults = new Set();
+function acknowledgeResult(message) {
+  if (authenticated && socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "result.ack", job_id: message.job_id, delivery_id: message.delivery_id }));
+  }
+}
+
 function handleMessage(message) {
-  if (message.type === "ready") {
+  if (message.type === "agent.result") {
+    if (typeof message.delivery_id !== "string" || !/^[0-9a-f]{32}$/.test(message.delivery_id) || typeof message.job_id !== "string" || !message.job_id || message.job_id.length > 128 || typeof message.text !== "string" || !message.surface || !["completed", "failed", "expired", "late"].includes(message.status)) return;
+    if (!acceptedResults.has(message.delivery_id)) {
+      // Remember only after synchronous DOM acceptance; exceptions leave it retryable.
+      renderSurface(message.surface);
+      transcript.textContent = message.text;
+      actionPending = false;
+      acceptedResults.add(message.delivery_id);
+      if (acceptedResults.size > 64) acceptedResults.delete(acceptedResults.values().next().value);
+      acknowledgeResult(message);
+      if (message.status === "completed") speak(message.text);
+    } else {
+      acknowledgeResult(message);
+    }
+  } else if (message.type === "ready") {
+    authenticated = true;
+    reconnectDelay = 1200;
+    dot.classList.add("online");
+    connectionLabel.textContent = "Friday authenticated";
     setState(message.state);
     renderSurface(message.surface);
+  } else if (message.type === "reminder.alert") {
+    pendingReminderId = message.reminder_id;
+    renderSurface({ ...message.surface, actions: [{ id: "ack", label: "Acknowledge" }] });
+    setState("alert");
+    transcript.textContent = message.text;
   } else if (message.type === "state") {
     setState(message.state);
-    if (message.state === "speaking" && lastAssistantText) speak(lastAssistantText);
+
   } else if (message.type === "surface") {
     renderSurface(message.surface);
   } else if (message.type === "assistant.text") {
+    actionPending = false;
     lastAssistantText = message.text;
     transcript.textContent = message.text;
+    speak(message.text);
   } else if (message.type === "transcript") {
     input.value = message.text;
     transcript.textContent = `“${message.text}”`;
   } else if (message.type === "tool.activity") {
     status.textContent = `${message.name.toUpperCase()} · ${message.status.toUpperCase()}`;
   } else if (message.type === "error") {
+    actionPending = false;
+    if (message.code === "pairing_required") authBlocked = true;
     transcript.textContent = message.message;
     setState("idle");
   }
 }
 
 function setState(next) {
+  if (next === "idle" && window.speechSynthesis?.speaking) return;
   screen.dataset.state = next;
   status.textContent = next.toUpperCase();
   if (next === "listening") transcript.textContent = "Listening…";
@@ -77,14 +128,28 @@ function setState(next) {
 
 function renderSurface(surface = { kind: "ambient", title: "Friday" }) {
   clearTimeout(surfaceTimer);
+  clearInterval(countdownTimer);
   const kind = surface.kind || "ambient";
   screen.dataset.surface = kind;
   eyebrow.textContent = kind.toUpperCase();
   title.textContent = surface.title || "Friday";
   subtitle.textContent = surface.subtitle || "Ready when needed.";
   items.replaceChildren();
-  for (const item of surface.items || []) {
-    const row = document.createElement("div");
+  const actions = document.getElementById("scene-actions");
+  actions.replaceChildren();
+  for (const action of (surface.actions || []).slice(0, 4)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = action.label;
+    button.addEventListener("click", () => sendSceneAction(action.id));
+    actions.append(button);
+  }
+  for (const item of (surface.items || []).slice(0, 4)) {
+    const row = document.createElement(item.action ? "button" : "div");
+    if (item.action) {
+      row.type = "button";
+      row.addEventListener("click", () => sendSceneAction(item.action));
+    }
     row.className = `scene-item ${item.priority || ""}`;
     const time = document.createElement("span");
     time.textContent = item.time || "";
@@ -93,14 +158,41 @@ function renderSurface(surface = { kind: "ambient", title: "Friday" }) {
     row.append(time, label);
     items.append(row);
   }
+  if (surface.countdown_ms) {
+    const remaining = surface.deadline_at ? Math.max(0, Date.parse(surface.deadline_at) - Date.now()) : surface.countdown_ms;
+    const deadline = performance.now() + remaining;
+    const countdown = document.createElement("div");
+    countdown.className = "countdown";
+    items.prepend(countdown);
+    function tick() {
+      const seconds = Math.max(0, Math.ceil((deadline - performance.now()) / 1000));
+      countdown.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+      if (!seconds) {
+        clearInterval(countdownTimer);
+        subtitle.textContent = "Timer finished. Reminder delivery is handled by Friday.";
+      }
+    }
+    tick();
+    countdownTimer = setInterval(tick, 250);
+  }
   if (surface.expires_ms) {
-    surfaceTimer = setTimeout(() => renderSurface({ kind: "ambient", title: "Friday" }), surface.expires_ms);
+    surfaceTimer = setTimeout(() => {
+      renderSurface({ kind: "ambient", title: "Friday" });
+      if (screen.dataset.state === "alert") {
+        pendingReminderId = null;
+        setState("idle");
+      }
+    }, surface.expires_ms);
   }
 }
 
 function sendUtterance(value) {
   const text = value.trim();
-  if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
+  if (!text || !authenticated || !socket || socket.readyState !== WebSocket.OPEN) {
+    transcript.textContent = "Connect Friday with a valid simulator credential first.";
+    return;
+  }
+  stopSpeech();
   transcript.textContent = `“${text}”`;
   const requestId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
   socket.send(JSON.stringify({ type: "utterance", text, request_id: requestId }));
@@ -149,17 +241,70 @@ if (Recognition) {
 }
 
 orb.addEventListener("click", () => {
-  if (recognition) recognition.start();
+  if (!authenticated) {
+    transcript.textContent = "Connect Friday first.";
+    return;
+  }
+  stopSpeech();
+  if (recognition) {
+    try { recognition.start(); } catch { recognition.stop(); }
+  }
   else input.focus();
 });
 
+function sendSceneAction(action) {
+  if (action === "ack") {
+    if (authenticated && pendingReminderId && socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "reminder.ack", reminder_id: pendingReminderId }));
+      pendingReminderId = null;
+      renderSurface({ kind: "ambient", title: "Friday" });
+      setState("idle");
+    }
+    return;
+  }
+  if (action === "dismiss") {
+    stopSpeech();
+    renderSurface({ kind: "ambient", title: "Friday" });
+    return;
+  }
+  if (!authenticated || socket?.readyState !== WebSocket.OPEN) {
+    transcript.textContent = "Friday is offline. This action was not sent.";
+    return;
+  }
+  const mutation = /^(snooze|complete|cancel):/.test(action);
+  if (mutation && actionPending) return;
+  if (mutation) {
+    actionPending = true;
+    setState("thinking");
+  }
+  const requestId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  socket.send(JSON.stringify({ type: "scene.action", action, request_id: requestId }));
+}
+
+document.querySelectorAll("[data-action]").forEach(button => {
+  button.addEventListener("click", () => sendSceneAction(button.dataset.action));
+});
+orb.addEventListener("contextmenu", event => {
+  event.preventDefault();
+  sendSceneAction("status");
+});
+
+let speechGeneration = 0;
+function stopSpeech() {
+  speechGeneration++;
+  window.speechSynthesis?.cancel();
+}
+
 function speak(text) {
   if (!("speechSynthesis" in window)) return;
-  speechSynthesis.cancel();
+  stopSpeech();
+  const generation = speechGeneration;
   const utterance = new SpeechSynthesisUtterance(text);
   utterance.rate = 1.04;
   utterance.pitch = 0.86;
-  utterance.addEventListener("end", () => setState("idle"));
+  utterance.addEventListener("start", () => { if (generation === speechGeneration) setState("speaking"); });
+  utterance.addEventListener("end", () => { if (generation === speechGeneration) setState("idle"); });
+  utterance.addEventListener("error", () => { if (generation === speechGeneration) setState("idle"); });
   speechSynthesis.speak(utterance);
 }
 

@@ -193,7 +193,7 @@ button, input { font: inherit; }
 .screen[data-surface="message"] .status,
 .screen[data-surface="reminder"] .status { bottom: 24px; }
 
-.console { align-self: center; }
+.console { align-self: center; min-width: 0; }
 .connection { display: flex; align-items: center; gap: 9px; margin-bottom: 34px; color: var(--muted); font-size: 13px; }
 .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: #8a5555; box-shadow: 0 0 12px currentColor; }
 .connection-dot.online { background: var(--cyan); }
@@ -228,10 +228,37 @@ button, input { font: inherit; }
 @keyframes speak { to { transform: scale(1.16, .88); filter: brightness(1.25); } }
 
 @media (max-width: 900px) {
-  .workbench { grid-template-columns: minmax(300px, 680px); padding: 18px; }
+  .workbench { grid-template-columns: minmax(0, 680px); padding: 18px; }
   .console { width: 100%; max-width: 680px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
+}
+
+/* Adaptive scenes retain Friday in the corner and put the artifact first. */
+.screen:not([data-surface="ambient"]) .scene-copy,
+.screen:not([data-surface="ambient"]) .scene-items { opacity: 1; transform: none; }
+.screen:not([data-surface="ambient"]) .ambient { opacity: 0; }
+.screen:not([data-surface="ambient"]) .orb { top: 12%; left: 89%; width: 13%; transform: translate(-50%, -50%); }
+.screen:not([data-surface="ambient"]) .scene { inset: 8% 8% 12%; pointer-events: auto; }
+.scene-copy { padding-right: 10%; }
+.scene-items { gap: 9px; margin-top: 20px; }
+.scene-item { background: #102124; border: 1px solid var(--line); border-radius: 12px; padding: 14px; text-align: left; font: inherit; grid-template-columns: minmax(90px, 32%) 1fr; }
+button.scene-item { cursor: pointer; }
+.scene-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.scene-actions button { min-height: 44px; border: 1px solid var(--line); border-radius: 12px; background: #193a3a; color: var(--cyan); padding: 10px 16px; cursor: pointer; }
+.scene-actions button:focus-visible, .scene-item:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+.screen:not([data-surface="ambient"]) .transcript { bottom: 4%; font-size: 12px; max-height: 30px; overflow: hidden; }
+.screen:not([data-surface="ambient"]) .status { bottom: 1%; }
+
+.countdown { font-size: clamp(44px, 9vw, 80px); color: var(--cyan); font-variant-numeric: tabular-nums; text-align: center; }
+
+@media (max-width: 600px) {
+  .scene h1 { font-size: 22px; }
+  .scene p { font-size: 11px; }
+  .scene-items { gap: 6px; margin-top: 10px; max-height: 55%; overflow: auto; }
+  .scene-item { padding: 8px; font-size: 12px; gap: 10px; }
+  .scene-actions { gap: 6px; margin-top: 10px; }
+  .scene-actions button { padding: 8px 10px; font-size: 12px; }
 }

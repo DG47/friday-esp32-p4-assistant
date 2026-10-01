@@ -12,6 +12,10 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
+#include "esp_heap_caps.h"
+#include "mbedtls/base64.h"
 
 #include "friday_backend.h"
 #include "friday_ui.h"
@@ -35,6 +39,147 @@
 
 static const char *TAG = "friday_audio";
 static esp_codec_dev_handle_t microphone;
+
+/* Bounded PCM playback. The WebSocket callback collects one utterance; a
+ * separate task owns each completed buffer. Epoch cancellation never frees a
+ * buffer while the codec writer uses it. Cancellation is checked before each
+ * 20ms codec write; physical interruption latency still requires testing. */
+#define PLAYBACK_MAX_BYTES (24000 * 2 * 30)
+static esp_codec_dev_handle_t speaker;
+static SemaphoreHandle_t playback_lock;
+static QueueHandle_t playback_queue;
+static volatile uint32_t playback_epoch;
+static volatile bool playback_busy;
+static uint8_t *collecting;
+static size_t collecting_size, collecting_used;
+static int collecting_sequence;
+static char collecting_id[33];
+typedef struct { uint8_t *pcm; size_t size; uint32_t epoch; char id[33]; } playback_job_t;
+
+bool friday_audio_playing(void) { return playback_busy; }
+bool friday_audio_speaker_ready(void) { return speaker != NULL && playback_queue != NULL; }
+
+void friday_audio_stop_speech(void)
+{
+    if (playback_lock == NULL) return;
+    xSemaphoreTake(playback_lock, portMAX_DELAY);
+    playback_epoch++;
+    playback_busy = false;
+    free(collecting);
+    collecting = NULL;
+    collecting_size = collecting_used = 0;
+    playback_job_t pending;
+    while (playback_queue != NULL && xQueueReceive(playback_queue, &pending, 0) == pdTRUE) free(pending.pcm);
+    xSemaphoreGive(playback_lock);
+}
+
+static void playback_task(void *argument)
+{
+    (void)argument;
+    playback_job_t job;
+    int16_t stereo[960];
+    while (true) {
+        if (xQueueReceive(playback_queue, &job, portMAX_DELAY) != pdTRUE) continue;
+        bool success = true;
+        for (size_t offset = 0; offset < job.size && job.epoch == playback_epoch; offset += 960) {
+            size_t samples = (job.size - offset) / 2;
+            if (samples > 480) samples = 480;
+            for (size_t index = 0; index < samples; index++) {
+                int16_t mono = (int16_t)((uint16_t)job.pcm[offset + index * 2] |
+                                        ((uint16_t)job.pcm[offset + index * 2 + 1] << 8));
+                stereo[index * 2] = stereo[index * 2 + 1] = mono;
+            }
+            if (esp_codec_dev_write(speaker, stereo, (int)(samples * 4)) != ESP_OK) {
+                success = false;
+                break;
+            }
+        }
+        free(job.pcm);
+        xSemaphoreTake(playback_lock, portMAX_DELAY);
+        bool current = job.epoch == playback_epoch;
+        if (current) playback_busy = false;
+        xSemaphoreGive(playback_lock);
+        if (current) {
+            friday_ui_set_state(FRIDAY_STATE_IDLE);
+            friday_backend_speech_finished(job.id, success);
+            if (!success) friday_ui_set_backend("SPEAKER ERROR");
+        }
+    }
+}
+
+void friday_audio_speech_message(const cJSON *root)
+{
+    if (!friday_audio_speaker_ready()) return;
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "stream_id");
+    if (!cJSON_IsString(type)) return;
+    if (strcmp(type->valuestring, "speech.cancel") == 0) { friday_audio_stop_speech(); return; }
+    if (!cJSON_IsString(id) || strlen(id->valuestring) != 32) return;
+    if (strcmp(type->valuestring, "speech.start") == 0) {
+        if (friday_backend_audio_active()) return;
+        const cJSON *bytes = cJSON_GetObjectItemCaseSensitive(root, "bytes");
+        const cJSON *rate = cJSON_GetObjectItemCaseSensitive(root, "sample_rate");
+        const cJSON *channels = cJSON_GetObjectItemCaseSensitive(root, "channels");
+        const cJSON *format = cJSON_GetObjectItemCaseSensitive(root, "format");
+        if (!cJSON_IsNumber(bytes) || bytes->valueint <= 0 || bytes->valueint > PLAYBACK_MAX_BYTES || bytes->valueint % 2 ||
+            !cJSON_IsNumber(rate) || rate->valueint != 24000 || !cJSON_IsNumber(channels) || channels->valueint != 1 ||
+            !cJSON_IsString(format) || strcmp(format->valuestring, "pcm_s16le")) return;
+        friday_audio_stop_speech();
+        xSemaphoreTake(playback_lock, portMAX_DELAY);
+        collecting = heap_caps_malloc(bytes->valueint, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (collecting != NULL) {
+            collecting_size = bytes->valueint;
+            collecting_used = 0;
+            collecting_sequence = 0;
+            memcpy(collecting_id, id->valuestring, 33);
+            playback_busy = true;
+        }
+        bool allocated = collecting != NULL;
+        xSemaphoreGive(playback_lock);
+        if (!allocated) friday_backend_speech_finished(id->valuestring, false);
+        return;
+    }
+    xSemaphoreTake(playback_lock, portMAX_DELAY);
+    if (collecting == NULL || strcmp(id->valuestring, collecting_id)) {
+        xSemaphoreGive(playback_lock); return;
+    }
+    bool invalid = false;
+    if (strcmp(type->valuestring, "speech.chunk") == 0) {
+        const cJSON *pcm = cJSON_GetObjectItemCaseSensitive(root, "pcm");
+        const cJSON *sequence = cJSON_GetObjectItemCaseSensitive(root, "sequence");
+        size_t length = 0;
+        uint8_t decoded[4800];
+        invalid = !cJSON_IsString(pcm) || strlen(pcm->valuestring) > 6400 ||
+                  !cJSON_IsNumber(sequence) || sequence->valueint != collecting_sequence;
+        if (!invalid) {
+            invalid = mbedtls_base64_decode(decoded, sizeof(decoded), &length,
+                (const unsigned char *)pcm->valuestring, strlen(pcm->valuestring)) != 0 ||
+                length == 0 || length % 2 || length > collecting_size - collecting_used;
+        }
+        if (!invalid) {
+            memcpy(collecting + collecting_used, decoded, length);
+            collecting_used += length;
+            collecting_sequence++;
+        }
+    } else if (strcmp(type->valuestring, "speech.end") == 0) {
+        invalid = collecting_used != collecting_size;
+        if (!invalid) {
+            playback_job_t job = { .pcm = collecting, .size = collecting_size, .epoch = playback_epoch };
+            memcpy(job.id, collecting_id, 33);
+            if (xQueueSend(playback_queue, &job, 0) == pdTRUE) {
+                collecting = NULL;
+                friday_ui_set_state(FRIDAY_STATE_SPEAKING);
+            } else invalid = true;
+        }
+    }
+    if (invalid) {
+        free(collecting); collecting = NULL;
+        playback_busy = false;
+        playback_epoch++;
+    }
+    xSemaphoreGive(playback_lock);
+    if (invalid) friday_backend_speech_finished(id->valuestring, false);
+}
 
 static int16_t amplify_sample(int32_t sample)
 {
@@ -118,6 +263,13 @@ static void microphone_task(void *argument)
             mono[index] = (int16_t)filtered;
         }
 
+        if (friday_audio_playing()) {
+            idle_audio_used = 0;
+            wake_window = false;
+            wake_frames = 0;
+            was_recording = false;
+            continue; /* Half duplex: never treat Friday playback as a wake word. */
+        }
         bool recording = friday_backend_audio_active();
         if (recording) {
             idle_audio_used = 0;
@@ -258,6 +410,18 @@ esp_err_t friday_audio_start(void)
             microphone, BSP_AUDIO_ES7210_MIC_MASK_FL_FR, 37.5f),
         TAG, "Could not set microphone gain");
 
+    playback_lock = xSemaphoreCreateMutex();
+    playback_queue = xQueueCreate(1, sizeof(playback_job_t));
+    speaker = bsp_audio_codec_speaker_init();
+    esp_codec_dev_sample_info_t output = { .sample_rate = 24000, .channel = 2, .bits_per_sample = 16 };
+    if (playback_lock != NULL && playback_queue != NULL && speaker != NULL &&
+        esp_codec_dev_open(speaker, &output) == ESP_OK &&
+        esp_codec_dev_set_out_vol(speaker, 40) == ESP_OK) {
+        if (xTaskCreate(playback_task, "friday_speaker", 8192, NULL, 5, NULL) != pdPASS) speaker = NULL;
+    } else {
+        speaker = NULL;
+        ESP_LOGW(TAG, "Speaker unavailable; microphone and display remain usable");
+    }
     BaseType_t created = xTaskCreatePinnedToCore(
         microphone_task, "friday_mics", 8192, NULL, 6, NULL, 1);
     ESP_RETURN_ON_FALSE(created == pdPASS, ESP_ERR_NO_MEM, TAG,

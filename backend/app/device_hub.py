@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -10,11 +11,13 @@ from fastapi import WebSocket, WebSocketDisconnect
 class DevicePeer:
     websocket: WebSocket
     capabilities: set[str] = field(default_factory=set)
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class DeviceHub:
-    def __init__(self) -> None:
+    def __init__(self, send_timeout: float = 3.0) -> None:
         self.connections: dict[str, list[DevicePeer]] = defaultdict(list)
+        self.send_timeout = send_timeout
 
     async def connect(self, device_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -63,19 +66,37 @@ class DeviceHub:
     def device_ids(self) -> list[str]:
         return list(self.connections)
 
+    async def close_device(self, device_id: str) -> None:
+        async def close(peer: DevicePeer) -> None:
+            try:
+                await asyncio.wait_for(peer.websocket.close(code=1008), self.send_timeout)
+            except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError):
+                pass
+            finally:
+                self.disconnect(device_id, peer.websocket)
+        await asyncio.gather(*(close(peer) for peer in list(self.connections.get(device_id, []))))
+
     async def broadcast(
         self,
         device_id: str,
         message: dict,
         required_capability: str | None = None,
+        excluded_capability: str | None = None,
     ) -> int:
-        delivered = 0
-        for peer in list(self.connections.get(device_id, [])):
-            if required_capability and required_capability not in peer.capabilities:
-                continue
+        async def send(peer: DevicePeer) -> int:
             try:
-                await peer.websocket.send_json(message)
-                delivered += 1
-            except (RuntimeError, WebSocketDisconnect):
+                # Bound lock acquisition too: an unresponsive display must not stall
+                # reminder delivery or other devices. Serialize concurrent producers.
+                async def serialized_send() -> None:
+                    async with peer.send_lock:
+                        await peer.websocket.send_json(message)
+                await asyncio.wait_for(serialized_send(), self.send_timeout)
+                return 1
+            except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError):
                 self.disconnect(device_id, peer.websocket)
-        return delivered
+                return 0
+
+        peers = [peer for peer in list(self.connections.get(device_id, []))
+                 if (not required_capability or required_capability in peer.capabilities)
+                 and (not excluded_capability or excluded_capability not in peer.capabilities)]
+        return sum(await asyncio.gather(*(send(peer) for peer in peers)))

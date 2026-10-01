@@ -2,8 +2,8 @@
 set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-idf_root="$project_root/work/esp-idf"
-idf_tools_root="$project_root/work/.espressif"
+idf_root="${FRIDAY_IDF_ROOT:-$project_root/work/esp-idf}"
+idf_tools_root="${FRIDAY_IDF_TOOLS_ROOT:-$project_root/work/.espressif}"
 
 if [ ! -f "$idf_root/export.sh" ]; then
     echo "Local ESP-IDF is missing from $idf_root" >&2

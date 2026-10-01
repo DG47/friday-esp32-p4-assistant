@@ -4,3 +4,10 @@
 
 esp_err_t friday_audio_start(void);
 
+
+#include <stdbool.h>
+#include "cJSON.h"
+bool friday_audio_playing(void);
+bool friday_audio_speaker_ready(void);
+void friday_audio_stop_speech(void);
+void friday_audio_speech_message(const cJSON *root);

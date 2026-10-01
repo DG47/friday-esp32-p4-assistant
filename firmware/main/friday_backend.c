@@ -22,9 +22,12 @@
 
 #include "friday_state.h"
 #include "friday_ui.h"
+#include "friday_audio.h"
+#include "friday_error_scene.h"
 #include "friday_wifi.h"
 
 static const char *TAG = "friday_backend";
+static bool scene_action_pending;
 extern const char friday_backend_ca_pem_start[] asm("_binary_friday_backend_ca_pem_start");
 #define FRIDAY_AUDIO_SEND_TIMEOUT_MS 1000
 #define FRIDAY_IDLE_AUDIO_SEND_TIMEOUT_MS 2000
@@ -257,6 +260,36 @@ static friday_state_t parse_state(const char *name)
     return FRIDAY_STATE_IDLE;
 }
 
+bool friday_backend_scene_action(const char *action)
+{
+    if (!backend_ready || action == NULL || strlen(action) > 63) {
+        return false;
+    }
+    bool mutation = strncmp(action, "snooze:", 7) == 0 || strncmp(action, "complete:", 9) == 0 || strncmp(action, "cancel:", 7) == 0;
+    if (mutation && scene_action_pending) {
+        return true;
+    }
+    cJSON *message = cJSON_CreateObject();
+    if (message == NULL) {
+        return false;
+    }
+    char request_id[40];
+    snprintf(request_id, sizeof(request_id), "%08lx%08lx%08lx%08lx",
+             (unsigned long)esp_random(), (unsigned long)esp_random(),
+             (unsigned long)esp_random(), (unsigned long)esp_random());
+    cJSON_AddStringToObject(message, "type", "scene.action");
+    cJSON_AddStringToObject(message, "action", action);
+    cJSON_AddStringToObject(message, "request_id", request_id);
+    char *encoded = cJSON_PrintUnformatted(message);
+    bool sent = encoded != NULL && send_text(encoded, pdMS_TO_TICKS(250)) >= 0;
+    cJSON_free(encoded);
+    cJSON_Delete(message);
+    if (sent && mutation) {
+        scene_action_pending = true;
+    }
+    return sent;
+}
+
 static const char *json_string(const cJSON *object, const char *name)
 {
     const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, name);
@@ -268,10 +301,39 @@ static void handle_surface(const cJSON *surface)
     if (!cJSON_IsObject(surface)) {
         return;
     }
-    friday_ui_set_surface(
-        json_string(surface, "kind"),
-        json_string(surface, "title"),
-        json_string(surface, "subtitle"));
+    friday_ui_set_scene(surface);
+}
+
+static char accepted_results[64][33];
+static unsigned int accepted_result_index;
+
+static void handle_agent_result(const cJSON *root)
+{
+    const char *delivery_id = json_string(root, "delivery_id");
+    const char *job_id = json_string(root, "job_id");
+    const char *text = json_string(root, "text");
+    const char *status = json_string(root, "status");
+    const cJSON *surface = cJSON_GetObjectItemCaseSensitive(root, "surface");
+    if (delivery_id == NULL || strlen(delivery_id) != 32 || strspn(delivery_id, "0123456789abcdef") != 32 ||
+        job_id == NULL || job_id[0] == '\0' || strlen(job_id) > 128 || text == NULL || !cJSON_IsObject(surface) ||
+        status == NULL || (strcmp(status, "completed") && strcmp(status, "failed") && strcmp(status, "expired") && strcmp(status, "late"))) return;
+    bool duplicate = false;
+    for (int index = 0; index < 64; index++) {
+        if (strcmp(accepted_results[index], delivery_id) == 0) { duplicate = true; break; }
+    }
+    if (!duplicate) {
+        if (!friday_ui_set_scene(surface) || !friday_ui_set_response(text)) return;
+        memcpy(accepted_results[accepted_result_index++ % 64], delivery_id, 33);
+        scene_action_pending = false;
+    }
+    cJSON *ack = cJSON_CreateObject();
+    if (ack == NULL) return;
+    cJSON_AddStringToObject(ack, "type", "result.ack");
+    cJSON_AddStringToObject(ack, "job_id", job_id);
+    cJSON_AddStringToObject(ack, "delivery_id", delivery_id);
+    char *payload = cJSON_PrintUnformatted(ack);
+    if (payload != NULL) { send_text(payload, pdMS_TO_TICKS(250)); free(payload); }
+    cJSON_Delete(ack);
 }
 
 static void handle_message(const char *payload)
@@ -289,8 +351,13 @@ static void handle_message(const char *payload)
     }
     ESP_LOGI(TAG, "Received backend message: %s", type);
 
-    if (strcmp(type, "ready") == 0) {
+    if (strcmp(type, "agent.result") == 0) {
+        handle_agent_result(root);
+    } else if (strncmp(type, "speech.", 7) == 0) {
+        friday_audio_speech_message(root);
+    } else if (strcmp(type, "ready") == 0) {
         backend_ready = true;
+        scene_action_pending = false;
         reconnect_failures = 0;
         if (persist_backend_uri) {
             if (friday_wifi_set_backend_uri(backend_uri) == ESP_OK) {
@@ -303,11 +370,13 @@ static void handle_message(const char *payload)
         friday_ui_set_backend("FRIDAY ONLINE");
         friday_ui_set_state(parse_state(json_string(root, "state")));
         handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
+        friday_ui_set_response("Tap to speak. Hold the orb for local controls.");
         if (send_text("{\"type\":\"wake.start\"}", pdMS_TO_TICKS(1000)) < 0) {
             ESP_LOGW(TAG, "Could not start Friday wake detection");
         }
     } else if (strcmp(type, "state") == 0) {
-        friday_ui_set_state(parse_state(json_string(root, "state")));
+        friday_state_t next = parse_state(json_string(root, "state"));
+        if (!(next == FRIDAY_STATE_SPEAKING && !friday_audio_playing()) && !audio_active) friday_ui_set_state(next);
     } else if (strcmp(type, "wake.detected") == 0) {
         wake_requested = true;
     } else if (strcmp(type, "reminder.alert") == 0) {
@@ -347,6 +416,7 @@ static void handle_message(const char *payload)
     } else if (strcmp(type, "surface") == 0) {
         handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
     } else if (strcmp(type, "assistant.text") == 0) {
+        scene_action_pending = false;
         const char *text = json_string(root, "text");
         ESP_LOGI(TAG, "Rendering assistant response (%u bytes)",
                  text != NULL ? (unsigned int)strlen(text) : 0);
@@ -354,7 +424,22 @@ static void handle_message(const char *payload)
     } else if (strcmp(type, "tool.activity") == 0) {
         friday_ui_set_tool(json_string(root, "name"), json_string(root, "status"));
     } else if (strcmp(type, "error") == 0) {
+        scene_action_pending = false;
         const char *code = json_string(root, "code");
+        if (code != NULL && strcmp(code, "speech_unavailable") == 0) {
+            friday_ui_set_backend("VOICE UNAVAILABLE — TEXT READY");
+            friday_ui_set_state(FRIDAY_STATE_IDLE);
+            cJSON_Delete(root);
+            return;
+        }
+        cJSON *recovery = friday_error_scene(code);
+        if (recovery != NULL) {
+            friday_ui_set_state(FRIDAY_STATE_IDLE);
+            friday_ui_set_scene(recovery);
+            cJSON_Delete(recovery);
+            cJSON_Delete(root);
+            return;
+        }
         /* Alert state installs a generic message, so apply it before the
          * specific error surface rather than overwriting the useful detail. */
         friday_ui_set_state(FRIDAY_STATE_ALERT);
@@ -374,6 +459,9 @@ static void handle_message(const char *payload)
 
 static void receive_fragment(const esp_websocket_event_data_t *event)
 {
+    if (event->payload_len < 0 || event->payload_len > 16384) {
+        free(message_buffer); message_buffer = NULL; message_size = 0; return;
+    }
     if (event->payload_offset == 0) {
         free(message_buffer);
         message_buffer = calloc((size_t)event->payload_len + 1, 1);
@@ -408,14 +496,14 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED: {
         backend_ready = false;
-        char hello[256];
+        char hello[320];
         int hello_length = snprintf(
             hello, sizeof(hello),
             "{\"type\":\"hello\",\"protocol\":1,"
             "\"device_token\":\"%s\","
             "\"capabilities\":[\"display\",\"touch\",\"microphone\","
-            "\"reminder_ack\",\"identity_rotate\"]}",
-            device_token);
+            "\"reminder_ack\",\"identity_rotate\",\"result_ack\"%s]}",
+            device_token, friday_audio_speaker_ready() ? ",\"pcm_speech\"" : "");
         ESP_LOGI(TAG, "Connected to Friday backend");
         friday_ui_set_backend("FRIDAY AUTHENTICATING");
         if (hello_length <= 0 || (size_t)hello_length >= sizeof(hello) ||
@@ -427,6 +515,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
     case WEBSOCKET_EVENT_DISCONNECTED:
         backend_ready = false;
         audio_active = false;
+        friday_audio_stop_speech();
         wake_requested = false;
         ESP_LOGW(TAG, "Backend disconnected; automatic reconnect pending");
         friday_ui_set_backend("FRIDAY RECONNECTING");
@@ -510,6 +599,7 @@ static void backend_start_task(void *argument)
         .uri = backend_uri,
         .cert_pem = friday_backend_ca_pem_start,
         .buffer_size = FRIDAY_WEBSOCKET_BUFFER_SIZE,
+        .task_stack = 12288,
         .enable_close_reconnect = true,
         .reconnect_timeout_ms = 3000,
         .network_timeout_ms = 5000,
@@ -588,6 +678,7 @@ bool friday_backend_begin_audio(const char *source)
         return false;
     }
 
+    friday_audio_stop_speech();
     const char *activation =
         source != NULL && strcmp(source, "wake_word") == 0
             ? "{\"type\":\"activate\",\"source\":\"wake_word\"}"
@@ -675,4 +766,12 @@ void friday_backend_end_audio(void)
         ESP_LOGW(TAG, "Could not resume Friday wake detection");
     }
     ESP_LOGI(TAG, "Audio turn finished");
+}
+
+void friday_backend_speech_finished(const char *stream_id, bool success)
+{
+    if (stream_id == NULL || strlen(stream_id) != 32) return;
+    char message[128];
+    snprintf(message, sizeof(message), "{\"type\":\"speech.finished\",\"stream_id\":\"%.32s\",\"status\":\"%s\"}", stream_id, success ? "completed" : "failed");
+    send_text(message, pdMS_TO_TICKS(250));
 }
