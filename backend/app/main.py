@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import secrets
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, closing, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +25,10 @@ from .discovery import FridayDiscoveryProtocol
 from .reminder_scheduler import ReminderScheduler
 from .stt import TranscriptionError, create_transcriber
 from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
+from .scenes import local_scene
+from .models import SurfaceAction
+from .speech import OpenAISpeech, SpeechDirector
+from .scene_diagnostics import log_scene_action
 
 
 settings = get_settings()
@@ -36,6 +40,13 @@ transcriber = create_transcriber(settings)
 static_dir = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
 hub = DeviceHub()
+
+
+async def publish_tool_progress(device_id: str, name: str, status: str) -> None:
+    await hub.broadcast(device_id, {"type": "tool.activity", "name": name, "status": status})
+
+
+agent.on_tool = publish_tool_progress
 reminder_scheduler = ReminderScheduler(
     store,
     hub,
@@ -51,7 +62,10 @@ job_worker = AgentJobWorker(
     max_age_seconds=settings.assistant_job_max_age_seconds,
     concurrency=settings.assistant_job_concurrency,
 )
+speech = SpeechDirector(hub, OpenAISpeech(settings.openai_api_key, settings.tts_model, settings.tts_voice) if settings.tts_provider == "openai" else None)
+job_worker.on_reply = speech.speak
 DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+active_sockets: set[WebSocket] = set()
 
 
 @asynccontextmanager
@@ -81,9 +95,11 @@ async def lifespan(_: FastAPI):
         ),
         asyncio.create_task(job_worker.run(), name="friday-agent-job-worker"),
     ]
+    app.state.background_tasks = tasks
     try:
         yield
     finally:
+        await speech.close()
         if discovery_transport is not None:
             discovery_transport.close()
         for task in tasks:
@@ -95,6 +111,18 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Friday Assistant", version="0.1.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    if request.url.path == "/":
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    return response
 
 
 def is_local_host(host: str | None) -> bool:
@@ -150,6 +178,8 @@ async def handle_utterance(
     device_id: str, text: str, request_id: str | None = None
 ) -> str:
     job = job_store.enqueue(device_id, text, request_id=request_id)
+    speech.latest[device_id] = job.id
+    await speech.cancel(device_id)
     await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
     await hub.broadcast(
         device_id,
@@ -159,7 +189,7 @@ async def handle_utterance(
 
 
 async def send_error(websocket: WebSocket, code: str, message: str) -> None:
-    logger.warning("Device request failed [%s]: %s", code, message)
+    logging.getLogger("uvicorn.error").warning("device_error utc=%s code=%s", datetime.now(timezone.utc).isoformat(), code)
     await websocket.send_json({"type": "error", "code": code, "message": message})
 
 
@@ -173,10 +203,35 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "mode": settings.assistant_provider}
 
 
+@app.get("/ready")
+async def readiness() -> dict[str, str]:
+    tasks = getattr(app.state, "background_tasks", [])
+    if not tasks or any(task.done() for task in tasks):
+        raise HTTPException(status_code=503, detail="Background workers unavailable")
+    try:
+        # No private contents are exposed by this database connectivity probe.
+        with closing(job_store._connect()) as connection:
+            connection.execute("SELECT 1").fetchone()
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database unavailable") from None
+    return {"status": "ready"}
+
+
 @app.get("/api/calendar/today")
 async def calendar_today(request: Request) -> list[dict]:
     require_local_read_access(request)
     return [event.model_dump(mode="json") for event in agent.calendar.today()]
+
+
+@app.get("/api/diagnostics")
+async def diagnostics(request: Request) -> dict:
+    require_local_admin(request)
+    with closing(job_store._connect()) as connection:
+        counts = dict(connection.execute(
+            "SELECT status, COUNT(*) FROM agent_jobs GROUP BY status"
+        ).fetchall())
+    return {"jobs": counts, "connected_devices": len(hub.device_ids()),
+            "workers_healthy": bool(getattr(app.state, "background_tasks", [])) and all(not task.done() for task in getattr(app.state, "background_tasks", []))}
 
 
 @app.get("/api/reminders")
@@ -233,6 +288,7 @@ async def rotate_device_identity(device_id: str, request: Request) -> dict[str, 
     if recipients == 0:
         raise HTTPException(status_code=409, detail="Device must be online to rotate")
     credential_store.revoke(device_id)
+    await hub.close_device(device_id)
     logger.warning("Rotating identity for device %s", device_id)
     return {"status": "awaiting_pairing_code"}
 
@@ -248,12 +304,21 @@ async def revoke_device_identity(device_id: str, request: Request) -> dict[str, 
         required_capability="identity_rotate",
     )
     credential_store.revoke(device_id)
+    await hub.close_device(device_id)
     logger.warning("Revoked identity for device %s", device_id)
     return {"status": "revoked"}
 
 
 @app.websocket("/ws/device/{device_id}")
 async def device_socket(websocket: WebSocket, device_id: str) -> None:
+    if not DEVICE_ID_PATTERN.fullmatch(device_id):
+        await websocket.close(code=1008)
+        return
+    if len(active_sockets) >= 128:
+        await websocket.close(code=1013)
+        return
+    active_sockets.add(websocket)
+    authentication_deadline = asyncio.get_running_loop().time() + 10.0
     audio = AudioSession(max_seconds=settings.stt_max_seconds)
     wake_audio = WakeAudioSession()
     wake_enabled = False
@@ -270,27 +335,33 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
         except TranscriptionError as error:
             logger.debug("Wake-word transcription failed: %s", error)
             return
-        logger.debug("Wake-word probe for %s: %r", device_id, text)
+        logger.debug("Wake-word probe finished for %s", device_id)
         if wake_enabled and contains_wake_word(text):
             wake_enabled = False
             wake_audio.reset()
-            logger.info("Wake word detected for %s: %s", device_id, text)
+            logger.info("Wake word detected for %s", device_id)
             await hub.broadcast(
                 device_id, {"type": "wake.detected", "wake_word": "Friday"}
             )
 
-    await websocket.accept()
-    await websocket.send_json(
-        {
-            "type": "hello.required",
-            "protocol": 1,
-            "device_id": device_id,
-        }
-    )
+    try:
+        await websocket.accept()
+        await websocket.send_json(
+            {"type": "hello.required", "protocol": 1, "device_id": device_id}
+        )
+    except BaseException:
+        active_sockets.discard(websocket)
+        raise
 
     try:
         while True:
-            event = await websocket.receive()
+            try:
+                event = await asyncio.wait_for(
+                    websocket.receive(), timeout=max(0.001, authentication_deadline - asyncio.get_running_loop().time()) if not registered else None
+                )
+            except TimeoutError:
+                await websocket.close(code=1008)
+                return
             if event["type"] == "websocket.disconnect":
                 raise WebSocketDisconnect(event.get("code", 1000))
 
@@ -302,6 +373,11 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                         "authentication_required",
                         "Send an authenticated hello before device data",
                     )
+                    continue
+                if len(binary) > 1048576 or len(binary) % 2:
+                    audio.reset()
+                    wake_audio.reset()
+                    await send_error(websocket, "bad_audio", "PCM frame must contain complete samples and fit within 1 MiB")
                     continue
                 if audio.active:
                     try:
@@ -322,6 +398,9 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                 continue
 
             try:
+                if len(event.get("text") or "") > 16384:
+                    await send_error(websocket, "bad_message", "Control message is too large")
+                    continue
                 message = json.loads(event.get("text") or "")
             except (json.JSONDecodeError, TypeError):
                 await send_error(websocket, "bad_message", "Expected a JSON control message")
@@ -332,9 +411,15 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             message_type = message.get("type")
 
             if message_type == "hello":
+                declared = message.get("capabilities", [])
+                if not isinstance(declared, list) or len(declared) > 16 or any(
+                    not isinstance(item, str) or len(item) > 64 for item in declared
+                ):
+                    await send_error(websocket, "bad_message", "Invalid capabilities")
+                    continue
                 capabilities = {
                     str(item)
-                    for item in message.get("capabilities", [])
+                    for item in declared
                     if isinstance(item, str)
                 }
                 if not registered:
@@ -352,6 +437,9 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             "Enter the pairing code shown on Friday, then reconnect",
                         )
                         await websocket.close(code=1008)
+                        return
+                    if len(hub.connections.get(device_id, [])) >= 4:
+                        await websocket.close(code=1013)
                         return
                     hub.register(device_id, websocket, capabilities)
                     registered = True
@@ -383,7 +471,42 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     "authentication_required",
                     "Send hello before other messages",
                 )
+            elif message_type == "scene.action":
+                try:
+                    action = SurfaceAction(id=message.get("action"), label="Action").id
+                    surface = local_scene(action, device_id, settings, store, agent.calendar)
+                    log_scene_action(device_id, action, surface)
+                    if surface is not None:
+                        await hub.broadcast(device_id, {"type": "surface", "surface": surface.model_dump(mode="json")})
+                    else:
+                        request_id = message.get("request_id")
+                        if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
+                            raise ValueError("A request_id is required for an action")
+                        if action in {"confirm", "decline"}:
+                            text = "yes" if action == "confirm" else "no"
+                        else:
+                            verb, reminder_id = action.split(":")
+                            if not any(item.id == int(reminder_id) for item in store.active(device_id=device_id)):
+                                raise ValueError("That reminder is no longer active for this device")
+                            text = f"{verb} reminder #{reminder_id}" + (" for 10 minutes" if verb == "snooze" else "")
+                        await handle_utterance(device_id, text, request_id=request_id)
+                except ValueError:
+                    await send_error(websocket, "bad_action", "Action is unavailable or invalid; refresh the scene")
+            elif message_type == "result.ack":
+                job_id, delivery_id = message.get("job_id"), message.get("delivery_id")
+                if (not hub.peer_has_capability(device_id, websocket, "result_ack")
+                    or not isinstance(job_id, str) or not 1 <= len(job_id) <= 128
+                    or not isinstance(delivery_id, str) or re.fullmatch(r"[0-9a-f]{32}", delivery_id) is None
+                    or not job_store.acknowledge_result(device_id, job_id, delivery_id)):
+                    await send_error(websocket, "bad_result_ack", "Result acknowledgement is invalid or unavailable")
+            elif message_type == "speech.finished":
+                if hub.peer_has_capability(device_id, websocket, "pcm_speech"):
+                    speech.finished(device_id, message.get("stream_id"), message.get("status"))
+            elif message_type == "speech.cancel":
+                await speech.cancel(device_id)
             elif message_type == "activate":
+                speech.latest[device_id] = None
+                await speech.cancel(device_id)
                 wake_enabled = False
                 wake_audio.reset()
                 await hub.broadcast(device_id, {"type": "state", "state": "listening"})
@@ -400,13 +523,18 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                 wake_audio.reset()
                 wake_enabled = True
             elif message_type == "utterance":
-                text = str(message.get("text", "")).strip()
+                await speech.cancel(device_id)
+                raw_text = message.get("text", "")
+                if not isinstance(raw_text, str) or len(raw_text) > 4096:
+                    await send_error(websocket, "bad_message", "text must be a string of at most 4096 characters")
+                    continue
+                text = raw_text.strip()
                 if not text:
                     await send_error(websocket, "empty_utterance", "I heard a truly immaculate silence.")
                     continue
                 request_id = message.get("request_id")
                 if request_id is not None and (
-                    not isinstance(request_id, str) or len(request_id) > 128
+                    not isinstance(request_id, str) or not request_id or len(request_id) > 128
                 ):
                     await send_error(
                         websocket, "bad_message", "request_id must be a short string"
@@ -431,7 +559,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     )
                     continue
                 reminder_id = message.get("reminder_id")
-                if not isinstance(reminder_id, int):
+                if type(reminder_id) is not int or reminder_id <= 0:
                     await send_error(
                         websocket, "bad_message", "reminder_id must be an integer"
                     )
@@ -440,6 +568,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     reminder_id, device_id, datetime.now(timezone.utc)
                 )
             elif message_type == "audio.start":
+                speech.latest[device_id] = None
+                await speech.cancel(device_id)
                 try:
                     wake_enabled = False
                     wake_audio.reset()
@@ -461,11 +591,11 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     if transcriber is None:
                         raise TranscriptionError("Speech transcription is disabled")
                     await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
-                    text = (await transcriber.transcribe(pcm, audio_format)).strip()
+                    text = (await asyncio.wait_for(transcriber.transcribe(pcm, audio_format), timeout=60)).strip()
                     if not text:
                         raise TranscriptionError("No speech was recognized")
-                except (AudioSessionError, TranscriptionError) as error:
-                    await send_error(websocket, "transcription_failed", str(error))
+                except (AudioSessionError, TranscriptionError, TimeoutError) as error:
+                    await send_error(websocket, "transcription_failed", "Speech transcription timed out" if isinstance(error, TimeoutError) else str(error))
                     await hub.broadcast(device_id, {"type": "state", "state": "idle"})
                     continue
                 await hub.broadcast(
@@ -480,7 +610,12 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        active_sockets.discard(websocket)
         if wake_probe_task is not None and not wake_probe_task.done():
             wake_probe_task.cancel()
+            await asyncio.gather(wake_probe_task, return_exceptions=True)
         if registered:
             hub.disconnect(device_id, websocket)
+            if device_id not in hub.device_ids():
+                await speech.cancel(device_id)
+                speech.latest.pop(device_id, None)

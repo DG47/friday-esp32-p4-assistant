@@ -145,3 +145,43 @@ bounded cadence and stops after the configured maximum number of attempts.
 States are `idle`, `listening`, `thinking`, `speaking`, and `alert`. Surface
 kinds currently implemented by the simulator are `ambient`, `timeline`,
 `reminder`, and `message`.
+
+## Adaptive scene actions
+
+See [the scene/action contract and release limits](production-readiness.md#protocol-additions-and-bounds).
+Authenticated `scene.action` messages request local views or operate on one
+device-scoped reminder through the existing durable agent/confirmation path.
+Surface `actions` are bounded, allowlisted `{id,label}` values; item `action`
+values open reminder detail scenes. The timer scene uses a persisted
+`deadline_at` and adjusted `countdown_ms`. Older clients may ignore these fields.
+
+## Optional PCM speech capability
+
+A successfully initialized physical speaker advertises `pcm_speech`. TTS is
+opt-in and disabled by default. Backend emits `speech.start` (`stream_id`,
+`format=pcm_s16le`, `sample_rate=24000`, `channels=1`, exact `bytes` <=1,440,000),
+then ordered `speech.chunk` messages (`sequence` starting at zero, base64 `pcm`
+<=4,800 decoded bytes), then `speech.end`. Device assembles bounded PSRAM audio
+and acknowledges `speech.finished` with the same `stream_id` and
+`status=completed|failed`. Mismatched acknowledgements are ignored.
+`speech.cancel`, local touch activation and disconnect invalidate playback and
+queued chunks; no speech completion is claimed for cancelled audio. Capture is
+half duplex; wake audio is suppressed during playback. This protocol provides
+touch interruption and does not implement acoustic echo cancellation/barge-in.
+Speech is synthesized fully before transfer, so first-audio latency includes
+synthesis/transfer; progressive playback is a future optimization.
+
+## Optional durable agent-result acknowledgement
+
+Upgraded clients advertise `result_ack`. Backend sends `agent.result` with
+`job_id`, stable 32-character lowercase hex `delivery_id`, `status` (completed,
+failed, expired, late), `surface`, and `text`. After successful UI acceptance,
+client sends `result.ack` with the same IDs. Duplicate IDs in the client's
+64-entry in-memory cache are acknowledged again without render or speech.
+Failed UI updates are not acknowledged. Backend retries unacknowledged retained
+results at ten-second intervals, including reconnect, and preserves IDs across
+backend restarts. Acknowledgement from one capable peer of the logical device
+completes delivery; it does not prove every connected display presented it.
+Cache loss/eviction can permit another presentation. Terminal records expire
+at seven days or the global 10,000-row bound. See production-readiness.md for
+the actual delivery guarantee and legacy-client compatibility.

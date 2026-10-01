@@ -8,7 +8,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY tests ./tests
-RUN mkdir -p /app/data
+RUN useradd --uid 10001 --create-home friday && mkdir -p /app/data /models \
+    && chown -R friday:friday /app/data /models
+
+USER friday
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--ws-ping-timeout", "60"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--ws-ping-timeout", "60", "--ws-max-size", "1048576", "--no-proxy-headers"]

@@ -28,6 +28,8 @@ class AgentJob:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     reply_json: str | None = None
     error: str | None = None
+    delivery_id: str = ""
+    delivery_attempted_at: str | None = None
 
 
 class AgentJobStore:
@@ -66,6 +68,11 @@ class AgentJobStore:
                     row["name"]
                     for row in connection.execute("PRAGMA table_info(agent_jobs)").fetchall()
                 }
+                if "result_ack_required" not in columns:
+                    connection.execute("ALTER TABLE agent_jobs ADD COLUMN result_ack_required INTEGER NOT NULL DEFAULT 0")
+                if "result_delivery_id" not in columns:
+                    connection.execute("ALTER TABLE agent_jobs ADD COLUMN result_delivery_id TEXT")
+                connection.execute("UPDATE agent_jobs SET result_delivery_id = lower(hex(randomblob(16))) WHERE result_delivery_id IS NULL")
                 if "lease_expires_at" not in columns:
                     connection.execute(
                         "ALTER TABLE agent_jobs ADD COLUMN lease_expires_at TEXT"
@@ -90,6 +97,8 @@ class AgentJobStore:
             created_at=datetime.fromisoformat(row["created_at"]),
             reply_json=row["reply_json"],
             error=row["error"],
+            delivery_id=row["result_delivery_id"],
+            delivery_attempted_at=row["result_attempted_at"],
         )
 
     def enqueue(
@@ -98,12 +107,23 @@ class AgentJobStore:
         job_id = request_id or str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
         with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
             with connection:
+                existing = connection.execute(
+                    "SELECT * FROM agent_jobs WHERE id = ?", (job_id,)
+                ).fetchone()
+                if existing is None:
+                    pending = connection.execute(
+                        "SELECT COUNT(*) FROM agent_jobs WHERE device_id = ? "
+                        "AND status IN ('queued', 'running')", (device_id,)
+                    ).fetchone()[0]
+                    if pending >= 32:
+                        raise ValueError("Too many pending requests; try again later")
                 connection.execute(
                     "INSERT OR IGNORE INTO agent_jobs "
-                    "(id, device_id, text, status, available_at, created_at, updated_at) "
-                    "VALUES (?, ?, ?, 'queued', ?, ?, ?)",
-                    (job_id, device_id, text, now, now, now),
+                    "(id, device_id, text, status, available_at, created_at, updated_at, result_delivery_id) "
+                    "VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
+                    (job_id, device_id, text, now, now, now, uuid.uuid4().hex),
                 )
                 row = connection.execute(
                     "SELECT * FROM agent_jobs WHERE id = ?", (job_id,)
@@ -260,7 +280,7 @@ class AgentJobStore:
                 "SELECT * FROM agent_jobs WHERE device_id = ? "
                 "AND status IN ('completed', 'failed', 'expired', 'late') "
                 "AND result_delivered_at IS NULL "
-                "ORDER BY created_at",
+                "ORDER BY created_at LIMIT 64",
                 (device_id,),
             ).fetchall()
         return [self._job(row) for row in rows]
@@ -292,9 +312,40 @@ class AgentJobStore:
             with connection:
                 connection.execute(
                     "UPDATE agent_jobs SET result_delivered_at = ?, updated_at = ? "
-                    "WHERE id = ? AND result_delivered_at IS NULL",
+                    "WHERE id = ? AND result_delivered_at IS NULL AND result_ack_required = 0",
                     (now, now, job_id),
                 )
+
+    def require_result_ack(self, job_id: str) -> None:
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute("UPDATE agent_jobs SET result_ack_required = 1 WHERE id = ?", (job_id,))
+
+    def acknowledge_result(self, device_id: str, job_id: str, delivery_id: str) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE agent_jobs SET result_delivered_at = COALESCE(result_delivered_at, ?), "
+                    "updated_at = CASE WHEN result_delivered_at IS NULL THEN ? ELSE updated_at END "
+                    "WHERE id = ? AND device_id = ? AND result_delivery_id = ? "
+                    "AND status IN ('completed', 'failed', 'expired', 'late') AND result_attempted_at IS NOT NULL",
+                    (now, now, job_id, device_id, delivery_id),
+                )
+        return cursor.rowcount == 1
+
+    def prune_results(self, now: datetime | None = None) -> int:
+        """Bound terminal delivery records; leave active jobs/conversation/tool state intact."""
+        cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=7)).isoformat()
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "DELETE FROM agent_jobs WHERE status IN ('completed', 'failed', 'expired', 'late') "
+                    "AND (created_at < ? OR id IN (SELECT id FROM agent_jobs "
+                    "WHERE status IN ('completed', 'failed', 'expired', 'late') "
+                    "ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET 10000))", (cutoff,),
+                )
+        return cursor.rowcount
 
 
 class AgentJobWorker:
@@ -307,6 +358,7 @@ class AgentJobWorker:
         max_age_seconds: float = 300.0,
         concurrency: int = 4,
     ) -> None:
+        self.on_reply = None
         self.store = store
         self.agent = agent
         self.hub = hub
@@ -315,14 +367,28 @@ class AgentJobWorker:
         self.concurrency = max(1, min(16, concurrency))
 
     async def _publish(self, job: AgentJob, reply: AgentReply) -> int:
-        if reply.tool:
+        if reply.surface.countdown_ms and reply.surface.deadline_at:
+            remaining = int((reply.surface.deadline_at - datetime.now(timezone.utc)).total_seconds() * 1000)
+            if remaining < 1000:
+                reply.surface.countdown_ms = None
+                reply.surface.kind = "message"
+                reply.surface.title = "Timer finished"
+                reply.surface.subtitle = "The timer finished. Reminder acknowledgement is separate."
+            else:
+                reply.surface.countdown_ms = min(86400000, remaining)
+        if reply.tool and job.delivery_attempted_at is None:
             await self.hub.broadcast(
                 job.device_id,
                 {"type": "tool.activity", "name": reply.tool, "status": "complete"},
             )
+        acknowledged_peers = await self.hub.broadcast(job.device_id, {
+            "type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id,
+            "status": "completed", "text": reply.text, "provider": reply.provider,
+            "surface": reply.surface.model_dump(mode="json")}, required_capability="result_ack")
         await self.hub.broadcast(
             job.device_id,
             {"type": "surface", "surface": reply.surface.model_dump(mode="json")},
+            excluded_capability="result_ack",
         )
         recipients = await self.hub.broadcast(
             job.device_id,
@@ -332,11 +398,13 @@ class AgentJobWorker:
                 "provider": reply.provider,
                 "job_id": job.id,
             },
+            excluded_capability="result_ack",
         )
-        await self.hub.broadcast(job.device_id, {"type": "state", "state": "speaking"})
-        await asyncio.sleep(min(0.9, max(0.25, len(reply.text) / 180)))
-        await self.hub.broadcast(job.device_id, {"type": "state", "state": "idle"})
-        return recipients
+        if self.on_reply and job.delivery_attempted_at is None:
+            await self.on_reply(job.device_id, reply.text, job.id)
+        if job.delivery_attempted_at is None:
+            await self.hub.broadcast(job.device_id, {"type": "state", "state": "idle"}, excluded_capability="pcm_speech")
+        return recipients + acknowledged_peers
 
     async def deliver_pending(self, device_id: str) -> int:
         delivered = 0
@@ -345,6 +413,12 @@ class AgentJobWorker:
                 job.id, datetime.now(timezone.utc)
             ):
                 continue
+            if self.hub.has_capability(device_id, "result_ack"):
+                self.store.require_result_ack(job.id)
+            acknowledged_peers = 0
+            if job.status in {"expired", "late", "failed"}:
+                text = "Friday could not complete that request." if job.status == "failed" else "That request is no longer current, so I discarded its result."
+                acknowledged_peers = await self.hub.broadcast(job.device_id, {"type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id, "status": job.status, "text": text, "surface": {"kind": "message", "title": "Request unavailable", "subtitle": text}}, required_capability="result_ack")
             if job.status in {"expired", "late"}:
                 recipients = await self.hub.broadcast(
                     job.device_id,
@@ -354,10 +428,12 @@ class AgentJobWorker:
                         "message": "That request is no longer current, so I discarded its result.",
                         "job_id": job.id,
                     },
+                    excluded_capability="result_ack",
                 )
-                await self.hub.broadcast(
-                    job.device_id, {"type": "state", "state": "idle"}
-                )
+                if job.delivery_attempted_at is None:
+                    await self.hub.broadcast(
+                        job.device_id, {"type": "state", "state": "idle"}
+                    )
             elif job.status == "failed":
                 recipients = await self.hub.broadcast(
                     job.device_id,
@@ -367,17 +443,21 @@ class AgentJobWorker:
                         "message": "Friday could not complete that request.",
                         "job_id": job.id,
                     },
+                    excluded_capability="result_ack",
                 )
-                await self.hub.broadcast(
-                    job.device_id, {"type": "state", "state": "idle"}
-                )
+                if job.delivery_attempted_at is None:
+                    await self.hub.broadcast(
+                        job.device_id, {"type": "state", "state": "idle"}
+                    )
             elif job.reply_json:
                 reply = AgentReply.model_validate(json.loads(job.reply_json))
                 recipients = await self._publish(job, reply)
             else:
                 recipients = 0
-            if recipients > 0:
-                self.store.mark_result_delivered(job.id)
+            if recipients + acknowledged_peers > 0:
+                # Mixed clients must still wait for an acknowledgement-capable UI.
+                if not self.hub.has_capability(device_id, "result_ack"):
+                    self.store.mark_result_delivered(job.id)
                 delivered += 1
         return delivered
 
@@ -413,16 +493,25 @@ class AgentJobWorker:
 
     async def _run_slot(self) -> None:
         while True:
-            worked = await self.process_once()
+            try:
+                worked = await self.process_once()
+            except Exception:
+                logger.exception("Agent worker iteration failed; will retry")
+                await asyncio.sleep(1.0)
+                continue
             if not worked:
                 await asyncio.sleep(0.1)
 
     async def _run_maintenance(self) -> None:
         while True:
-            self.store.recover_interrupted()
-            self.store.expire_stale(max_age_seconds=self.max_age_seconds)
-            for device_id in self.hub.device_ids():
-                await self.deliver_pending(device_id)
+            try:
+                self.store.recover_interrupted()
+                self.store.prune_results()
+                self.store.expire_stale(max_age_seconds=self.max_age_seconds)
+                for device_id in self.hub.device_ids():
+                    await self.deliver_pending(device_id)
+            except Exception:
+                logger.exception("Agent maintenance iteration failed; will retry")
             await asyncio.sleep(0.5)
 
     async def run(self) -> None:

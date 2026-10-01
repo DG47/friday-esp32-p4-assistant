@@ -1,0 +1,43 @@
+# Standalone profile: docker compose -f compose.production.yaml config --quiet
+services:
+  backend:
+    build: ./backend
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      ASSISTANT_ENV: production
+      ASSISTANT_DATABASE_PATH: /app/data/friday.db
+      HF_HOME: /models/huggingface
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    user: "10001:10001"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    ports:
+      - "8000:8000"
+      - "8334:8334/udp"
+    volumes:
+      - friday-data:/app/data
+      - friday-models:/models
+      - ./data/tls:/app/tls:ro
+    command: [uvicorn, app.main:app, --host, "0.0.0.0", --port, "8000", --workers, "1", --ws-ping-timeout, "60", --ws-max-size, "1048576", --no-proxy-headers, --ssl-certfile, /app/tls/friday-backend.crt, --ssl-keyfile, /app/tls/friday-backend.key]
+    healthcheck:
+      test: [CMD, python, -c, "import ssl,urllib.request; urllib.request.urlopen('https://localhost:8000/ready',context=ssl.create_default_context(cafile='/app/tls/friday-ca.crt'),timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  friday-data:
+  friday-models:

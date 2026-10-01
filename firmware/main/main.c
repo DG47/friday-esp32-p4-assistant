@@ -43,11 +43,12 @@ void app_main(void)
     ESP_LOGI(TAG, "Friday display online; touch the orb to activate the backend");
     ESP_ERROR_CHECK(friday_wifi_start());
     friday_ui_set_activation_callback(friday_backend_toggle_audio);
-    ESP_ERROR_CHECK(friday_backend_start());
+    friday_ui_set_action_callback(friday_backend_scene_action);
 
     esp_err_t audio_result = friday_audio_start();
     if (audio_result != ESP_OK) {
         ESP_LOGE(TAG, "Microphone startup failed: %s", esp_err_to_name(audio_result));
         friday_ui_set_microphone("MICS UNAVAILABLE", 0, 0);
     }
+    ESP_ERROR_CHECK(friday_backend_start());
 }

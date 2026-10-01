@@ -395,6 +395,50 @@ class DeviceSocketTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(self.credential_store.is_paired("friday-p3a"))
 
+    def test_speech_protocol_reaches_completion_over_authenticated_socket(self):
+        class Provider:
+            async def synthesize(self, text): return b"\x01\x00" * 480
+            async def close(self): pass
+        with patch("app.main.speech.provider", Provider()), patch("app.main.agent.providers.select", return_value=None):
+            with TestClient(app) as client:
+                with client.websocket_connect("/ws/device/speaker-test") as socket:
+                    self.authenticate(socket, "speaker-test", capabilities=["pcm_speech"])
+                    socket.send_json({"type": "utterance", "text": "show status", "request_id": "speech-job"})
+                    messages = []
+                    while True:
+                        message = socket.receive_json()
+                        messages.append(message)
+                        if message["type"] == "speech.end":
+                            socket.send_json({"type": "speech.finished", "stream_id": message["stream_id"], "status": "completed"})
+                        if any(m["type"] == "speech.end" for m in messages) and message == {"type": "state", "state": "idle"}:
+                            break
+                    self.assertEqual(next(m for m in messages if m["type"] == "speech.start")["bytes"], 960)
+                    self.assertEqual(len([m for m in messages if m["type"] == "speech.chunk"]), 1)
+                    self.assertIn({"type": "state", "state": "speaking"}, messages)
+
+
+    def test_result_ack_is_scoped_durable_and_not_replayed_after_acceptance(self):
+        from app.models import AgentReply, Surface
+        job = self.job_store.enqueue("ack-test", "hello", request_id="ack-job")
+        self.job_store.complete(job.id, AgentReply(text="Saved result", surface=Surface(kind="message", title="Saved")))
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws/device/ack-test") as socket:
+                self.authenticate(socket, "ack-test", capabilities=["result_ack"])
+                result = socket.receive_json()
+                self.assertEqual(result["type"], "agent.result")
+                self.assertEqual(socket.receive_json(), {"type": "state", "state": "idle"})
+                self.assertEqual(len(self.job_store.pending_results("ack-test")), 1)
+                socket.send_json({"type": "result.ack", "job_id": job.id, "delivery_id": "f" * 32})
+                self.assertEqual(socket.receive_json()["code"], "bad_result_ack")
+                socket.send_json({"type": "result.ack", "job_id": job.id, "delivery_id": result["delivery_id"]})
+                socket.send_json({"type": "activate"})
+                self.assertEqual(socket.receive_json(), {"type": "state", "state": "listening"})
+                self.assertFalse(self.job_store.pending_results("ack-test"))
+            with client.websocket_connect("/ws/device/ack-test") as socket:
+                self.authenticate(socket, "ack-test", capabilities=["result_ack"])
+                socket.send_json({"type": "activate"})
+                self.assertEqual(socket.receive_json(), {"type": "state", "state": "listening"})
+
 
 if __name__ == "__main__":
     unittest.main()

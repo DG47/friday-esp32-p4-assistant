@@ -8,6 +8,7 @@
 #include "friday_ui.h"
 
 esp_err_t friday_backend_start(void);
+bool friday_backend_scene_action(const char *action);
 bool friday_backend_begin_audio(const char *source);
 friday_ui_activation_result_t friday_backend_toggle_audio(void);
 bool friday_backend_audio_active(void);
@@ -16,3 +17,5 @@ esp_err_t friday_backend_send_audio(const int16_t *samples, size_t sample_count)
 esp_err_t friday_backend_send_idle_audio(const int16_t *samples, size_t sample_count);
 bool friday_backend_begin_wake_window(void);
 void friday_backend_end_audio(void);
+
+void friday_backend_speech_finished(const char *stream_id, bool success);

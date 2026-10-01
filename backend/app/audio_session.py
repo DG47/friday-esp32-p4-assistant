@@ -48,6 +48,8 @@ class AudioSession:
         audio_format = self.audio_format
         data = bytes(self.data)
         self.reset()
+        if len(data) % 2:
+            raise AudioSessionError("PCM audio must contain complete 16-bit samples")
         return data, audio_format
 
     def reset(self) -> None:

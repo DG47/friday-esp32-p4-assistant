@@ -11,13 +11,16 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .db import PendingConfirmation, ReminderStore
-from .models import AgentReply, CalendarEvent, Reminder, Surface
+from .models import AgentReply, CalendarEvent, Reminder, Surface, SurfaceAction
+from .scenes import local_scene
 from .providers.base import TextProvider
 from .providers.router import ProviderRouter
 from .tools.calendar import MockCalendar
+from .tools.weather import WeatherService, WeatherUnavailable
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
+    {"type": "function", "function": {"name": "get_weather", "description": "Read current weather at the explicitly configured location. Returns unavailable when disabled.", "parameters": {"type": "object", "properties": {}, "additionalProperties": False}}},
     {
         "type": "function",
         "function": {
@@ -208,8 +211,10 @@ class FridayAgent:
         self.settings = settings
         self.store = store
         self.calendar = MockCalendar(settings.assistant_timezone)
+        self.weather = WeatherService(settings.weather_latitude, settings.weather_longitude) if settings.weather_provider != "none" else None
         self.providers = ProviderRouter(settings)
         self.sessions: dict[str, SessionContext] = {}
+        self.on_tool = None
 
     def _context(self, session_id: str) -> SessionContext:
         return self.sessions.setdefault(session_id, SessionContext())
@@ -233,6 +238,46 @@ class FridayAgent:
             # prevents an unrelated later "yes" from executing a stale action.
             self.store.finish_confirmation(confirmation.id, "cancelled")
             dropped_confirmation = confirmation
+        normalized = text.strip().lower().rstrip(".!?")
+        if normalized in {"show weather", "weather", "what is the weather", "what's the weather"}:
+            if self.on_tool is not None:
+                await self.on_tool(session_id, "get_weather", "working")
+            outcome = await self._execute_read_tool("get_weather", {}, device_id=session_id, request_id=request_id, operation_index=0)
+            if self.on_tool is not None:
+                await self.on_tool(session_id, "get_weather", "complete" if outcome.success else "failed")
+            answer = outcome.surface.subtitle
+            if dropped_confirmation is not None:
+                answer = f"I dropped the pending request to {dropped_confirmation.summary}. {answer}"
+            self.store.append_exchange(session_id, request_id, text, answer)
+            return AgentReply(text=answer, surface=outcome.surface, provider="local", tool="get_weather")
+        scene_name = {"show status": "status", "show my reminders": "reminders",
+                      "show reminders": "reminders", "show calendar": "calendar"}.get(normalized)
+        if scene_name:
+            surface = local_scene(scene_name, session_id, self.settings, self.store, self.calendar)
+            if dropped_confirmation is not None:
+                surface.subtitle = f"I dropped the pending request to {dropped_confirmation.summary}. {surface.subtitle}"
+            self.store.append_exchange(session_id, request_id, text, surface.subtitle)
+            return AgentReply(text=surface.subtitle, surface=surface, provider="local")
+        timer_match = re.fullmatch(r"(?:set|start) (?:a )?timer for (\d+) (seconds?|minutes?|hours?)", normalized)
+        if timer_match:
+            count = int(timer_match.group(1))
+            unit = timer_match.group(2)
+            seconds = count * (3600 if unit.startswith("hour") else 60 if unit.startswith("minute") else 1)
+            if not 1 <= seconds <= 86400:
+                return AgentReply(text="Choose a timer between one second and 24 hours.",
+                    surface=Surface(kind="message", title="Timer", subtitle="Choose a duration between 1 second and 24 hours."), provider="local")
+            due_at = datetime.now(ZoneInfo(self.settings.assistant_timezone)) + timedelta(seconds=seconds)
+            saved = self.store.create(f"{count} {unit} timer finished", due_at,
+                device_id=session_id, idempotency_key=f"{request_id}:create_reminder:0")
+            remaining = int((saved.due_at - datetime.now(ZoneInfo(self.settings.assistant_timezone))).total_seconds() * 1000)
+            answer = f"Your {count} {unit} timer is set."
+            if dropped_confirmation is not None:
+                answer = f"I dropped the pending request to {dropped_confirmation.summary}. {answer}"
+            surface = Surface(kind="timer" if remaining >= 1000 else "message", title="Timer running" if remaining >= 1000 else "Timer finished",
+                subtitle=answer, countdown_ms=max(1000, remaining) if remaining >= 1000 else None, deadline_at=saved.due_at,
+                actions=[SurfaceAction(id="reminders", label="Manage timer"), SurfaceAction(id="dismiss", label="Dismiss")])
+            self.store.append_exchange(session_id, request_id, text, answer)
+            return AgentReply(text=answer, surface=surface, provider="local", tool="create_reminder")
         provider = self.providers.select(text)
         if provider is not None:
             reply = await self._handle_with_model(
@@ -261,7 +306,8 @@ request depends on calendar or reminder data. Never claim that a tool action
 succeeded until its result confirms success. Use prior conversation messages
 to resolve follow-up questions and references. Before changing a reminder,
 identify exactly one active reminder. If the request is ambiguous, list the
-matches and ask which one; never guess."""
+matches and ask which one; never guess. Calendar data is sample data only;
+no calendar account is connected. Disclose that in calendar replies."""
 
     async def _handle_with_model(
         self,
@@ -395,7 +441,9 @@ matches and ask which one; never guess."""
                         success=False,
                     )
                 else:
-                    outcome = self._execute_tool(
+                    if self.on_tool is not None:
+                        await self.on_tool(session_id, call.name, "working")
+                    outcome = await self._execute_read_tool(
                         call.name,
                         call.arguments,
                         device_id=session_id,
@@ -404,6 +452,8 @@ matches and ask which one; never guess."""
                     )
                     last_surface = outcome.surface or last_surface
                     last_tool = call.name
+                    if self.on_tool is not None:
+                        await self.on_tool(session_id, call.name, "complete" if outcome.success else "failed")
                 tool_message = {
                     "role": "tool",
                     "tool_call_id": call.id,
@@ -643,6 +693,21 @@ matches and ask which one; never guess."""
         digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:24]
         return f"call_{digest}"
 
+    async def _execute_read_tool(self, name, arguments, device_id, request_id, operation_index):
+        if name == "get_weather":
+            if self.weather is None:
+                message = "Weather is not connected. Configure an approved provider and location first."
+                return ToolOutcome(content=json.dumps({"ok": False, "error": message}), surface=Surface(kind="message", title="Weather unavailable", subtitle=message), success=False)
+            try:
+                result = await self.weather.current()
+            except WeatherUnavailable as error:
+                return ToolOutcome(content=json.dumps({"ok": False, "error": str(error)}), surface=Surface(kind="message", title="Weather unavailable", subtitle=str(error)), success=False)
+            message = f"{result['temperature_2m']:g} degrees Celsius, wind {result['wind_speed_10m']:g} kilometres per hour."
+            return ToolOutcome(content=json.dumps({"ok": True, **result}), surface=Surface(kind="metric", title=f"{result['temperature_2m']:g} °C", subtitle=message,
+                items=[{"label": "Humidity", "time": f"{result['relative_humidity_2m']}%"}, {"label": "Wind", "time": f"{result['wind_speed_10m']:g} km/h"}, {"label": "Open-Meteo · UTC", "time": result['time']}],
+                actions=[SurfaceAction(id="dismiss", label="Dismiss")], expires_ms=30000))
+        return self._execute_tool(name, arguments, device_id, request_id, operation_index)
+
     def _execute_tool(
         self,
         name: str,
@@ -656,6 +721,7 @@ matches and ask which one; never guess."""
             selected = [self.calendar.next_event()] if arguments.get("range") == "next" else events
             result = {
                 "ok": True,
+                "source": "sample; no calendar connected",
                 "events": [event.model_dump(mode="json") for event in selected],
             }
             return ToolOutcome(
@@ -663,7 +729,7 @@ matches and ask which one; never guess."""
                 surface=Surface(
                     kind="timeline",
                     title="Today",
-                    subtitle=f"{len(events)} events",
+                    subtitle=f"Sample calendar · {len(events)} events",
                     items=self.calendar.timeline_items(),
                     expires_ms=12000,
                 ),
@@ -834,7 +900,7 @@ matches and ask which one; never guess."""
                 surface=Surface(
                     kind="timeline",
                     title="Today",
-                    subtitle=f"Next · {event.starts_at.strftime('%-I:%M %p')}",
+                    subtitle=f"Sample calendar · {event.starts_at.strftime('%-I:%M %p')}",
                     items=self.calendar.timeline_items(),
                     expires_ms=12000,
                 ),
@@ -854,7 +920,7 @@ matches and ask which one; never guess."""
                 surface=Surface(
                     kind="message",
                     title=event.title,
-                    subtitle=event.starts_at.strftime("%-I:%M %p"),
+                    subtitle="Sample calendar · " + event.starts_at.strftime("%-I:%M %p"),
                     items=[{"label": person} for person in event.people]
                     + ([{"label": event.notes}] if event.notes else []),
                     expires_ms=12000,

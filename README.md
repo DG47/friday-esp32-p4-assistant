@@ -5,6 +5,14 @@ ESP32-P4-WIFI6-Touch-LCD-4B (P3A). The ESP32 is the physical interface; the
 backend owns conversation state, model routing, tools, reminders, and dynamic
 scene generation.
 
+## Release candidate improvements
+
+See [production readiness and remaining release gates](docs/production-readiness.md).
+Friday now renders contextual cards and touch actions on the physical screen,
+with local status, saved reminder details and durable countdown timers. The
+ambient orb remains the resting state. New deployment/health/backup support is
+available; this candidate has not been deployed or flashed.
+
 ## What works now
 
 - 720×720 dynamic device simulator with ambient, listening, thinking, calendar,
@@ -172,9 +180,10 @@ tested rogue certificate was rejected. Production deployment still requires a
 managed certificate/secret lifecycle, stronger key storage/NVS encryption,
 operational
 metrics/alerting, backup and retention policy, load/failure testing, and live
-validation of any selected cloud providers. Agent results also need a
-device-level acknowledgement if exactly-once presentation is required;
-reminder alerts already have one.
+validation of any selected cloud providers. Upgraded clients acknowledge durable agent-result envelopes after UI acceptance
+and suppress recent duplicate presentations. This is replay-safe delivery with
+a bounded cache, not exactly-once physical display; reminder acknowledgement
+still represents an explicit user action.
 
 ## Verify
 
@@ -218,3 +227,9 @@ firmware/      ESP-IDF P3A scaffold and board configuration
 docs/          architecture and device protocol
 scripts/       local smoke checks
 ```
+
+Opt-in candidate additions: `TTS_PROVIDER=none` and `WEATHER_PROVIDER=none`
+remain disabled defaults. Device PCM playback/touch interruption and read-only
+weather adapters are implemented and mock-tested; setup, live calls, firmware
+flashing and acoustic barge-in are separate release gates. See
+[production readiness](docs/production-readiness.md) for configuration and limits.

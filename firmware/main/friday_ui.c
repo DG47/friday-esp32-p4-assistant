@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "lvgl.h"
@@ -20,6 +21,7 @@ static const char *TAG = "friday_ui";
 typedef struct {
     lv_obj_t *orb;
     lv_obj_t *core;
+    lv_obj_t *inner_ring;
     lv_obj_t *eyebrow;
     lv_obj_t *title;
     lv_obj_t *status;
@@ -27,10 +29,26 @@ typedef struct {
     lv_obj_t *network;
     lv_obj_t *microphone;
     lv_anim_t pulse;
+    lv_obj_t *cards[4];
+    lv_obj_t *card_labels[4];
+    lv_obj_t *buttons[4];
+    lv_obj_t *button_labels[4];
+    char card_actions[4][64];
+    char button_actions[4][64];
+    bool scene_active;
+    char scene_kind[24];
+    unsigned long scene_generation;
+    bool long_pressed;
+    lv_timer_t *expiry;
+    lv_timer_t *countdown;
+    int64_t countdown_deadline;
 } friday_ui_t;
 
 static friday_ui_t ui;
 static friday_ui_activation_callback_t activation_callback;
+static friday_ui_action_callback_t action_callback;
+static void scene_layout(bool active);
+static void scene_expire(lv_timer_t *timer);
 
 static lv_color_t color_hex(uint32_t value)
 {
@@ -44,8 +62,8 @@ static void set_circle_size(void *object, int32_t size)
 
 static void position_message(void)
 {
-    lv_obj_set_size(ui.message, FRIDAY_MESSAGE_WIDTH, FRIDAY_MESSAGE_HEIGHT);
-    lv_obj_align(ui.message, LV_ALIGN_TOP_MID, 0, FRIDAY_MESSAGE_TOP);
+    lv_obj_set_size(ui.message, FRIDAY_MESSAGE_WIDTH, ui.scene_active ? 76 : FRIDAY_MESSAGE_HEIGHT);
+    lv_obj_align(ui.message, LV_ALIGN_TOP_MID, 0, ui.scene_active ? 118 : FRIDAY_MESSAGE_TOP);
 }
 
 static void set_message_text(const char *text)
@@ -131,7 +149,7 @@ static void apply_state(friday_state_t state)
 
     friday_state_set(state);
     lv_label_set_text(ui.status, friday_state_name(state));
-    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, FRIDAY_STATUS_BOTTOM_OFFSET);
+    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, ui.scene_active ? -8 : FRIDAY_STATUS_BOTTOM_OFFSET);
     if (message != NULL) {
         set_message_text(message);
     }
@@ -143,7 +161,7 @@ static void apply_state(friday_state_t state)
     lv_anim_init(&ui.pulse);
     lv_anim_set_var(&ui.pulse, ui.core);
     lv_anim_set_exec_cb(&ui.pulse, set_circle_size);
-    lv_anim_set_values(&ui.pulse, pulse_min, pulse_max);
+    lv_anim_set_values(&ui.pulse, ui.scene_active ? 32 : pulse_min, ui.scene_active ? 44 : pulse_max);
     lv_anim_set_duration(&ui.pulse, duration);
     lv_anim_set_playback_duration(&ui.pulse, duration);
     lv_anim_set_repeat_count(&ui.pulse, LV_ANIM_REPEAT_INFINITE);
@@ -153,12 +171,58 @@ static void apply_state(friday_state_t state)
     ESP_LOGI(TAG, "State changed to %s", friday_state_name(state));
 }
 
+static void log_ui_snapshot(const char *reason)
+{
+    lv_obj_update_layout(lv_screen_active());
+    int cards = 0, buttons = 0, bounds_errors = 0, routed = 0;
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t *objects[] = {ui.cards[i], ui.buttons[i]};
+        for (int j = 0; j < 2; j++) {
+            if (objects[j] != NULL) {
+                lv_area_t diagnostic_area; lv_obj_get_coords(objects[j], &diagnostic_area);
+                ESP_LOGI(TAG, "UI_OBJ type=%s index=%d hidden=%d visible=%d x1=%ld y1=%ld x2=%ld y2=%ld",
+                    j == 0 ? "card" : "button", i, lv_obj_has_flag(objects[j], LV_OBJ_FLAG_HIDDEN),
+                    lv_obj_is_visible(objects[j]), (long)diagnostic_area.x1, (long)diagnostic_area.y1,
+                    (long)diagnostic_area.x2, (long)diagnostic_area.y2);
+            }
+            if (objects[j] != NULL && lv_obj_is_visible(objects[j])) {
+                lv_area_t area; lv_obj_get_coords(objects[j], &area);
+                if (j == 0) cards++; else buttons++;
+                if (area.x1 < 0 || area.y1 < 0 || area.x2 >= 720 || area.y2 >= 720) bounds_errors++;
+                if (lv_obj_has_flag(objects[j], LV_OBJ_FLAG_CLICKABLE)) routed++;
+            }
+        }
+    }
+    ESP_LOGI(TAG, "UI_DIAG reason=%s generation=%lu kind=%s active=%d state=%s cards=%d buttons=%d bounds_errors=%d clickable=%d screen_objects=%u",
+        reason, ui.scene_generation, ui.scene_kind, ui.scene_active, friday_state_name(friday_state_get()),
+        cards, buttons, bounds_errors, routed, (unsigned int)lv_obj_get_child_count(lv_screen_active()));
+}
+
+static void diagnostic_tick(lv_timer_t *timer)
+{
+    (void)timer;
+    log_ui_snapshot("periodic");
+}
+
 static void orb_event_cb(lv_event_t *event)
 {
+    if (lv_event_get_code(event) == LV_EVENT_LONG_PRESSED) {
+        ESP_LOGI(TAG, "UI_ACTION orb=long_press");
+        ui.long_pressed = true;
+        if (action_callback != NULL && !action_callback("status")) {
+            set_message_text("Friday is offline. Try again after reconnecting.");
+        }
+        return;
+    }
     if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
         return;
     }
 
+    ESP_LOGI(TAG, "UI_ACTION orb=click suppressed=%d", ui.long_pressed);
+    if (ui.long_pressed) {
+        ui.long_pressed = false;
+        return;
+    }
     if (activation_callback != NULL) {
         friday_ui_activation_result_t result = activation_callback();
         if (result == FRIDAY_UI_ACTIVATION_ACKNOWLEDGED) {
@@ -188,6 +252,151 @@ static lv_obj_t *make_label(lv_obj_t *parent, const char *text, const lv_font_t 
     return label;
 }
 
+static void scene_action_event(lv_event_t *event)
+{
+    const char *action = lv_event_get_user_data(event);
+    if (action == NULL || action[0] == '\0') {
+        return;
+    }
+    char category[24];
+    size_t length = strcspn(action, ":");
+    if (length >= sizeof(category)) length = sizeof(category) - 1;
+    memcpy(category, action, length); category[length] = '\0';
+    const char *allowed[] = {"status", "reminders", "calendar", "dismiss", "confirm", "decline", "reminder", "snooze", "complete", "cancel"};
+    const char *safe_category = "invalid";
+    for (unsigned int i = 0; i < sizeof(allowed)/sizeof(allowed[0]); i++) if (strcmp(category, allowed[i]) == 0) safe_category = allowed[i];
+    ESP_LOGI(TAG, "UI_ACTION action=%s", safe_category);
+    if (strcmp(action, "dismiss") == 0) {
+        scene_expire(NULL);
+        log_ui_snapshot("dismiss");
+        if (action_callback != NULL) action_callback("dismiss");
+    } else if (action_callback == NULL || !action_callback(action)) {
+        set_message_text("Friday is offline. This action was not sent.");
+    }
+}
+
+static void scene_layout(bool active)
+{
+    ui.scene_active = active;
+    lv_obj_set_size(ui.inner_ring, active ? 64 : 196, active ? 64 : 196);
+    lv_obj_center(ui.inner_ring);
+    lv_obj_set_size(ui.orb, active ? 84 : 260, active ? 84 : 260);
+    lv_obj_align(ui.orb, active ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_CENTER,
+                 active ? -22 : 0, active ? 46 : 4);
+    lv_obj_align(ui.title, LV_ALIGN_TOP_MID, active ? -32 : 0, 88);
+    position_message();
+    if (active) {
+        lv_obj_add_flag(ui.microphone, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_remove_flag(ui.microphone, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, active ? -8 : FRIDAY_STATUS_BOTTOM_OFFSET);
+    lv_anim_set_values(&ui.pulse, active ? 32 : 100, active ? 44 : 126);
+    lv_anim_delete(ui.core, set_circle_size);
+    lv_anim_start(&ui.pulse);
+}
+
+static void scene_expire(lv_timer_t *timer)
+{
+    (void)timer;
+    if (ui.countdown != NULL) {
+        lv_timer_delete(ui.countdown);
+        ui.countdown = NULL;
+    }
+    for (int i = 0; i < 4; i++) {
+        lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    scene_layout(false);
+    lv_snprintf(ui.scene_kind, sizeof(ui.scene_kind), "%s", "ambient");
+    ui.scene_generation++;
+    lv_label_set_text(ui.eyebrow, "AMBIENT");
+    lv_label_set_text(ui.title, "FRIDAY");
+    set_message_text("Say Friday or tap. Hold the orb for local views.");
+}
+
+void friday_ui_set_action_callback(friday_ui_action_callback_t callback)
+{
+    action_callback = callback;
+}
+
+static const char *scene_string(const cJSON *object, const char *name)
+{
+    const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, name);
+    return cJSON_IsString(value) ? value->valuestring : "";
+}
+
+static void countdown_tick(lv_timer_t *timer)
+{
+    (void)timer;
+    int64_t remaining = (ui.countdown_deadline - esp_timer_get_time() + 999999) / 1000000;
+    if (remaining < 0) remaining = 0;
+    char text[64];
+    lv_snprintf(text, sizeof(text), "%02ld:%02ld", (long)(remaining / 60), (long)(remaining % 60));
+    lv_label_set_text(ui.card_labels[0], text);
+    if (remaining == 0) {
+        lv_timer_pause(ui.countdown);
+        set_message_text("Timer finished. Friday will send the reminder alert.");
+    }
+}
+
+bool friday_ui_set_scene(const cJSON *surface)
+{
+    if (!friday_ui_set_surface(scene_string(surface, "kind"), scene_string(surface, "title"),
+                               scene_string(surface, "subtitle"))) return false;
+    if (!bsp_display_lock(1000)) {
+        return false;
+    }
+    const cJSON *items = cJSON_GetObjectItemCaseSensitive(surface, "items");
+    const cJSON *actions = cJSON_GetObjectItemCaseSensitive(surface, "actions");
+    for (int i = 0; i < 4; i++) {
+        const cJSON *item = cJSON_GetArrayItem(items, i);
+        const cJSON *action = cJSON_GetArrayItem(actions, i);
+        ui.card_actions[i][0] = '\0';
+        ui.button_actions[i][0] = '\0';
+        if (cJSON_IsObject(item)) {
+            char text[240];
+            lv_snprintf(text, sizeof(text), "%s  %s", scene_string(item, "time"), scene_string(item, "label"));
+            lv_obj_set_style_text_font(ui.card_labels[i], &lv_font_montserrat_24, 0);
+            lv_label_set_text(ui.card_labels[i], text);
+            lv_snprintf(ui.card_actions[i], sizeof(ui.card_actions[i]), "%s", scene_string(item, "action"));
+            lv_obj_remove_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (cJSON_IsObject(action)) {
+            lv_label_set_text(ui.button_labels[i], scene_string(action, "label"));
+            lv_snprintf(ui.button_actions[i], sizeof(ui.button_actions[i]), "%s", scene_string(action, "id"));
+            lv_obj_remove_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    const cJSON *countdown = cJSON_GetObjectItemCaseSensitive(surface, "countdown_ms");
+    if (cJSON_IsNumber(countdown) && countdown->valuedouble >= 1000 && countdown->valuedouble <= 86400000) {
+        ui.countdown_deadline = esp_timer_get_time() + (int64_t)countdown->valuedouble * 1000;
+        lv_obj_set_style_text_font(ui.card_labels[0], &lv_font_montserrat_32, 0);
+        ui.countdown = lv_timer_create(countdown_tick, 250, NULL);
+        lv_obj_remove_flag(ui.cards[0], LV_OBJ_FLAG_HIDDEN);
+        countdown_tick(ui.countdown);
+    }
+    if (ui.expiry != NULL) {
+        lv_timer_delete(ui.expiry);
+        ui.expiry = NULL;
+    }
+    const cJSON *expires = cJSON_GetObjectItemCaseSensitive(surface, "expires_ms");
+    // Reminder alerts have their own acknowledgement-aware backend timer.
+    if (cJSON_IsNumber(expires) && expires->valueint >= 1000 && expires->valueint <= 300000
+        && strcmp(scene_string(surface, "kind"), "reminder") != 0) {
+        ui.expiry = lv_timer_create(scene_expire, (uint32_t)expires->valueint, NULL);
+        lv_timer_set_repeat_count(ui.expiry, 1);
+        lv_timer_set_auto_delete(ui.expiry, false);
+    }
+    log_ui_snapshot("scene");
+    bsp_display_unlock();
+    return true;
+}
+
 void friday_ui_create(void)
 {
     lv_obj_t *screen = lv_screen_active();
@@ -201,6 +410,9 @@ void friday_ui_create(void)
     lv_obj_align(ui.eyebrow, LV_ALIGN_TOP_MID, 0, 54);
 
     ui.title = make_label(screen, "FRIDAY", &lv_font_montserrat_32, 0xEDF8F7);
+    lv_obj_set_width(ui.title, 510);
+    lv_obj_set_style_text_align(ui.title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(ui.title, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_align(ui.title, LV_ALIGN_TOP_MID, 0, 88);
 
     ui.orb = lv_obj_create(screen);
@@ -213,9 +425,11 @@ void friday_ui_create(void)
     lv_obj_set_style_bg_opa(ui.orb, LV_OPA_TRANSP, 0);
     lv_obj_align(ui.orb, LV_ALIGN_CENTER, 0, 4);
     lv_obj_add_flag(ui.orb, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(ui.orb, orb_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_remove_flag(ui.orb, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(ui.orb, orb_event_cb, LV_EVENT_ALL, NULL);
 
     lv_obj_t *inner_ring = lv_obj_create(ui.orb);
+    ui.inner_ring = inner_ring;
     lv_obj_remove_style_all(inner_ring);
     lv_obj_set_size(inner_ring, 196, 196);
     lv_obj_set_style_radius(inner_ring, LV_RADIUS_CIRCLE, 0);
@@ -237,7 +451,7 @@ void friday_ui_create(void)
 
     ui.status = make_label(screen, "idle", &lv_font_montserrat_18, 0x79F5DD);
     lv_obj_set_style_text_letter_space(ui.status, 6, 0);
-    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, FRIDAY_STATUS_BOTTOM_OFFSET);
+    lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, ui.scene_active ? -8 : FRIDAY_STATUS_BOTTOM_OFFSET);
 
     ui.message = make_label(screen, "", &lv_font_montserrat_24, 0xEDF8F7);
     lv_obj_set_style_text_align(ui.message, LV_TEXT_ALIGN_CENTER, 0);
@@ -250,8 +464,32 @@ void friday_ui_create(void)
     ui.network = make_label(screen, "WI-FI STARTING", &lv_font_montserrat_18, 0x36504F);
     lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
 
-    set_message_text("Tap the orb to talk to Friday");
+    for (int i = 0; i < 4; i++) {
+        ui.cards[i] = lv_obj_create(screen);
+        lv_obj_set_size(ui.cards[i], 620, 70);
+        lv_obj_align(ui.cards[i], LV_ALIGN_TOP_MID, 0, 206 + i * 80);
+        lv_obj_set_style_bg_color(ui.cards[i], color_hex(0x102124), 0);
+        lv_obj_set_style_border_width(ui.cards[i], 0, 0);
+        lv_obj_set_style_radius(ui.cards[i], 14, 0);
+        lv_obj_remove_flag(ui.cards[i], LV_OBJ_FLAG_SCROLLABLE);
+        ui.card_labels[i] = make_label(ui.cards[i], "", &lv_font_montserrat_24, 0xEDF8F7);
+        lv_obj_set_size(ui.card_labels[i], 582, 38);
+        lv_label_set_long_mode(ui.card_labels[i], LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_center(ui.card_labels[i]);
+        lv_obj_add_event_cb(ui.cards[i], scene_action_event, LV_EVENT_CLICKED, ui.card_actions[i]);
+        lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
+        ui.buttons[i] = lv_button_create(screen);
+        lv_obj_set_size(ui.buttons[i], 294, 58);
+        lv_obj_align(ui.buttons[i], LV_ALIGN_TOP_LEFT, 50 + (i % 2) * 326, 544 + (i / 2) * 70);
+        lv_obj_set_style_bg_color(ui.buttons[i], color_hex(0x193A3A), 0);
+        ui.button_labels[i] = make_label(ui.buttons[i], "", &lv_font_montserrat_24, 0x79F5DD);
+        lv_obj_center(ui.button_labels[i]);
+        lv_obj_add_event_cb(ui.buttons[i], scene_action_event, LV_EVENT_CLICKED, ui.button_actions[i]);
+        lv_obj_add_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    set_message_text("Tap to talk. Hold the orb for local views.");
     apply_state(FRIDAY_STATE_IDLE);
+    lv_timer_create(diagnostic_tick, 10000, NULL);
 }
 
 void friday_ui_set_activation_callback(friday_ui_activation_callback_t callback)
@@ -265,31 +503,57 @@ void friday_ui_set_state(friday_state_t state)
         return;
     }
     apply_state(state);
+    log_ui_snapshot("state");
     bsp_display_unlock();
 }
 
-void friday_ui_set_surface(const char *kind, const char *title, const char *subtitle)
+bool friday_ui_set_surface(const char *kind, const char *title, const char *subtitle)
 {
     if (ui.title == NULL || !bsp_display_lock(1000)) {
-        return;
+        return false;
     }
+    if (ui.countdown != NULL) {
+        lv_timer_delete(ui.countdown);
+        ui.countdown = NULL;
+    }
+    if (ui.expiry != NULL) {
+        lv_timer_delete(ui.expiry);
+        ui.expiry = NULL;
+    }
+    for (int i = 0; i < 4; i++) {
+        lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    const char *known[] = {"ambient", "AMBIENT", "timeline", "message", "metric", "list", "reminder", "timer", "ERROR", "PAIRING", "TOOL"};
+    const char *safe_kind = "other";
+    for (unsigned int i = 0; i < sizeof(known)/sizeof(known[0]); i++) if (kind != NULL && strcmp(kind, known[i]) == 0) safe_kind = known[i];
+    lv_snprintf(ui.scene_kind, sizeof(ui.scene_kind), "%s", safe_kind);
+    ui.scene_generation++;
+    scene_layout(kind != NULL && strcmp(kind, "ambient") != 0 && strcmp(kind, "AMBIENT") != 0);
     if (kind != NULL && kind[0] != '\0') {
         lv_label_set_text(ui.eyebrow, kind);
         lv_obj_align(ui.eyebrow, LV_ALIGN_TOP_MID, 0, 54);
     }
     if (title != NULL && title[0] != '\0') {
         lv_label_set_text(ui.title, title);
-        lv_obj_align(ui.title, LV_ALIGN_TOP_MID, 0, 88);
+        lv_obj_align(ui.title, LV_ALIGN_TOP_MID, ui.scene_active ? -32 : 0, 88);
     }
     if (subtitle != NULL && subtitle[0] != '\0') {
         set_message_text(subtitle);
     }
     bsp_display_unlock();
+    return true;
 }
 
-void friday_ui_set_response(const char *text)
+bool friday_ui_set_response(const char *text)
 {
-    friday_ui_set_surface("RESPONSE", "FRIDAY", text);
+    // Keep the director's cards and touch actions when assistant.text follows surface.
+    if (ui.message != NULL && bsp_display_lock(1000)) {
+        set_message_text(text);
+        bsp_display_unlock();
+        return true;
+    }
+    return false;
 }
 
 void friday_ui_set_tool(const char *name, const char *status)
