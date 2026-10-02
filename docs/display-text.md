@@ -7,7 +7,7 @@ LVGL's enabled missing-glyph placeholder therefore produces boxes for valid
 UTF-8 strings. The old subtitle-only apostrophe conversion left other paths
 (titles/cards/buttons/status) untouched. Card snprintf could split UTF-8 too.
 
-This firmware-only candidate routes labels through the selected font's actual
+The firmware routes labels through the selected font's actual
 glyph lookup, excluding LVGL's placeholder fallback. Common punctuation uses
 readable equivalents: middle-dot separator -> hyphen separator, smart quotes ->
 straight quotes, en dash -> hyphen, em dash -> two hyphens, ellipsis -> three dots,
@@ -25,10 +25,16 @@ True accented/CJK/emoji rendering needs additional reviewed font assets/fallback
 Verification uses synthetic strings and the actual pinned LVGL9.3 Montserrat
 font getters at18/24/32, not browser font substitutes. Native tests cover missing
 glyph reproduction, punctuation/calendar labels, supported degree, unsupported
-Unicode disclosure, malformed bytes and tiny output capacities. Backend191tests
-pass. ESP32-P4 cross-build uses existing toolchain/cached components and a private
+Unicode disclosure, malformed bytes and tiny output capacities. Provider-free backend regressions are included in CI. ESP32-P4 cross-build uses existing toolchain/cached components and a private
 isolated configuration with credential-like configuration fields cleared.
 
-No live source, service, account, persistent permission or firmware changes were
-made. Applying source and flashing the device need separate approval. Physical
-pixels/touch and representative live labels must be checked after a approved flash.
+Run the host test with the actual LVGL v9.3.0 source:
+
+```sh
+python3 scripts/test_native_display.py --lvgl-root firmware/managed_components/lvgl__lvgl
+```
+
+CI checks out the pinned public LVGL source separately. The host test supports
+macOS and Linux section garbage collection and tests actual Montserrat getters.
+Firmware application/flashing requires operator approval. Physical pixels/touch
+and representative live labels remain separate verification steps.

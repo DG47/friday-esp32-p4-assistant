@@ -39,9 +39,14 @@ jobs:
           cc -Wall -Wextra -Werror -I firmware/main -I /usr/include/cjson firmware/tests/test_error_scene.c firmware/main/friday_error_scene.c -lcjson -o /tmp/friday-error-test
           /tmp/friday-error-test
 
+      - name: Pinned LVGL source for real glyph tests
+        uses: actions/checkout@v4
+        with:
+          repository: lvgl/lvgl
+          ref: v9.3.0
+          path: .ci-lvgl
       - name: Native glyph and media ownership regressions
         run: |
-          cc -std=c11 -Wall -Wextra -Werror -I firmware/main firmware/tests/test_display_text.c firmware/main/friday_display_text.c -o /tmp/friday-glyph-test
-          /tmp/friday-glyph-test
+          python3 scripts/test_native_display.py --lvgl-root .ci-lvgl
           cc -std=c11 -Wall -Wextra -Werror -I firmware/main firmware/tests/test_media_guard.c firmware/main/friday_media_guard.c -lm -o /tmp/friday-media-test
           /tmp/friday-media-test
