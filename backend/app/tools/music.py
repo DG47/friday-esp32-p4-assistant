@@ -51,6 +51,7 @@ class Snapshot:
     full_title: str = ''
     full_artist: str = ''
     album_name: str = ''
+    artwork: object = None
 
     def timed_context(self,sequence):
         # Local conversion only; does not fetch lyrics or enable timing.
@@ -123,12 +124,14 @@ class MusicService:
                 if isinstance(raw_name,str) and isinstance(raw_album,str) and len(raw_name)<=1024 and len(raw_album)<=1024 else '')
             artist_values=item.get('artists',[])
             full_artist=', '.join(p.get('name','') for p in artist_values if isinstance(p,dict) and isinstance(p.get('name'),str)) if isinstance(artist_values,list) else ''
+            from .artwork import select_artwork
+            artwork=select_artwork(album)
             return Snapshot('ready', track_id, text(item.get('name')),
                 text(', '.join(text(a.get('name')) for a in item.get('artists', []) if isinstance(a, dict))),
                 text(device.get('id')), text(device.get('name'), 40), data.get('is_playing') is True,
                 max(0, min(progress, duration)), duration, (now+self.clock())/2,
                 device.get('is_restricted') is not False, disallowed, isrc, version, text(raw_name,1024) if isinstance(raw_name,str) and len(raw_name)<=1024 else '',
-                text(full_artist,1024) if len(full_artist)<=1024 else '',text(raw_album,1024) if isinstance(raw_album,str) and len(raw_album)<=1024 else '')
+                text(full_artist,1024) if len(full_artist)<=1024 else '',text(raw_album,1024) if isinstance(raw_album,str) and len(raw_album)<=1024 else '',artwork)
         except Exception:
             # Do not propagate provider bodies, tokens or song content to logs/model errors.
             return Snapshot('unavailable')

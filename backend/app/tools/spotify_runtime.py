@@ -8,6 +8,7 @@ from ..spotify_auth import TokenManager,AuthUnavailable
 from .music import MusicService
 from .music_runtime import LocalMusicRuntime
 from .lrclib import LRCLIBAdapter
+from .artwork import ArtworkProvider
 
 _private=contextvars.ContextVar('friday_private_transport',default=False)
 class PrivateTransportFilter(logging.Filter):
@@ -47,6 +48,9 @@ class WebPlaybackSource:
 
 class PrivateLyricsProvider:
     def __init__(self,provider):self.provider=provider;self.cache=provider.cache
+    def clear(self):
+        if hasattr(self.provider,"clear"):self.provider.clear()
+        else:self.cache.clear()
     async def fetch(self,query):
         with private_transport():return await self.provider.fetch(query)
 
@@ -58,7 +62,11 @@ def create_runtime(settings,hub,blocked=None):
     provider=None
     if settings.music_timed_display_enabled:
         provider=PrivateLyricsProvider(LRCLIBAdapter(client=client,user_agent=settings.lyrics_client_identifier,enabled=True))
+    artwork=None;artwork_client=None
+    if settings.music_artwork_enabled:
+        artwork_client=httpx.AsyncClient(timeout=6,follow_redirects=False,trust_env=False)
+        artwork=PrivateLyricsProvider(ArtworkProvider(artwork_client,enabled=True))
     runtime=LocalMusicRuntime(hub,WebPlaybackSource(music),provider,enabled=True,
         timing=settings.music_timed_display_enabled,poll_seconds=settings.music_poll_seconds,
-        view_seconds=settings.music_view_seconds,blocked=blocked,owned_client=client,music=music)
+        blocked=blocked,owned_client=client,music=music,artwork=artwork,owned_artwork_client=artwork_client)
     return runtime,music

@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     lyrics_metadata_sharing_approved: bool = False
     lyrics_client_identifier: str = ""
     music_poll_seconds: float = Field(default=3.0, ge=3, le=30)
-    music_view_seconds: float = Field(default=300, ge=10, le=300)
+    music_artwork_enabled: bool = False
 
     calendar_provider: Literal["none", "sample", "google"] = "none"
     calendar_model_context: bool = False
@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_runtime(self):
         ZoneInfo(self.assistant_timezone)
+        if self.music_artwork_enabled and self.music_provider != 'spotify':
+            raise ValueError('Artwork requires explicit Spotify account opt in')
         if self.music_provider == 'spotify' and not self.music_account_access_approved:
             raise ValueError('Spotify requires explicit account-access opt in')
         if self.music_timed_display_enabled and (self.music_provider != 'spotify' or not self.lyrics_metadata_sharing_approved

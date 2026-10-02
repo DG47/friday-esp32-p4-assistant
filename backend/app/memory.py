@@ -40,6 +40,16 @@ class MemoryStore:
         db.row_factory = sqlite3.Row
         return db
 
+    def pending_confirmation(self, owner):
+        # Expiry alone is not confirmation resolution for retained display ownership.
+        with closing(self.connect()) as db:
+            return db.execute("SELECT token FROM memory_confirmations WHERE owner=? AND status='pending' LIMIT 1",(owner,)).fetchone() is not None
+
+    def confirmation_resolved(self, owner, token):
+        with closing(self.connect()) as db:
+            row=db.execute("SELECT status FROM memory_confirmations WHERE owner=? AND token=?",(owner,token)).fetchone()
+            return row is not None and row['status'] in {'confirmed','cancelled'}
+
     def records(self, owner, page=0):
         if not 0 <= page <= 24:
             raise ValueError('Invalid memory page')
@@ -100,7 +110,10 @@ class MemoryStore:
         with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
             r = db.execute("SELECT * FROM memory_confirmations WHERE owner=? AND token=? AND status='pending'",(owner,token)).fetchone()
-            if r is None or r['expires_at'] <= now(): raise ValueError('Confirmation expired or used; refresh')
+            if r is None: raise ValueError('Confirmation used or unavailable; refresh')
+            # Explicit owner-bound cancellation is safe after expiry. Acceptance still
+            # requires a live proposal and all original review/version checks.
+            if accept and r['expires_at'] <= now(): raise ValueError('Confirmation expired; refresh')
             p = json.loads(r['payload'])
             if accept:
                 if p.get('layout_version') != LAYOUT_VERSION: raise ValueError('Memory layout changed; request a fresh confirmation')

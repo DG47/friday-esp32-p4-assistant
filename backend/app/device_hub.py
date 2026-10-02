@@ -96,14 +96,14 @@ class DeviceHub:
         required_capability: str | None = None,
         excluded_capability: str | None = None,
     ) -> int:
-        if self.scene_observer:self.scene_observer(device_id,message)
+        decorate=self.scene_observer(device_id,message) if self.scene_observer else None
         async def send(peer: DevicePeer) -> int:
             try:
                 # Bound lock acquisition too: an unresponsive display must not stall
                 # reminder delivery or other devices. Serialize concurrent producers.
                 async def serialized_send() -> None:
                     async with peer.send_lock:
-                        await peer.websocket.send_json(message)
+                        await peer.websocket.send_json(decorate(peer.websocket,message) if decorate else message)
                 await asyncio.wait_for(serialized_send(), self.send_timeout)
                 return 1
             except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError):

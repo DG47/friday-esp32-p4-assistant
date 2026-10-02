@@ -88,7 +88,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await task;await settle();self.assertEqual(len(self.socket.messages),count)
     async def test_expiry_shutdown_and_owned_client_cleanup(self):
         self.source.wait=asyncio.Event();await self.runtime.open('d',self.socket,'r');await asyncio.sleep(.02)
-        self.now=11;await settle();self.assertFalse(self.runtime.views);self.assertTrue(self.source.cancelled)
+        self.now=301;await settle();self.assertTrue(self.runtime.views)
+        self.assertIsNone(self.socket.messages[-1]["surface"]["expires_ms"])
+        self.runtime.stop("d",self.socket);await settle();self.assertTrue(self.source.cancelled)
         self.assertIsNone(self.runtime.latest)
     async def test_shared_polling_and_one_peer_dismiss(self):
         other=Socket();self.hub.register('d',other,{CAPABILITY})
