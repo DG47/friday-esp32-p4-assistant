@@ -16,7 +16,7 @@ def local_scene(action, device_id, settings, store, calendar) -> Surface | None:
                    {"label": "Calendar", "time": {"none": "Not connected", "sample": "Sample only", "google": getattr(calendar, "last_status", "Not connected")}.get(settings.calendar_provider, "Not connected")},
                    {"label": "Music / smart home / computer", "time": "Not connected"},
                    {"label": "Device speech playback", "time": "Enabled; hardware unverified" if settings.tts_provider != "none" else "Disabled (opt-in)"}],
-            actions=[button("reminders", "Reminders"), button("calendar", "Calendar"), button("dismiss", "Dismiss")], expires_ms=30000)
+            actions=[button("memories", "Memory"), button("reminders", "Reminders"), button("calendar", "Calendar"), button("music", "Music")], expires_ms=30000)
     reminders = store.active(device_id=device_id)
     if action == "reminders" or action.startswith("reminders:"):
         page = int(action.split(":", 1)[1]) if ":" in action else 0

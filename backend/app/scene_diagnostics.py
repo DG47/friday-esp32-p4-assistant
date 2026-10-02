@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 
 logger = logging.getLogger("uvicorn.error")
-ACTIONS = {"status", "reminders", "calendar", "calendar_refresh", "calendar_next", "event", "dismiss", "confirm", "decline", "reminder", "snooze", "complete", "cancel"}
+ACTIONS = {"music", "musicctl", "memories", "memory", "memforget", "memyes", "memno", "memreview", "status", "reminders", "calendar", "calendar_refresh", "calendar_next", "event", "dismiss", "confirm", "decline", "reminder", "snooze", "complete", "cancel"}
 
 
 def log_scene_action(device_id, action, surface):

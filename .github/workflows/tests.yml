@@ -22,6 +22,8 @@ jobs:
           WEATHER_PROVIDER: none
           STT_PROVIDER: none
         run: python -m unittest discover -s backend/tests -v
+      - name: Synthetic real-loopback Spotify callback regression
+        run: python scripts/test_spotify_loopback.py
       - name: Python syntax and whitespace
         run: |
           python -m compileall -q backend/app scripts
@@ -36,3 +38,10 @@ jobs:
         run: |
           cc -Wall -Wextra -Werror -I firmware/main -I /usr/include/cjson firmware/tests/test_error_scene.c firmware/main/friday_error_scene.c -lcjson -o /tmp/friday-error-test
           /tmp/friday-error-test
+
+      - name: Native glyph and media ownership regressions
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -I firmware/main firmware/tests/test_display_text.c firmware/main/friday_display_text.c -o /tmp/friday-glyph-test
+          /tmp/friday-glyph-test
+          cc -std=c11 -Wall -Wextra -Werror -I firmware/main firmware/tests/test_media_guard.c firmware/main/friday_media_guard.c -lm -o /tmp/friday-media-test
+          /tmp/friday-media-test

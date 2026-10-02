@@ -27,3 +27,7 @@ void friday_ui_set_tool(const char *name, const char *status);
 void friday_ui_set_backend(const char *status);
 void friday_ui_set_network(const char *status, const char *detail);
 void friday_ui_set_microphone(const char *status, int32_t peak, int32_t rms);
+
+void friday_ui_media_begin(const char *request);
+void friday_ui_media_clear(void);
+bool friday_ui_set_media(const cJSON *message);

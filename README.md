@@ -235,3 +235,10 @@ flashing and acoustic barge-in are separate release gates. See
 [production readiness](docs/production-readiness.md) for configuration and limits.
 
 Read-only Google Calendar and connection/privacy boundaries: [docs/google-calendar.md](docs/google-calendar.md). Calendar defaults to unconnected; account authorization and local application/restart are separate approvals.
+
+
+Personal Spotify support is opt-in: official playback metadata and touch controls
+on existing Spotify devices, with optional recording-bound timed lyrics. See
+[setup and runtime](docs/spotify-runtime.md), [authentication](docs/spotify-auth.md)
+and [display text](docs/display-text.md). Account grants, lyric rights and physical
+timing/readability checks are separate; no ESP32 audio streaming is provided.

@@ -10,8 +10,13 @@
 #include "lvgl.h"
 
 #include "friday_state.h"
+#include "friday_media_guard.h"
+#include "friday_display_text.h"
 
 static const char *TAG = "friday_ui";
+static friday_media_guard_t media_guard;
+static bool owned_media_render;
+static char last_media_line[2001];
 
 #define FRIDAY_STATUS_BOTTOM_OFFSET -166
 #define FRIDAY_MESSAGE_TOP 570
@@ -66,38 +71,33 @@ static void position_message(void)
     lv_obj_align(ui.message, LV_ALIGN_TOP_MID, 0, ui.scene_active ? 118 : FRIDAY_MESSAGE_TOP);
 }
 
+static bool supports_glyph(uint32_t codepoint, void *context)
+{
+    const lv_font_t *font = context;
+    lv_font_glyph_dsc_t glyph;
+    return font != NULL && font->get_glyph_dsc != NULL &&
+        font->get_glyph_dsc(font, &glyph, codepoint, 0);
+}
+
+static void display_label(lv_obj_t *label, const char *text)
+{
+    const char *source = text != NULL ? text : "";
+    size_t length = strlen(source);
+    if (length > (SIZE_MAX - 1) / 4) return;
+    char *readable = malloc(length * 4 + 1);
+    if (readable == NULL) {
+        lv_label_set_text(label, "Display text unavailable");
+        return;
+    }
+    friday_display_text(readable, length * 4 + 1, source, supports_glyph,
+                        (void *)lv_obj_get_style_text_font(label, 0));
+    lv_label_set_text(label, readable);
+    free(readable);
+}
+
 static void set_message_text(const char *text)
 {
-    if (text == NULL) {
-        lv_label_set_text(ui.message, "");
-        position_message();
-        return;
-    }
-
-    size_t length = strlen(text);
-    char *normalized = malloc(length + 1);
-    if (normalized == NULL) {
-        lv_label_set_text(ui.message, text);
-        position_message();
-        return;
-    }
-
-    size_t input = 0;
-    size_t output = 0;
-    while (input < length) {
-        const unsigned char *current = (const unsigned char *)&text[input];
-        if (input + 2 < length && current[0] == 0xE2 && current[1] == 0x80 &&
-            (current[2] == 0x98 || current[2] == 0x99)) {
-            normalized[output++] = '\'';
-            input += 3;
-        } else {
-            normalized[output++] = text[input++];
-        }
-    }
-    normalized[output] = '\0';
-
-    lv_label_set_text(ui.message, normalized);
-    free(normalized);
+    display_label(ui.message, text);
     position_message();
 }
 
@@ -148,7 +148,7 @@ static void apply_state(friday_state_t state)
     }
 
     friday_state_set(state);
-    lv_label_set_text(ui.status, friday_state_name(state));
+    display_label(ui.status, friday_state_name(state));
     lv_obj_align(ui.status, LV_ALIGN_BOTTOM_MID, 0, ui.scene_active ? -8 : FRIDAY_STATUS_BOTTOM_OFFSET);
     if (message != NULL) {
         set_message_text(message);
@@ -245,8 +245,8 @@ static lv_obj_t *make_label(lv_obj_t *parent, const char *text, const lv_font_t 
                             uint32_t color)
 {
     lv_obj_t *label = lv_label_create(parent);
-    lv_label_set_text(label, text);
     lv_obj_set_style_text_font(label, font, 0);
+    display_label(label, text);
     lv_obj_set_style_text_color(label, color_hex(color), 0);
     lv_obj_set_style_text_letter_space(label, 2, 0);
     return label;
@@ -298,6 +298,7 @@ static void scene_layout(bool active)
 
 static void scene_expire(lv_timer_t *timer)
 {
+    friday_media_clear(&media_guard);
     (void)timer;
     if (ui.countdown != NULL) {
         lv_timer_delete(ui.countdown);
@@ -310,8 +311,8 @@ static void scene_expire(lv_timer_t *timer)
     scene_layout(false);
     lv_snprintf(ui.scene_kind, sizeof(ui.scene_kind), "%s", "ambient");
     ui.scene_generation++;
-    lv_label_set_text(ui.eyebrow, "AMBIENT");
-    lv_label_set_text(ui.title, "FRIDAY");
+    display_label(ui.eyebrow, "AMBIENT");
+    display_label(ui.title, "FRIDAY");
     set_message_text("Say Friday or tap. Hold the orb for local views.");
 }
 
@@ -333,7 +334,7 @@ static void countdown_tick(lv_timer_t *timer)
     if (remaining < 0) remaining = 0;
     char text[64];
     lv_snprintf(text, sizeof(text), "%02ld:%02ld", (long)(remaining / 60), (long)(remaining % 60));
-    lv_label_set_text(ui.card_labels[0], text);
+    display_label(ui.card_labels[0], text);
     if (remaining == 0) {
         lv_timer_pause(ui.countdown);
         set_message_text("Timer finished. Friday will send the reminder alert.");
@@ -355,17 +356,19 @@ bool friday_ui_set_scene(const cJSON *surface)
         ui.card_actions[i][0] = '\0';
         ui.button_actions[i][0] = '\0';
         if (cJSON_IsObject(item)) {
-            char text[240];
-            lv_snprintf(text, sizeof(text), "%s  %s", scene_string(item, "time"), scene_string(item, "label"));
+            char time[64], label[240], text[308];
+            friday_display_text(time, sizeof(time), scene_string(item, "time"), supports_glyph, (void *)&lv_font_montserrat_24);
+            friday_display_text(label, sizeof(label), scene_string(item, "label"), supports_glyph, (void *)&lv_font_montserrat_24);
+            lv_snprintf(text, sizeof(text), "%s  %s", time, label);
             lv_obj_set_style_text_font(ui.card_labels[i], &lv_font_montserrat_24, 0);
-            lv_label_set_text(ui.card_labels[i], text);
+            display_label(ui.card_labels[i], text);
             lv_snprintf(ui.card_actions[i], sizeof(ui.card_actions[i]), "%s", scene_string(item, "action"));
             lv_obj_remove_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
         }
         if (cJSON_IsObject(action)) {
-            lv_label_set_text(ui.button_labels[i], scene_string(action, "label"));
+            display_label(ui.button_labels[i], scene_string(action, "label"));
             lv_snprintf(ui.button_actions[i], sizeof(ui.button_actions[i]), "%s", scene_string(action, "id"));
             lv_obj_remove_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -512,6 +515,7 @@ bool friday_ui_set_surface(const char *kind, const char *title, const char *subt
     if (ui.title == NULL || !bsp_display_lock(1000)) {
         return false;
     }
+    if (!owned_media_render) { friday_media_clear(&media_guard); lv_label_set_long_mode(ui.message, LV_LABEL_LONG_MODE_DOTS); }
     if (ui.countdown != NULL) {
         lv_timer_delete(ui.countdown);
         ui.countdown = NULL;
@@ -524,21 +528,21 @@ bool friday_ui_set_surface(const char *kind, const char *title, const char *subt
         lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
     }
-    const char *known[] = {"ambient", "AMBIENT", "timeline", "message", "metric", "list", "reminder", "timer", "ERROR", "PAIRING", "TOOL"};
+    const char *known[] = {"ambient", "AMBIENT", "timeline", "message", "metric", "list", "reminder", "timer", "media", "ERROR", "PAIRING", "TOOL"};
     const char *safe_kind = "other";
     for (unsigned int i = 0; i < sizeof(known)/sizeof(known[0]); i++) if (kind != NULL && strcmp(kind, known[i]) == 0) safe_kind = known[i];
     lv_snprintf(ui.scene_kind, sizeof(ui.scene_kind), "%s", safe_kind);
     ui.scene_generation++;
     scene_layout(kind != NULL && strcmp(kind, "ambient") != 0 && strcmp(kind, "AMBIENT") != 0);
     if (kind != NULL && kind[0] != '\0') {
-        lv_label_set_text(ui.eyebrow, kind);
+        display_label(ui.eyebrow, kind);
         lv_obj_align(ui.eyebrow, LV_ALIGN_TOP_MID, 0, 54);
     }
     if (title != NULL && title[0] != '\0') {
-        lv_label_set_text(ui.title, title);
+        display_label(ui.title, title);
         lv_obj_align(ui.title, LV_ALIGN_TOP_MID, ui.scene_active ? -32 : 0, 88);
     }
-    if (subtitle != NULL && subtitle[0] != '\0') {
+    if (subtitle != NULL && subtitle[0] != '\0' && (!owned_media_render || strcmp(subtitle,last_media_line) != 0)) {
         set_message_text(subtitle);
     }
     bsp_display_unlock();
@@ -569,7 +573,7 @@ void friday_ui_set_backend(const char *status)
     if (ui.network == NULL || !bsp_display_lock(1000)) {
         return;
     }
-    lv_label_set_text(ui.network, status != NULL ? status : "FRIDAY OFFLINE");
+    display_label(ui.network, status != NULL ? status : "FRIDAY OFFLINE");
     lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
     bsp_display_unlock();
 }
@@ -580,7 +584,7 @@ void friday_ui_set_network(const char *status, const char *detail)
         return;
     }
 
-    lv_label_set_text(ui.network, status);
+    display_label(ui.network, status);
     lv_obj_align(ui.network, LV_ALIGN_TOP_MID, 0, 24);
     if (detail != NULL && detail[0] != '\0') {
         set_message_text(detail);
@@ -601,7 +605,47 @@ void friday_ui_set_microphone(const char *status, int32_t peak, int32_t rms)
     } else {
         lv_snprintf(text, sizeof(text), "%s", status);
     }
-    lv_label_set_text(ui.microphone, text);
+    display_label(ui.microphone, text);
     lv_obj_align(ui.microphone, LV_ALIGN_BOTTOM_MID, 0, -20);
     bsp_display_unlock();
+}
+
+/* BSP display lock is recursive (esp_lvgl_adapter 0.6.3). It serializes touch,
+ * expiry and the complete acceptance/render operation, closing in-flight races. */
+void friday_ui_media_begin(const char *request)
+{
+    if (!bsp_display_lock(-1)) return;
+    last_media_line[0] = '\0';
+    friday_media_begin(&media_guard, request);
+    bsp_display_unlock();
+}
+void friday_ui_media_clear(void)
+{
+    if (!bsp_display_lock(-1)) return;
+    friday_media_clear(&media_guard);
+    bsp_display_unlock();
+}
+bool friday_ui_set_media(const cJSON *root)
+{
+    if (!bsp_display_lock(1000)) return false;
+    const cJSON *request = cJSON_GetObjectItemCaseSensitive(root,"media_request_id");
+    const cJSON *session = cJSON_GetObjectItemCaseSensitive(root,"media_session_id");
+    const cJSON *sequence = cJSON_GetObjectItemCaseSensitive(root,"media_sequence");
+    const cJSON *surface = cJSON_GetObjectItemCaseSensitive(root,"surface");
+    bool accepted = cJSON_IsObject(surface) && strcmp(scene_string(surface,"kind"),"media") == 0 &&
+        cJSON_IsString(request) && cJSON_IsString(session) && cJSON_IsNumber(sequence) &&
+        friday_media_accept(&media_guard,request->valuestring,session->valuestring,sequence->valuedouble);
+    if (accepted) {
+        owned_media_render = true;
+        accepted = friday_ui_set_scene(surface);
+        owned_media_render = false;
+        if (accepted && strcmp(scene_string(surface,"subtitle"),last_media_line) != 0) {
+            lv_snprintf(last_media_line,sizeof(last_media_line),"%s",scene_string(surface,"subtitle"));
+            /* A long current line stays readable, without truncating its text. */
+            lv_label_set_long_mode(ui.message, LV_LABEL_LONG_SCROLL_CIRCULAR);
+            lv_obj_set_style_anim_duration(ui.message, 10000, 0);
+        }
+    }
+    bsp_display_unlock();
+    return accepted;
 }

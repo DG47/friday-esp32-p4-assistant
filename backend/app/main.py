@@ -26,6 +26,9 @@ from .reminder_scheduler import ReminderScheduler
 from .stt import TranscriptionError, create_transcriber
 from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
 from .scenes import local_scene
+from .tools.music import MusicService
+from .tools.spotify_runtime import create_runtime
+from .memory import prepare_memory_input
 from .models import SurfaceAction
 from .speech import OpenAISpeech, SpeechDirector
 from .local_speech import MacSpeech
@@ -35,12 +38,16 @@ from .scene_diagnostics import log_scene_action
 settings = get_settings()
 store = ReminderStore(settings.assistant_database_path)
 agent = FridayAgent(settings, store)
+music = MusicService(settings.music_provider if settings.music_provider != "spotify" else "none")
 job_store = AgentJobStore(settings.assistant_database_path)
 credential_store = DeviceCredentialStore(settings.assistant_database_path)
 transcriber = create_transcriber(settings)
 static_dir = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
 hub = DeviceHub()
+local_music, official_music = create_runtime(settings, hub, blocked=lambda device: bool(store.pending_confirmation(device)))
+if official_music is not None: music = official_music
+hub.scene_observer = lambda device, message: local_music.interrupt_message(device, message)
 
 
 async def publish_tool_progress(device_id: str, name: str, status: str) -> None:
@@ -105,6 +112,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        await local_music.close()
         await speech.close()
         if discovery_transport is not None:
             discovery_transport.close()
@@ -184,6 +192,7 @@ def require_local_read_access(request: Request) -> None:
 async def handle_utterance(
     device_id: str, text: str, request_id: str | None = None
 ) -> str:
+    text = prepare_memory_input(text)
     job = job_store.enqueue(device_id, text, request_id=request_id)
     speech.latest[device_id] = job.id
     await speech.cancel(device_id)
@@ -450,8 +459,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                         return
                     hub.register(device_id, websocket, capabilities)
                     registered = True
-                    logger.info(
-                        "Device %s authenticated via %s", device_id, auth_status
+                    logging.getLogger("uvicorn.error").info(
+                        "Device %s authenticated via %s media_updates_v1=%s", device_id, auth_status, "media_updates_v1" in capabilities
                     )
                     await websocket.send_json(
                         {
@@ -481,7 +490,30 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             elif message_type == "scene.action":
                 try:
                     action = SurfaceAction(id=message.get("action"), label="Action").id
-                    if action.startswith(("calendar", "event:")):
+                    if action not in {'music'} and not action.startswith('musicctl:'):
+                        local_music.stop(device_id, websocket)
+                    if action in {'dismiss','confirm','decline','status','reminders','calendar','memories'} or action.startswith(('memyes:','memno:')):
+                        local_music.clear_protection(device_id)
+                    if action == "dismiss":
+                        music.dismiss(device_id)
+                    if settings.music_provider == 'spotify' and (action == 'music' or action.startswith('musicctl:')):
+                        if action.startswith('musicctl:'):
+                            owned = local_music.views.get(local_music._key(device_id, websocket))
+                            if owned is None or not local_music._allowed(owned):
+                                raise ValueError('Reopen Music before controlling playback')
+                            if device_id in local_music.protected or device_id in local_music.busy or local_music.blocked(device_id):
+                                raise ValueError('Resolve the current interaction first')
+                            await music.scene(device_id, action)
+                            local_music.stop(device_id, websocket)
+                        surface = await local_music.open(device_id, websocket, message.get('request_id'))
+                        if surface is not None:
+                            await hub.broadcast(device_id, {'type':'surface','surface':surface.model_dump(mode='json')})
+                        continue
+                    if action == "music" or action.startswith("musicctl:"):
+                        surface = await music.scene(device_id, action)
+                    elif action.startswith(("memories", "memory:", "memforget:", "memyes:", "memno:", "memreview:")):
+                        surface = agent.memory.scene(device_id, action)
+                    elif action.startswith(("calendar", "event:")):
                         await publish_tool_progress(device_id, "get_calendar", "working")
                         surface = await agent.calendar.scene(action, device_id)
                         await publish_tool_progress(device_id, "get_calendar", "complete" if agent.calendar.last_status in {"ready", "sample"} else "failed")
@@ -561,6 +593,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                 except ValueError as error:
                     await send_error(websocket, "request_conflict", str(error))
             elif message_type == "reminder.ack":
+                local_music.stop(device_id, websocket)
+                local_music.clear_protection(device_id)
                 if not hub.peer_has_capability(
                     device_id, websocket, "reminder_ack"
                 ):
@@ -627,6 +661,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             wake_probe_task.cancel()
             await asyncio.gather(wake_probe_task, return_exceptions=True)
         if registered:
+            local_music.stop(device_id, websocket)
             hub.disconnect(device_id, websocket)
             if device_id not in hub.device_ids():
                 await speech.cancel(device_id)

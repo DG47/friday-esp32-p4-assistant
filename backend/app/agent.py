@@ -13,6 +13,7 @@ from .config import Settings
 from .db import PendingConfirmation, ReminderStore
 from .models import AgentReply, CalendarEvent, Reminder, Surface, SurfaceAction
 from .scenes import local_scene
+from .memory import MemoryController
 from .providers.base import TextProvider
 from .providers.router import ProviderRouter
 from .tools.google_calendar import CalendarService, calendar_answer, next_event
@@ -210,6 +211,7 @@ class FridayAgent:
     def __init__(self, settings: Settings, store: ReminderStore):
         self.settings = settings
         self.store = store
+        self.memory = MemoryController(settings, store.path)
         self.calendar = CalendarService(settings)
         self.weather = WeatherService(settings.weather_latitude, settings.weather_longitude) if settings.weather_provider != "none" else None
         self.providers = ProviderRouter(settings)
@@ -223,6 +225,12 @@ class FridayAgent:
         self, session_id: str, text: str, request_id: str | None = None
     ) -> AgentReply:
         request_id = request_id or str(uuid.uuid4())
+        memory_reply = self.memory.handle(session_id, text, request_id)
+        if memory_reply is not None:
+            pending = self.store.pending_confirmation(session_id)
+            if pending is not None:
+                self.store.finish_confirmation(pending.id, "cancelled")
+            return memory_reply
         confirmation = self.store.pending_confirmation(session_id)
         dropped_confirmation: PendingConfirmation | None = None
         if confirmation is not None:

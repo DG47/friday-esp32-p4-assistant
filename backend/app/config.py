@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     assistant_user_name: str = "Dhruv"
     assistant_provider: Literal["auto", "mock", "ollama", "openai", "anthropic"] = "auto"
     assistant_auto_provider_preference: Literal["openai", "anthropic"] = "openai"
+    assistant_memory_enabled: bool = False
     assistant_database_path: Path = Path("data/friday.db")
     assistant_reminder_poll_seconds: float = 1.0
     assistant_reminder_retry_seconds: float = 90.0
@@ -42,6 +43,16 @@ class Settings(BaseSettings):
     anthropic_text_model: str = "claude-sonnet-5"
     anthropic_max_tokens: int = Field(default=1024, ge=256, le=128000)
     openai_realtime_model: str = "gpt-realtime-2.1"
+
+    music_provider: Literal["none", "synthetic", "spotify"] = "none"
+
+    music_account_access_approved: bool = False
+    music_credentials_path: Path = Path("data/disabled-spotify.json")
+    music_timed_display_enabled: bool = False
+    lyrics_metadata_sharing_approved: bool = False
+    lyrics_client_identifier: str = ""
+    music_poll_seconds: float = Field(default=3.0, ge=3, le=30)
+    music_view_seconds: float = Field(default=300, ge=10, le=300)
 
     calendar_provider: Literal["none", "sample", "google"] = "none"
     calendar_model_context: bool = False
@@ -69,6 +80,12 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_runtime(self):
         ZoneInfo(self.assistant_timezone)
+        if self.music_provider == 'spotify' and not self.music_account_access_approved:
+            raise ValueError('Spotify requires explicit account-access opt in')
+        if self.music_timed_display_enabled and (self.music_provider != 'spotify' or not self.lyrics_metadata_sharing_approved
+            or not self.lyrics_client_identifier or len(self.lyrics_client_identifier)>200 or not self.lyrics_client_identifier.isascii()
+            or any(ord(c)<32 or ord(c)==127 for c in self.lyrics_client_identifier)):
+            raise ValueError('Timed lyrics require Spotify and approved metadata sharing with a truthful client identifier')
         if self.weather_provider != "none" and (self.weather_latitude is None or self.weather_longitude is None):
             raise ValueError("Opt-in weather requires explicit location coordinates")
         if self.tts_provider == "openai" and not self.openai_api_key:

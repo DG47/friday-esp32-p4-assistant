@@ -265,7 +265,9 @@ bool friday_backend_scene_action(const char *action)
     if (!backend_ready || action == NULL || strlen(action) > 63) {
         return false;
     }
-    bool mutation = strncmp(action, "snooze:", 7) == 0 || strncmp(action, "complete:", 9) == 0 || strncmp(action, "cancel:", 7) == 0;
+    bool media_action = strcmp(action,"music") == 0 || strncmp(action,"musicctl:",9) == 0;
+    if (!media_action) friday_ui_media_clear();
+    bool mutation = strncmp(action, "snooze:", 7) == 0 || strncmp(action, "complete:", 9) == 0 || strncmp(action, "cancel:", 7) == 0 || strncmp(action,"musicctl:",9) == 0;
     if (mutation && scene_action_pending) {
         return true;
     }
@@ -277,6 +279,7 @@ bool friday_backend_scene_action(const char *action)
     snprintf(request_id, sizeof(request_id), "%08lx%08lx%08lx%08lx",
              (unsigned long)esp_random(), (unsigned long)esp_random(),
              (unsigned long)esp_random(), (unsigned long)esp_random());
+    if (media_action) friday_ui_media_begin(request_id);
     cJSON_AddStringToObject(message, "type", "scene.action");
     cJSON_AddStringToObject(message, "action", action);
     cJSON_AddStringToObject(message, "request_id", request_id);
@@ -284,6 +287,7 @@ bool friday_backend_scene_action(const char *action)
     bool sent = encoded != NULL && send_text(encoded, pdMS_TO_TICKS(250)) >= 0;
     cJSON_free(encoded);
     cJSON_Delete(message);
+    if (!sent && media_action) friday_ui_media_clear();
     if (sent && mutation) {
         scene_action_pending = true;
     }
@@ -351,6 +355,12 @@ static void handle_message(const char *payload)
     }
     ESP_LOGI(TAG, "Received backend message: %s", type);
 
+    if (strcmp(type,"agent.result") == 0 || strcmp(type,"reminder.alert") == 0 ||
+        strcmp(type,"assistant.text") == 0 || strcmp(type,"error") == 0 ||
+        (strcmp(type,"state") == 0 && json_string(root,"state") != NULL &&
+         strcmp(json_string(root,"state"),"idle") != 0) ||
+        (strcmp(type,"tool.activity") == 0 && json_string(root,"status") != NULL &&
+         strcmp(json_string(root,"status"),"working") == 0)) friday_ui_media_clear();
     if (strcmp(type, "agent.result") == 0) {
         handle_agent_result(root);
     } else if (strncmp(type, "speech.", 7) == 0) {
@@ -414,7 +424,9 @@ static void handle_message(const char *payload)
             ESP_LOGE(TAG, "Could not clear device identity");
         }
     } else if (strcmp(type, "surface") == 0) {
-        handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
+        if (cJSON_HasObjectItem(root,"media_request_id") || cJSON_HasObjectItem(root,"media_session_id") || cJSON_HasObjectItem(root,"media_sequence")) {
+            if (friday_ui_set_media(root)) scene_action_pending = false;
+        } else handle_surface(cJSON_GetObjectItemCaseSensitive(root, "surface"));
     } else if (strcmp(type, "assistant.text") == 0) {
         scene_action_pending = false;
         const char *text = json_string(root, "text");
@@ -495,6 +507,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
 
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED: {
+        friday_ui_media_clear();
         backend_ready = false;
         char hello[320];
         int hello_length = snprintf(
@@ -502,7 +515,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             "{\"type\":\"hello\",\"protocol\":1,"
             "\"device_token\":\"%s\","
             "\"capabilities\":[\"display\",\"touch\",\"microphone\","
-            "\"reminder_ack\",\"identity_rotate\",\"result_ack\"%s]}",
+            "\"reminder_ack\",\"identity_rotate\",\"result_ack\",\"media_updates_v1\"%s]}",
             device_token, friday_audio_speaker_ready() ? ",\"pcm_speech\"" : "");
         ESP_LOGI(TAG, "Connected to Friday backend");
         friday_ui_set_backend("FRIDAY AUTHENTICATING");
@@ -513,6 +526,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         break;
     }
     case WEBSOCKET_EVENT_DISCONNECTED:
+        friday_ui_media_clear();
         backend_ready = false;
         audio_active = false;
         friday_audio_stop_speech();
@@ -669,6 +683,7 @@ friday_ui_activation_result_t friday_backend_toggle_audio(void)
 
 bool friday_backend_begin_audio(const char *source)
 {
+    friday_ui_media_clear();
     if (!backend_ready || client == NULL ||
         !esp_websocket_client_is_connected(client)) {
         ESP_LOGW(TAG, "Activation ignored while backend is offline");

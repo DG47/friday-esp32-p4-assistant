@@ -18,6 +18,7 @@ class DeviceHub:
     def __init__(self, send_timeout: float = 3.0) -> None:
         self.connections: dict[str, list[DevicePeer]] = defaultdict(list)
         self.send_timeout = send_timeout
+        self.scene_observer = None
 
     async def connect(self, device_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -76,6 +77,18 @@ class DeviceHub:
                 self.disconnect(device_id, peer.websocket)
         await asyncio.gather(*(close(peer) for peer in list(self.connections.get(device_id, []))))
 
+    async def send_media(self,device_id,websocket,message,allowed) -> int:
+        peer=next((p for p in self.connections.get(device_id,[]) if p.websocket is websocket),None)
+        if peer is None:return 0
+        async def send():
+            async with peer.send_lock:
+                if not allowed():return 0
+                await peer.websocket.send_json(message)
+                return 1
+        try:return await asyncio.wait_for(send(),self.send_timeout)
+        except (RuntimeError,WebSocketDisconnect,OSError,TimeoutError):
+            self.disconnect(device_id,websocket);return 0
+
     async def broadcast(
         self,
         device_id: str,
@@ -83,6 +96,7 @@ class DeviceHub:
         required_capability: str | None = None,
         excluded_capability: str | None = None,
     ) -> int:
+        if self.scene_observer:self.scene_observer(device_id,message)
         async def send(peer: DevicePeer) -> int:
             try:
                 # Bound lock acquisition too: an unresponsive display must not stall
