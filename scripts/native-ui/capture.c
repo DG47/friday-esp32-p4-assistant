@@ -110,9 +110,39 @@ int main(int argc,char **argv) {
     capture_lock_regression();
 #endif
     friday_ui_set_action_callback(action);friday_ui_set_network("Connected",NULL);friday_ui_set_microphone("Ready",0,0);capture(argv[1],"ambient");
+    lv_obj_t *rootscreen=lv_screen_active();
+    for(uint32_t child=0;child<lv_obj_get_child_count(rootscreen);child++) {
+        lv_obj_t *object=lv_obj_get_child(rootscreen,child);
+        if(lv_obj_is_visible(object)&&lv_obj_has_flag(object,LV_OBJ_FLAG_CLICKABLE)) {
+            int prior=actions;lv_obj_send_event(object,LV_EVENT_LONG_PRESSED,NULL);
+            assert(actions==prior+1);lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);assert(actions==prior+1);
+        }
+    }
+    actions=0;
     const char *names[]={"listening","reasoning","speaking","attention"};
     for(int i=1;i<=4;i++){friday_ui_set_state((friday_state_t)i);capture(argv[1],names[i-1]);}
     friday_ui_set_state(FRIDAY_STATE_IDLE);
+    char browsepath[1024];snprintf(browsepath,sizeof(browsepath),"%s/../browse-fixtures.json",argv[1]);
+    FILE *browsefile=fopen(browsepath,"rb");assert(browsefile);
+    char browsejson[32768]={0};assert(fread(browsejson,1,sizeof(browsejson)-1,browsefile)>0);fclose(browsefile);
+    cJSON *browse=cJSON_Parse(browsejson);assert(browse);
+    cJSON *browsefixture=NULL;cJSON_ArrayForEach(browsefixture,browse){assert(friday_ui_set_scene(browsefixture));capture(argv[1],browsefixture->string);}
+    for(int cycle=0;cycle<20;cycle++) {
+        cJSON_ArrayForEach(browsefixture,browse){
+            assert(friday_ui_set_scene(browsefixture));lv_obj_update_layout(lv_screen_active());
+            lv_obj_t *screen=lv_screen_active();
+            for(uint32_t child=0;child<lv_obj_get_child_count(screen);child++) {
+                lv_obj_t *object=lv_obj_get_child(screen,child);
+                if(lv_obj_get_width(object)>=200&&lv_obj_is_visible(object)&&lv_obj_has_flag(object,LV_OBJ_FLAG_CLICKABLE)) {
+                    int prior=actions;lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);assert(actions==prior+1);
+                }
+            }
+        }
+        scene("{\"kind\":\"ambient\",\"title\":\"Friday\",\"subtitle\":\"Ready\"}");
+    }
+    printf("BROWSE_ROUTED actions=%d cycles=20 PASS\n",actions);
+    actions=0;
+    cJSON_Delete(browse);
     scene("{\"kind\":\"timeline\",\"title\":\"A little breathing room\",\"subtitle\":\"Your next meeting starts in 20 minutes.\",\"items\":[{\"time\":\"10:30\",\"label\":\"Design review\"},{\"time\":\"12:00\",\"label\":\"Lunch with the team\"},{\"time\":\"14:00\",\"label\":\"Project catch-up\"}],\"actions\":[{\"id\":\"dismiss\",\"label\":\"Done\"},{\"id\":\"calendar\",\"label\":\"Refresh\"}]}");capture(argv[1],"calendar");
     scene("{\"kind\":\"message\",\"title\":\"Remember 1/1\",\"subtitle\":\"I prefer a quiet workspace in the morning.\\nPlease keep everyday replies concise.\",\"actions\":[{\"id\":\"confirm:test\",\"label\":\"Remember this\"},{\"id\":\"cancel\",\"label\":\"Cancel\"}]}");capture(argv[1],"memory");
     scene("{\"kind\":\"reminder\",\"title\":\"Time for a small break\",\"subtitle\":\"Stretch, drink some water, and look outside.\",\"items\":[{\"time\":\"Now\",\"label\":\"Afternoon reset\"}],\"actions\":[{\"id\":\"complete:x\",\"label\":\"All done\"},{\"id\":\"snooze:x\",\"label\":\"Snooze\"},{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}");capture(argv[1],"reminder");
