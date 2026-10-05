@@ -31,6 +31,7 @@ static char last_media_line[2001];
 static atomic_bool microphone_unavailable;
 static atomic_uint interaction_notice_until;
 static atomic_bool interaction_notice_memory;
+static atomic_bool music_send_notice;
 
 #define FRIDAY_STATUS_BOTTOM_OFFSET -166
 #define FRIDAY_MESSAGE_TOP 570
@@ -214,7 +215,8 @@ static void recovery_notice_update(void)
 {
     int mask=(atomic_load_explicit(&microphone_unavailable,memory_order_relaxed)?1:0)|(ui.voice_notice?2:0);
     if(atomic_load(&interaction_notice_until) && (int32_t)(atomic_load(&interaction_notice_until)-lv_tick_get())>0)mask|=atomic_load(&interaction_notice_memory)?12:4;
-    if((mask&4)&&overlay.active&&overlay.protected&&strcmp(media_guard.request,overlay.request)) {
+    if((mask&4)&&atomic_load(&music_send_notice))mask|=16;
+    if((mask&4)&&!(mask&16)&&overlay.active&&overlay.protected&&strcmp(media_guard.request,overlay.request)) {
         /* A denied Music request restores the suspended owner's frame guard. */
         lv_snprintf(media_guard.request,sizeof(media_guard.request),"%s",overlay.request);
         lv_snprintf(media_guard.session,sizeof(media_guard.session),"%s",overlay.session);
@@ -223,7 +225,7 @@ static void recovery_notice_update(void)
     if(mask==ui.recovery_notice_mask)return;
     ui.recovery_notice_mask=mask;
     if(!mask){lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);return;}
-    const char *text=(mask&4)?((mask&3)?"Voice unavailable. Finish or cancel this request first.":
+    const char *text=(mask&16)?"Could not open Music. Check the connection and retry.":(mask&4)?((mask&3)?"Voice unavailable. Finish or cancel this request first.":
         atomic_load(&interaction_notice_memory)?"Finish or cancel this review to open Music.":"Finish or cancel this request to open Music."):mask==3?"Microphone and voice unavailable. Use touch controls.":
         mask==1?"Microphone unavailable. Use touch controls.":
         "Voice isn't available. You can read the response.";
@@ -233,6 +235,13 @@ static void recovery_notice_update(void)
     lv_obj_remove_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(ui.status);
 }
+static void queue_interaction_notice(bool memory,bool send_failed)
+{
+    atomic_store(&interaction_notice_memory,memory);atomic_store(&music_send_notice,send_failed);
+    atomic_store(&interaction_notice_until,lv_tick_get()+5000);
+    if(bsp_display_lock(0)){ui.recovery_notice_mask=-1;recovery_notice_update();bsp_display_unlock();}
+}
+
 bool friday_ui_handle_notice(const cJSON *packet)
 {
     const cJSON *type=cJSON_GetObjectItemCaseSensitive(packet,"type");
@@ -240,9 +249,7 @@ bool friday_ui_handle_notice(const cJSON *packet)
     if(!cJSON_IsString(type)||strcmp(type->valuestring,"error")||
        !cJSON_IsString(code)||strcmp(code->valuestring,"interaction_pending"))return false;
     const cJSON *message=cJSON_GetObjectItemCaseSensitive(packet,"message");
-    atomic_store(&interaction_notice_memory,cJSON_IsString(message)&&strstr(message->valuestring,"memory review")!=NULL);
-    atomic_store(&interaction_notice_until,lv_tick_get()+5000);
-    if(bsp_display_lock(0)){ui.recovery_notice_mask=-1;recovery_notice_update();bsp_display_unlock();}
+    queue_interaction_notice(cJSON_IsString(message)&&strstr(message->valuestring,"memory review")!=NULL,false);
     return true;
 }
 
@@ -383,7 +390,8 @@ static void scene_action_event(lv_event_t *event)
         log_ui_snapshot("dismiss");
         if (action_callback != NULL) action_callback("dismiss");
     } else if (action_callback == NULL || !action_callback(action)) {
-        set_message_text("Friday is offline. This action was not sent.");
+        if(!strcmp(action,"music")||!strncmp(action,"musicctl:",9))queue_interaction_notice(false,true);
+        else set_message_text("Friday is offline. This action was not sent.");
     }
 }
 
@@ -1056,6 +1064,19 @@ void friday_ui_media_begin(const char *request)
     friday_media_begin(&media_guard, request);
     bsp_display_unlock();
 }
+void friday_ui_media_send_failed(const char *request)
+{
+    if(!bsp_display_lock(-1))return;
+    if(request&&!strcmp(media_guard.request,request)) {
+        if(overlay.active&&overlay.protected) {
+            lv_snprintf(media_guard.request,sizeof(media_guard.request),"%s",overlay.request);
+            lv_snprintf(media_guard.session,sizeof(media_guard.session),"%s",overlay.session);
+            media_guard.sequence=overlay.sequence;
+        } else friday_ui_media_clear();
+    }
+    bsp_display_unlock();
+}
+
 void friday_ui_media_clear(void)
 {
     if(!bsp_display_lock(-1))return;

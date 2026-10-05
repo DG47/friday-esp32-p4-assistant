@@ -11,6 +11,22 @@ static uint32_t pixels[720*720];
 static uint32_t tick;
 static int actions;
 static char last_action[64];
+#ifdef FRIDAY_NATIVE_SENDER
+extern bool friday_backend_scene_action(const char *action);
+static int native_sender_result=-1,native_sender_calls;
+static bool native_sender_supersede;
+static char native_sender_request[129];
+int native_sender_send_text(const char *payload,int timeout)
+{
+    assert(timeout==250);native_sender_calls++;
+    cJSON *packet=cJSON_Parse(payload);assert(packet);
+    cJSON *request=cJSON_GetObjectItem(packet,"request_id");assert(cJSON_IsString(request));
+    snprintf(native_sender_request,sizeof(native_sender_request),"%s",request->valuestring);cJSON_Delete(packet);
+    if(native_sender_supersede)friday_ui_media_begin("sender-newer-owner");
+    return native_sender_result;
+}
+#endif
+
 /* Model a renderer holding the recursive display lock for 211 ms. No sleeps,
  * device access, or audio content: exercise the production meter call itself. */
 static int display_hold_ms, display_requested_ms, display_unlocks;
@@ -135,7 +151,7 @@ static lv_obj_t *notice_label(void)
             if(!strcmp(text,"Microphone unavailable. Use touch controls.")||
                 !strcmp(text,"Voice isn't available. You can read the response.")||
                 !strcmp(text,"Microphone and voice unavailable. Use touch controls.")||
-                strstr(text,"Finish or cancel")||strstr(text,"finish or cancel"))return object;
+                strstr(text,"Finish or cancel")||strstr(text,"finish or cancel")||strstr(text,"Could not open Music"))return object;
         }
     }
     return NULL;
@@ -206,6 +222,47 @@ static void recovery_audit(const char *directory)
     printf("RECOVERY_NOTICE_AUDIT cases=%d cycles=12 scenes=11 busy-zero-wait/pending/clear/no-overlap/no-content-loss PASS\n",checks);
 }
 static const char *field(const cJSON *o,const char *key);
+#ifdef FRIDAY_NATIVE_SENDER
+static void sender_failure_audit(const char *directory)
+{
+    friday_ui_media_clear();friday_ui_media_begin("sender-original");
+    cJSON *frame=cJSON_Parse("{\"type\":\"surface\",\"media_request_id\":\"sender-original\",\"media_session_id\":\"0123456789abcdef01234567\",\"media_sequence\":1,\"surface\":{\"kind\":\"media\",\"title\":\"Original music\"}}");assert(frame&&friday_ui_set_media(frame));
+    cJSON *binding=cJSON_Parse("{\"type\":\"surface\",\"media_overlay\":{\"state\":\"suspend\",\"media_request_id\":\"sender-original\",\"media_session_id\":\"0123456789abcdef01234567\",\"overlay_id\":\"sender-protected\",\"media_sequence\":1},\"surface\":{\"kind\":\"message\",\"actions\":[{\"id\":\"memno:ffffffffffffffffffffffff\",\"label\":\"Cancel review\"}]}}");
+    assert(binding&&friday_ui_media_prepare_overlay(binding));cJSON_Delete(binding);
+    scene("{\"kind\":\"message\",\"title\":\"Protected review\",\"subtitle\":\"Keep these protected facts unchanged.\",\"actions\":[{\"id\":\"music\",\"label\":\"Music\"},{\"id\":\"memno:ffffffffffffffffffffffff\",\"label\":\"Cancel review\"}]}");
+    uint32_t objects=lv_obj_get_child_count(lv_screen_active());
+    native_sender_result=-1;
+    for(int i=0;i<25;i++){
+        assert(!friday_backend_scene_action("music"));assert(friday_ui_media_suspended());assert(friday_ui_media_resume_request()==NULL);
+        shown("Keep these protected facts unchanged.");assert(lv_obj_get_child_count(lv_screen_active())==objects);
+        cJSON_ReplaceItemInObject(frame,"media_request_id",cJSON_CreateString(native_sender_request));assert(!friday_ui_set_media(frame));
+    }
+    /* Exercise the real touch wrapper too: failed send must not replace facts. */
+    friday_ui_set_action_callback(friday_backend_scene_action);int calls=native_sender_calls;
+    lv_obj_t *screen=lv_screen_active();
+    for(uint32_t j=0;j<lv_obj_get_child_count(screen);j++){
+        lv_obj_t *object=lv_obj_get_child(screen,j);
+        if(lv_obj_is_visible(object)&&lv_obj_check_type(object,&lv_button_class)&&visible_text(object,"Music"))lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);
+    }
+    assert(native_sender_calls==calls+1);shown("Keep these protected facts unchanged.");shown("Could not open Music");notice_geometry();
+    assert(friday_ui_media_suspended());assert(friday_ui_media_resume_request()==NULL);capture(directory,"music-failed-send-protected");
+    /* A newer staged owner during transport failure must survive old rollback. */
+    native_sender_supersede=true;calls=native_sender_calls;
+    for(uint32_t j=0;j<lv_obj_get_child_count(screen);j++){
+        lv_obj_t *object=lv_obj_get_child(screen,j);
+        if(lv_obj_is_visible(object)&&lv_obj_check_type(object,&lv_button_class)&&visible_text(object,"Music"))lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);
+    }
+    assert(native_sender_calls==calls+1);native_sender_supersede=false;
+    shown("Keep these protected facts unchanged.");
+    assert(friday_ui_media_suspended());
+    cJSON_ReplaceItemInObject(frame,"media_request_id",cJSON_CreateString("sender-newer-owner"));assert(friday_ui_set_media(frame));assert(!friday_ui_media_suspended());
+    friday_ui_media_begin("retry-original");cJSON_ReplaceItemInObject(frame,"media_request_id",cJSON_CreateString("retry-original"));assert(friday_ui_set_media(frame));
+    native_sender_result=1;assert(friday_backend_scene_action("music"));
+    cJSON_ReplaceItemInObject(frame,"media_request_id",cJSON_CreateString(native_sender_request));assert(friday_ui_set_media(frame));
+    cJSON_Delete(frame);friday_ui_set_action_callback(action);friday_ui_media_clear();
+    printf("ACTUAL_SENDER_FAILURE_AUDIT failures=27 protected-owner/facts/controls/no-objects/stale-frame-rejection/newer-owner/retry PASS\n");
+}
+#endif
 static void music_recovery_route_audit(const char *directory)
 {
     char path[1024];snprintf(path,sizeof(path),"%s/../music-recovery-fixture.json",directory);
@@ -444,6 +501,9 @@ int main(int argc,char **argv) {
     metadata_audit(argv[1]);
     recovery_audit(argv[1]);
     music_recovery_route_audit(argv[1]);
+#ifdef FRIDAY_NATIVE_SENDER
+    sender_failure_audit(argv[1]);
+#endif
     activity_copy_audit(argv[1]);
 #endif
     /* Native short sequence, synthetic labels only; no content animation. */

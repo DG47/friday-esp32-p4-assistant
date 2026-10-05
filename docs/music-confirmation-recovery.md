@@ -11,3 +11,13 @@ Validation: 313 aggregate backend tests; authenticated real-route regression cov
 No live service/configuration/credentials, playback or deployment changes. Firmware source adds the bounded notice handler and pending mutation/protection categories, with no new native animation/object/timer path. Isolated ESP32-P4 build passes using current AEC enabled/reference delay 60 ms. This is a backend recovery checkpoint for independent review, not installed behavior. Native harness uses synthetic fixtures. Four native captures are visually checked for fitted text and preserved controls; physical touch/timing still requires authorized device verification. Prior presence previews remain applicable only to the unchanged motion code.
 
 Native synthetic four-panel preview: Library `libfile_04c519dfd8308191b1552c460d7a09e9`, version 1.
+
+## Failed-send transport edge
+
+A failed Music send now rolls back only its matching staged request. A protected overlay restores its original request/session/sequence without changing the scene, facts, activity, controls or UI objects. If a newer request has superseded the failed send, rollback does nothing. The real touch wrapper reports a connection/retry notice in the existing strip rather than rewriting protected facts as an offline response; that notice never resets a newer request's guard.
+
+The native harness compiles the exact production `friday_backend_scene_action` function extracted from its source, stubbing only transport, random identity generation, tick conversion and the unused resume boundary. It exercises 25 repeated failed sends, two actual touch failures (including supersession during send), stale-frame rejection and successful retry. All 27 failures preserve the protected owner and existing controls. This does not simulate real socket backpressure or establish physical display timing.
+
+Final aggregate validation: 313 backend tests (7.337 s), six backend-to-native recovery packets, 480 browsing actions, 528 recovery cases and 27 production-sender failures pass. Host heap remains used 27144 / peak 86056 bytes. Final isolated P4 build passes, AEC enabled/reference delay 60 ms; app binary 0x1b3fa0 bytes, 79% app partition free. No flash/restart/push or live configuration changes.
+
+Synthetic failed-send native preview: Library `libfile_c0edf6e6b29c8191949488e489ac0c93`, version 0; fitted text and preserved protected facts/controls visually verified.

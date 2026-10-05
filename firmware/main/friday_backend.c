@@ -301,7 +301,7 @@ bool friday_backend_scene_action(const char *action)
     bool sent = encoded != NULL && send_text(encoded, pdMS_TO_TICKS(250)) >= 0;
     cJSON_free(encoded);
     cJSON_Delete(message);
-    if (!sent && media_action) friday_ui_media_clear();
+    if (!sent && media_action) friday_ui_media_send_failed(request_id);
     if(sent)friday_ui_media_note_action(action);
     if (sent && mutation) {
         scene_action_pending = true;
