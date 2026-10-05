@@ -29,6 +29,8 @@ static char last_media_line[2001];
 /* Capture may report a one-shot allocation/read failure while the display is
  * busy. Keep that state without waiting; the UI timer renders it when free. */
 static atomic_bool microphone_unavailable;
+static atomic_uint interaction_notice_until;
+static atomic_bool interaction_notice_memory;
 
 #define FRIDAY_STATUS_BOTTOM_OFFSET -166
 #define FRIDAY_MESSAGE_TOP 570
@@ -69,6 +71,7 @@ typedef struct {
     char card_actions[4][64];
     char button_actions[4][64];
     bool voice_notice;
+
     int recovery_notice_mask;
     bool hide_scene_summary;
     bool scene_active;
@@ -210,10 +213,18 @@ static void set_activity_message(const char *text)
 static void recovery_notice_update(void)
 {
     int mask=(atomic_load_explicit(&microphone_unavailable,memory_order_relaxed)?1:0)|(ui.voice_notice?2:0);
+    if(atomic_load(&interaction_notice_until) && (int32_t)(atomic_load(&interaction_notice_until)-lv_tick_get())>0)mask|=atomic_load(&interaction_notice_memory)?12:4;
+    if((mask&4)&&overlay.active&&overlay.protected&&strcmp(media_guard.request,overlay.request)) {
+        /* A denied Music request restores the suspended owner's frame guard. */
+        lv_snprintf(media_guard.request,sizeof(media_guard.request),"%s",overlay.request);
+        lv_snprintf(media_guard.session,sizeof(media_guard.session),"%s",overlay.session);
+        media_guard.sequence=overlay.sequence;
+    }
     if(mask==ui.recovery_notice_mask)return;
     ui.recovery_notice_mask=mask;
     if(!mask){lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);return;}
-    const char *text=mask==3?"Microphone and voice unavailable. Use touch controls.":
+    const char *text=(mask&4)?((mask&3)?"Voice unavailable. Finish or cancel this request first.":
+        atomic_load(&interaction_notice_memory)?"Finish or cancel this review to open Music.":"Finish or cancel this request to open Music."):mask==3?"Microphone and voice unavailable. Use touch controls.":
         mask==1?"Microphone unavailable. Use touch controls.":
         "Voice isn't available. You can read the response.";
     display_label(ui.status,text);
@@ -222,6 +233,19 @@ static void recovery_notice_update(void)
     lv_obj_remove_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(ui.status);
 }
+bool friday_ui_handle_notice(const cJSON *packet)
+{
+    const cJSON *type=cJSON_GetObjectItemCaseSensitive(packet,"type");
+    const cJSON *code=cJSON_GetObjectItemCaseSensitive(packet,"code");
+    if(!cJSON_IsString(type)||strcmp(type->valuestring,"error")||
+       !cJSON_IsString(code)||strcmp(code->valuestring,"interaction_pending"))return false;
+    const cJSON *message=cJSON_GetObjectItemCaseSensitive(packet,"message");
+    atomic_store(&interaction_notice_memory,cJSON_IsString(message)&&strstr(message->valuestring,"memory review")!=NULL);
+    atomic_store(&interaction_notice_until,lv_tick_get()+5000);
+    if(bsp_display_lock(0)){ui.recovery_notice_mask=-1;recovery_notice_update();bsp_display_unlock();}
+    return true;
+}
+
 static void recovery_notice_tick(lv_timer_t *timer)
 {
     (void)timer;
@@ -643,6 +667,7 @@ static void countdown_tick(lv_timer_t *timer)
 bool friday_ui_set_scene(const cJSON *surface)
 {
     if(!bsp_display_lock(1000))return false;
+    atomic_store(&interaction_notice_until,0);ui.recovery_notice_mask=-1;
     if (!friday_ui_set_surface(scene_string(surface, "kind"), scene_string(surface, "title"),
                                scene_string(surface, "subtitle"))) {bsp_display_unlock();return false;}
     const cJSON *items = cJSON_GetObjectItemCaseSensitive(surface, "items");
@@ -795,6 +820,7 @@ bool friday_ui_set_scene(const cJSON *surface)
         if(!strncmp(id,"calendar",8)||!strncmp(id,"event:",6))browse=true;
     }
     if(browse)browse_layout(surface);
+    recovery_notice_update();
     log_ui_snapshot("scene");
     bsp_display_unlock();
     return true;
@@ -1018,6 +1044,12 @@ void friday_ui_set_microphone(const char *status, int32_t peak, int32_t rms)
 void friday_ui_media_begin(const char *request)
 {
     if (!bsp_display_lock(-1)) return;
+    atomic_store(&interaction_notice_until,0);ui.recovery_notice_mask=-1;recovery_notice_update();
+    if(overlay.active&&overlay.protected) {
+        /* Stage fresh ownership without destroying the protected view. Only an
+         * authenticated frame for this fresh request may replace it. */
+        friday_media_begin(&media_guard,request);bsp_display_unlock();return;
+    }
     last_media_line[0] = '\0';
     friday_media_overlay_clear(&overlay);overlay_action_pending=false;overlay_resolution_pending=false;overlay_memory_decision_pending=false;
     lv_obj_add_flag(ui.cover_image,LV_OBJ_FLAG_HIDDEN);lv_image_cache_drop(&ui.cover_dsc);friday_artwork_clear(&ui.artwork);
@@ -1052,7 +1084,7 @@ static bool protected_surface(const cJSON *surface)
     const cJSON *actions=cJSON_GetObjectItemCaseSensitive(surface,"actions");
     for(int i=0;i<4;i++) {
         const char *a=scene_string(cJSON_GetArrayItem(actions,i),"id");
-        if(!strncmp(a,"memyes:",7)||!strncmp(a,"memno:",6)||!strncmp(a,"memreview:",10)||!strncmp(a,"confirm",7)||!strncmp(a,"decline",7))return true;
+        if(!strncmp(a,"reqcancel:",10)||!strncmp(a,"memyes:",7)||!strncmp(a,"memno:",6)||!strncmp(a,"memreview:",10)||!strncmp(a,"confirm",7)||!strncmp(a,"decline",7))return true;
     }
     return !strcmp(scene_string(surface,"kind"),"reminder");
 }
@@ -1082,7 +1114,7 @@ void friday_ui_media_overlay_resolved(void)
 void friday_ui_media_note_action(const char *action)
 {
     if(!bsp_display_lock(-1))return;
-    if(overlay.active&&action&&(!strncmp(action,"memyes:",7)||!strncmp(action,"memno:",6)||!strncmp(action,"confirm",7)||!strncmp(action,"decline",7)||!strncmp(action,"complete:",9)||!strncmp(action,"snooze:",7)||!strncmp(action,"cancel:",7))){overlay_action_pending=true;overlay_memory_decision_pending=!strncmp(action,"memyes:",7)||!strncmp(action,"memno:",6);}
+    if(overlay.active&&action&&(!strncmp(action,"reqcancel:",10)||!strncmp(action,"memyes:",7)||!strncmp(action,"memno:",6)||!strncmp(action,"confirm",7)||!strncmp(action,"decline",7)||!strncmp(action,"complete:",9)||!strncmp(action,"snooze:",7)||!strncmp(action,"cancel:",7))){overlay_action_pending=true;overlay_memory_decision_pending=!strncmp(action,"memyes:",7)||!strncmp(action,"memno:",6);}
     bsp_display_unlock();
 }
 void friday_ui_media_overlay_completed(const cJSON *root)
@@ -1101,7 +1133,7 @@ bool friday_ui_set_media(const cJSON *root)
     const cJSON *session = cJSON_GetObjectItemCaseSensitive(root,"media_session_id");
     const cJSON *sequence = cJSON_GetObjectItemCaseSensitive(root,"media_sequence");
     const cJSON *surface = cJSON_GetObjectItemCaseSensitive(root,"surface");
-    bool accepted = (!overlay.active||overlay.ready) && cJSON_IsObject(surface) && strcmp(scene_string(surface,"kind"),"media") == 0 &&
+    bool accepted = (!overlay.active||overlay.ready||(overlay.protected&&strcmp(media_guard.request,overlay.request))) && cJSON_IsObject(surface) && strcmp(scene_string(surface,"kind"),"media") == 0 &&
         cJSON_IsString(request) && cJSON_IsString(session) && cJSON_IsNumber(sequence) &&
         friday_media_accept(&media_guard,request->valuestring,session->valuestring,sequence->valuedouble);
     if (accepted) {

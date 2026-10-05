@@ -1,4 +1,4 @@
-import argparse,subprocess,sys
+import argparse,subprocess,sys,os
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--lvgl',type=Path,required=True);p.add_argument('--cjson',type=Path,required=True);p.add_argument('--before',action='store_true');p.add_argument('--baseline',default='b32b57ce0027bf20e7e73a86fa7dc4e2ff0784df');a=p.parse_args()
 r=Path(__file__).resolve().parents[2];h=r/'scripts/native-ui';out=r/'outputs/native-ui'/('before' if a.before else 'after');out.mkdir(parents=True,exist_ok=True)
@@ -6,6 +6,9 @@ if a.before:
  (out/'before_ui.c').write_bytes(subprocess.check_output(['git','show',a.baseline+':firmware/main/friday_ui.c'],cwd=r))
 subprocess.run(['python3',str(h/'generate_fixture.py')],check=True)
 subprocess.run([sys.executable,str(h/'generate_browse_fixture.py')],check=True)
+if not a.before:
+ env=os.environ.copy();env['PYTHONPATH']=str(r/'backend')+os.pathsep+str(r/'backend/tests');env['FRIDAY_RECOVERY_FIXTURE']=str(out.parent/'music-recovery-fixture.json')
+ subprocess.run([sys.executable,'-m','unittest','test_device_socket.DeviceSocketTests.test_music_restores_current_confirmation_without_consent'],cwd=r,env=env,check=True)
 sources=list((a.lvgl/'src').rglob('*.c'))
 cmd=['cc','-O2','-std=c11','-DLV_CONF_PATH="'+str(h/'lv_conf.h')+'"','-I'+str(a.lvgl),'-I'+str(h/'stubs'),'-I'+str(r/'firmware/main'),'-I'+str(a.cjson),str(h/'capture.c'),str(out/'before_ui.c' if a.before else r/'firmware/main/friday_ui.c'),str(r/'firmware/main/friday_media_overlay.c'),str(r/'firmware/main/friday_artwork.c'),str(r/'firmware/main/friday_presence.c'),str(r/'firmware/main/friday_state.c'),str(r/'firmware/main/friday_display_text.c'),str(r/'firmware/main/friday_media_guard.c'),str(a.cjson/'cJSON.c'),*[str(s) for s in sources],'-o',str(out/'capture')]
 # Current baseline supports the same ownership and capture regressions.

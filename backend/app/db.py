@@ -657,6 +657,20 @@ class ReminderStore:
             status=row["status"],
         )
 
+    def cancel_pending_confirmation(self, confirmation_id: str, device_id: str) -> bool:
+        """Cancel only this owner's current, unexpired, unclaimed request."""
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE pending_confirmations SET status = 'cancelled' "
+                    "WHERE id = ? AND device_id = ? AND status = 'pending' AND expires_at > ? "
+                    "AND id = (SELECT id FROM pending_confirmations WHERE device_id = ? "
+                    "AND status = 'pending' AND expires_at > ? ORDER BY created_at LIMIT 1)",
+                    (confirmation_id, device_id, now, device_id, now),
+                )
+        return cursor.rowcount == 1
+
     def claim_confirmation(self, confirmation_id: str, device_id: str) -> bool:
         now = datetime.now(timezone.utc).isoformat()
         with closing(self._connect()) as connection:

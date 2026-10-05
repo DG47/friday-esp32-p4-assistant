@@ -37,7 +37,7 @@ class Reminder(BaseModel):
 
 
 class SurfaceAction(BaseModel):
-    id: str = Field(max_length=64, pattern=r"^(music|musicctl:[0-9a-f]{24}|memories(?::[0-9]+)?|memory:[1-9][0-9]*(?::[0-9]+)?|memreview:[0-9a-f]{24}:[0-9]+|memforget:[1-9][0-9]*|memyes:[0-9a-f]{24}|memno:[0-9a-f]{24}|status|reminders(?::[0-9]+)?|calendar(?::[0-9]+)?|calendar_refresh|calendar_next|event:[0-9a-f]{16}|dismiss|confirm|decline|reminder:[1-9][0-9]*|snooze:[1-9][0-9]*|complete:[1-9][0-9]*|cancel:[1-9][0-9]*)$")
+    id: str = Field(max_length=64, pattern=r"^(reqcancel:[0-9a-f]{24}|music|musicctl:[0-9a-f]{24}|memories(?::[0-9]+)?|memory:[1-9][0-9]*(?::[0-9]+)?|memreview:[0-9a-f]{24}:[0-9]+|memforget:[1-9][0-9]*|memyes:[0-9a-f]{24}|memno:[0-9a-f]{24}|status|reminders(?::[0-9]+)?|calendar(?::[0-9]+)?|calendar_refresh|calendar_next|event:[0-9a-f]{16}|dismiss|confirm|decline|reminder:[1-9][0-9]*|snooze:[1-9][0-9]*|complete:[1-9][0-9]*|cancel:[1-9][0-9]*)$")
     label: str = Field(min_length=1, max_length=32)
 
 
