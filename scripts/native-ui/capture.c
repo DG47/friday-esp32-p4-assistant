@@ -56,6 +56,53 @@ static void capture(const char *dir,const char *name) {
     for(int i=0;i<720*720;i++) {uint8_t rgb[]={pixels[i]>>16,pixels[i]>>8,pixels[i]};fwrite(rgb,1,3,f);}fclose(f);
 }
 static void scene(const char *json) {cJSON *s=cJSON_Parse(json);assert(s);assert(friday_ui_set_scene(s));cJSON_Delete(s);}
+#ifndef FRIDAY_COMPARE_BASE
+static bool visible_text(lv_obj_t *object,const char *needle)
+{
+    if(!lv_obj_is_visible(object))return false;
+    if(lv_obj_check_type(object,&lv_label_class)&&strstr(lv_label_get_text(object),needle))return true;
+    for(uint32_t i=0;i<lv_obj_get_child_count(object);i++)if(visible_text(lv_obj_get_child(object,i),needle))return true;
+    return false;
+}
+static void shown(const char *text){assert(visible_text(lv_screen_active(),text));}
+static void hidden_text(const char *text){assert(!visible_text(lv_screen_active(),text));}
+static void metadata_audit(const char *directory)
+{
+    friday_ui_media_clear();
+    scene("{\"kind\":\"ambient\",\"title\":\"Friday\",\"subtitle\":\"Ready\"}");
+    friday_ui_set_network("WI-FI ONLINE","Connected at 203.0.113.10");friday_ui_set_backend("FRIDAY AUTHENTICATING");friday_ui_set_microphone("MICS ONLINE",9,9);
+    hidden_text("203.0.113.10");hidden_text("AUTHENTICATING");hidden_text("MICS ONLINE");capture(directory,"audit-ambient");
+    friday_ui_set_tool("get_calendar","working");hidden_text("get_calendar");shown("One moment");capture(directory,"audit-tool");
+    scene("{\"kind\":\"message\",\"title\":\"Remember 1/1\",\"subtitle\":\"My note about provider codes and metadata is user content.\",\"actions\":[{\"id\":\"confirm:test\",\"label\":\"Remember this\"},{\"id\":\"cancel\",\"label\":\"Cancel\"}]}");
+    shown("My note about provider codes and metadata is user content.");friday_ui_set_tool("get_calendar","complete");
+    friday_ui_set_network("WI-FI SETUP","Join Demo-Setup and open 192.0.2.1.");hidden_text("Demo-Setup");shown("My note about provider codes and metadata is user content.");capture(directory,"audit-confirmation");
+    scene("{\"kind\":\"message\",\"title\":\"Memory #42 1/1\",\"subtitle\":\"Keep mornings free for focused work.\",\"items\":[{\"time\":\"Source\",\"label\":\"Explicit user request\"},{\"time\":\"Created\",\"label\":\"2026-10-01T12:00:00\"},{\"time\":\"Updated\",\"label\":\"2026-10-02T12:00:00\"},{\"time\":\"Edit\",\"label\":\"update memory #42: new text\"}],\"actions\":[{\"id\":\"memforget:42\",\"label\":\"Forget\"},{\"id\":\"memories\",\"label\":\"Back\"}]}");
+    hidden_text("#42");hidden_text("Explicit user request");hidden_text("2026-10");shown("Keep mornings free for focused work.");shown("Memory 1/1");capture(directory,"audit-memory-detail");
+    scene("{\"kind\":\"list\",\"title\":\"What Friday remembers\",\"subtitle\":\"Local only; extraction disabled\",\"items\":[{\"time\":\"#42\",\"label\":\"Keep mornings free for focused work.\",\"action\":\"memory:42\"}],\"actions\":[{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}");
+    hidden_text("#42");hidden_text("Local only");shown("Keep mornings free for focused work.");capture(directory,"audit-memory-list");
+    scene("{\"kind\":\"list\",\"title\":\"Your reminders\",\"subtitle\":\"1 active; page 1\",\"items\":[{\"time\":\"15:30\",\"label\":\"#12 Stretch\",\"action\":\"reminder:12\"}],\"actions\":[{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}");
+    hidden_text("#12");hidden_text("page 1");shown("Stretch");shown("15:30");capture(directory,"audit-reminders");
+    scene("{\"kind\":\"reminder\",\"title\":\"Reminder #12\",\"subtitle\":\"Stretch\",\"items\":[{\"time\":\"Due\",\"label\":\"15:30\"}],\"actions\":[{\"id\":\"complete:12\",\"label\":\"Complete\"},{\"id\":\"snooze:12\",\"label\":\"Snooze\"}]}");
+    hidden_text("#12");shown("Stretch");shown("15:30");capture(directory,"audit-reminder");
+    scene("{\"kind\":\"timeline\",\"title\":\"Today\",\"subtitle\":\"Thursday, October 1\\nGoogle Calendar; read only; 1 event; America/New_York\",\"items\":[{\"time\":\"09:00\",\"label\":\"Synthetic planning\",\"action\":\"event:fixture\"}],\"actions\":[{\"id\":\"calendar_refresh\",\"label\":\"Refresh\"},{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}");
+    friday_ui_set_response("Google Calendar SOURCE_SENTINEL; read only; America/New_York");hidden_text("SOURCE_SENTINEL");hidden_text("Google Calendar");hidden_text("America/New_York");shown("09:00");shown("Synthetic planning");capture(directory,"audit-calendar");
+    scene("{\"kind\":\"timeline\",\"title\":\"Today\",\"subtitle\":\"Thursday, October 1\\nGoogle Calendar; No events today\",\"actions\":[{\"id\":\"calendar_refresh\",\"label\":\"Refresh\"},{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}");
+    hidden_text("Google Calendar");shown("No events today.");capture(directory,"audit-calendar-empty");
+    scene("{\"kind\":\"timeline\",\"title\":\"Today\",\"subtitle\":\"Cached calendar; stale\",\"items\":[{\"time\":\"09:00\",\"label\":\"Synthetic planning\"}],\"actions\":[{\"id\":\"calendar_refresh\",\"label\":\"Refresh\"}]}");
+    hidden_text("Cached calendar");shown("Refresh to see the latest events.");
+    scene("{\"kind\":\"media\",\"title\":\"Synthetic song\",\"subtitle\":\"A complete synthetic lyric line\",\"items\":[{\"time\":\"Artist\",\"label\":\"Synthetic artist\"},{\"time\":\"Progress\",\"label\":\"1:24 / 3:42\"},{\"time\":\"Source\",\"label\":\"LRCLIB record 999; metadata matched; rights unverified\"},{\"time\":\"State\",\"label\":\"Stale; controls hidden\"}],\"actions\":[{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}");
+    shown("Synthetic artist");shown("A complete synthetic lyric line");shown("1:24 / 3:42");shown("LRCLIB");shown("rights unverified");hidden_text("record 999");hidden_text("metadata matched");hidden_text("controls hidden");hidden_text("CURRENT LINE");capture(directory,"audit-music-credit");
+    scene("{\"kind\":\"metric\",\"title\":\"22 C\",\"subtitle\":\"A warm afternoon\",\"items\":[{\"time\":\"50%\",\"label\":\"Humidity\"},{\"time\":\"12 km/h\",\"label\":\"Wind\"},{\"time\":\"2026-10-01T12:00:00\",\"label\":\"Open-Meteo · UTC\"}],\"actions\":[{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}");
+    shown("Humidity");shown("Wind");shown("Weather: Open-Meteo");hidden_text("UTC");hidden_text("2026-10-01T12:00:00");capture(directory,"audit-weather");
+    const char *kinds[]={"comparison","person","email","map","progress","graph","camera","artifact","timer"};
+    for(unsigned i=0;i<sizeof(kinds)/sizeof(kinds[0]);i++){friday_ui_set_surface(kinds[i],"User content","My note about provider codes and metadata is user content.");shown("My note about provider codes and metadata is user content.");hidden_text(kinds[i]);}
+    friday_ui_set_surface("ERROR","Friday","Expected a JSON object; request_id=TRACE_SENTINEL");hidden_text("JSON");hidden_text("request_id");hidden_text("TRACE_SENTINEL");shown("Please try again.");capture(directory,"audit-error");
+    friday_ui_set_backend("VOICE UNAVAILABLE — TEXT READY");friday_ui_set_state(FRIDAY_STATE_IDLE);shown("Voice isn't available");hidden_text("TEXT READY");capture(directory,"audit-voice-error");friday_ui_set_state(FRIDAY_STATE_SPEAKING);
+    friday_ui_set_surface("PAIRING","Friday","Pairing code: ABCD-EFGH");shown("ABCD-EFGH");capture(directory,"audit-pairing");
+    friday_ui_set_surface("ambient","Friday","Ready");friday_ui_set_network("WI-FI SETUP","Join Demo-Setup and open 192.0.2.1.");shown("Demo-Setup");shown("192.0.2.1");capture(directory,"audit-setup");
+    puts("ALL_SCREEN_METADATA_AUDIT generated diagnostics hidden, user content/credits/errors/protected text retained: PASS");
+}
+#endif
 #ifndef FRIDAY_BASELINE
 static bool artwork_visible(void)
 {
@@ -228,6 +275,9 @@ int main(int argc,char **argv) {
     capture(argv[1],"reentry");
 #ifndef FRIDAY_BASELINE
     backend_replay(argv[1]);
+#endif
+#ifndef FRIDAY_COMPARE_BASE
+    metadata_audit(argv[1]);
 #endif
     lv_mem_monitor_t m;lv_mem_monitor(&m);printf("HOST_HEAP used=%zu max=%zu\n",m.total_size-m.free_size,m.max_used);return 0;
 }

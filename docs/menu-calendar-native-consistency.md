@@ -29,3 +29,30 @@ Actual backend publisher/ownership/cover conversion generated 44 operations, rep
 Production patch scope is firmware/main/friday_ui.c plus the presentation-only date line in backend/app/tools/google_calendar.py. Other changes are regression fixtures/tests/docs. No live install, flash, restart, push, provider/security/settings change occurred. Applying this revision eventually requires both source changes; do not overwrite CA, sdkconfig, .env, data or user outputs.
 
 Host captures prove native rendering and routing with ESP/BSP/transport stubs, not physical calibration or device animation/DMA/PSRAM performance. The synthetic callback accepts actions without live providers; backend tests separately cover privacy/action semantics. Physical testing requires separate approval.
+
+
+## Current refinement: no technical metadata on native screens
+
+The user requested no on-screen technical metadata and asked Codex to resolve the visual imbalance without a reference. This revision supersedes fc72d378's appearance; it still requires visual acceptance. Visual critique identified competing tile colors, an unexplained bright Calendar destination/first-event emphasis, redundant promotional captions, inconsistent control radii and pipe-like agenda separators. Tiles now share one quiet neutral surface and consistent line icons; the heading is short; captions/footer disappear. Browsing controls use the same 20px corner language as Music. Event titles are 32px with quiet 18px times, no ornamental markers or implied next-event selection. Details use quieter 18px field labels and 24px content. Empty-state icon/text form one group. Full title scrolling completes on a 9-second cycle within the scene lifetime.
+
+| Native screen/path | Removed from display | Preserved |
+|---|---|---|
+| Ambient/listening/thinking/speaking/attention | Network/authentication/connection, microphone status, duplicate state labels, peak/RMS | Expressive ribbon and response/user instructions |
+| Local launcher | Provider/runtime/status facts/footer, promotional captions | Four exact routed destinations |
+| Calendar agenda/pages/details | Service/read-only/cache/zone/event-count implementation line | Today/date in configured zone, event names/times/dates/location/recurrence, navigation |
+| Calendar stale/empty/loading/auth/error | Cached/provider diagnostics | Plain refresh/connect instructions and honest empty/loading states |
+| Music and ownership transitions | Runtime/control/source-device details, record IDs/matching labels, default CURRENT LINE label, cover-load diagnostics, synthetic QA attribution | Artwork, title, artist, complete lyrics, elapsed/duration, controls, swipe hint, required real source/rights credits |
+| Memory list/detail | Internal IDs, source/create/update/edit provenance rows and extraction implementation copy | Saved text, routed review/forget actions and complete pagination |
+| Memory/protected confirmations | No safety content removed | Exact full review text, 620x76/Montserrat24/tracking2 geometry and page progress; Wi-Fi/tool completion cannot overwrite it |
+| Reminders/list/timer | Internal reminder IDs/page summaries | User reminder text, due dates/times, timer, complete/snooze/cancel/dismiss |
+| Weather/metric | Provider/network/runtime/transport rows and UTC diagnostic timestamp | Weather measurements and necessary Open-Meteo credit |
+| Tool activity and generic comparison/person/email/map/progress/graph/camera/artifact | Tool names/status codes and raw renderer-kind headings | User content, calm progress and actionable failure copy |
+| Error/voice/pairing/setup | Raw transport/JSON/request/capability/error internals and routine IP connection detail | Plain retry/reconnect instructions, voice fallback notice, pairing code and setup instructions when needed |
+
+The policy is applied by semantic scene/field origin, not blanket word filtering: arbitrary saved/user text containing words such as provider, codes or metadata is preserved. All-scene rendering is protected by one outer recursive display lock so generated metadata cannot appear in an intermediate frame. Hidden summaries cannot be reintroduced by a later assistant.text update. New generated objects reset/hide across scene transitions, while essential content becomes visible again.
+
+Necessary exceptions: Spotify and lyrics-source credits/rights notice, Open-Meteo attribution, confirmation/pagination safety text, actionable stale/error messages, pairing codes and Wi-Fi setup name/address instructions. Routine connected IP/SSID/credential/debug state stays hidden. Diagnostics remain in existing privacy-safe logs; no raw content logging was added. No real Calendar content entered previews.
+
+Final verification: 308 backend tests, ten localhost scenarios, all-screen positive/negative native visibility audit, 480 routed actions/20 repeated browsing cycles, existing 50 cancellation cycles, 44 actual backend/native ownership operations, busy meter lock, glyph/error/media/overlay/artwork/sanitized echo/transport regressions and exhaustive memory geometry all PASS. Native audit deliberately injects provider/record/IP/ID/JSON/request sentinels and verifies they are absent while user content, lyrics, dates/times, credits, actionable errors and protected facts stay visible. Standard and protected confirmation fixture pixels remain byte-identical to b32b57c. Music changes are display-copy visibility only; approved artwork/lyrics/control geometry is preserved.
+
+Final ESP32-P4 build PASS: app 0x1b3610 bytes, 79% free application space. LVGL settled heap 26552 bytes, peak 85520 bytes; retained artwork buffer unchanged. Python syntax/whitespace checks PASS. Original checkout/private CA/sdkconfig remain preserved; no install, restart, flash, push or provider/security/settings change. Physical touch calibration, device animation/DMA/PSRAM and live transport behavior remain separately unverified.

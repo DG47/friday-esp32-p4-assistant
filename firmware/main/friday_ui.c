@@ -64,6 +64,8 @@ typedef struct {
     int browse_mode; /* 0 standard/protected, 1 launcher, 2 agenda */
     char card_actions[4][64];
     char button_actions[4][64];
+    bool voice_notice;
+    bool hide_scene_summary;
     bool scene_active;
     char scene_kind[24];
     unsigned long scene_generation;
@@ -145,19 +147,56 @@ static void layout_lyric(bool reset_position)
     lv_obj_set_scrollbar_mode(ui.message,LV_SCROLLBAR_MODE_AUTO);
     if(size.y>100)lv_obj_add_flag(ui.message,LV_OBJ_FLAG_SCROLLABLE);
     else lv_obj_remove_flag(ui.message,LV_OBJ_FLAG_SCROLLABLE);
-    display_label(ui.lyric_caption,size.y>100?"CURRENT LINE - swipe for more":"CURRENT LINE");
+    display_label(ui.lyric_caption,"Swipe for more");
+    lv_obj_set_style_text_letter_space(ui.lyric_caption,0,0);
+    if(size.y>100)lv_obj_remove_flag(ui.lyric_caption,LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(ui.lyric_caption,LV_OBJ_FLAG_HIDDEN);
     if(reset_position)lv_obj_scroll_to_y(ui.message,0,LV_ANIM_OFF);
 }
 
+/* Only generated UI copy is simplified. Arbitrary user/confirmation content
+ * is never scanned for words such as provider, source, IDs or metadata. */
+static const char *human_message(const char *text)
+{
+    if(!text)return "";
+    const struct {const char *technical;const char *human;} copy[]={
+        {"Playback clock stale; lyrics hidden.","Refresh Music to see the latest playback."},
+        {"Recording metadata incomplete; lyrics hidden.","Lyrics aren't available for this song."},
+        {"Recording mismatch; lyrics hidden.","Lyrics aren't available for this song."},
+        {"Invalid lyric timing; text hidden.","Lyrics aren't available for this song."},
+        {"Timed lyrics disabled.","Lyrics aren't available right now."},
+        {"Timed lyrics unavailable.","Lyrics aren't available right now."},
+        {"Lyrics rate limited.","Please try again shortly."},
+        {"Lyrics retry is waiting.","Please try again shortly."},
+        {"Timed view requires a client update.","Update Friday to use Music."},
+        {"Requires separately approved deployment.","Memory isn't available yet."},
+        {"Local touch controls work while voice is unavailable.","Touch controls work while voice is unavailable."},
+        {"I did not hear a clear request. Tap the orb to retry, or use local controls.","I didn't hear a clear request. Touch the light to retry, or open a view."},
+        {"remember: text · update memory #ID: text · forget memory #ID","Say ‘remember’ followed by what you’d like to save. Open Memory to review or forget it."},
+        {"I found multiple matches. Say the reminder number you mean.","I found multiple reminders. Say which reminder you mean."},
+        {"I can handle the calendar and reminders in mock mode. The broader intellect arrives when you add the API keys.","Ask me about your calendar or reminders."},
+    };
+    for(unsigned i=0;i<sizeof(copy)/sizeof(copy[0]);i++)if(!strcmp(text,copy[i].technical))return copy[i].human;
+    return text;
+}
+static const char *human_error(const char *text)
+{
+    if(text&&(strstr(text,"authenticated hello")||strstr(text,"Send hello")||strstr(text,"token")))return "Reconnect Friday to continue.";
+    if(text&&(strstr(text,"Action is unavailable")||strstr(text,"refresh the scene")))return "That action is no longer available. Open the view again.";
+    if(text&&strstr(text,"Result acknowledgement"))return "Please open that request again.";
+    if(text&&strstr(text,"silence"))return "I didn't hear a request. Please try again.";
+    return "Friday couldn't complete that request. Please try again.";
+}
 static void set_message_text(const char *text)
 {
-    display_label(ui.message, text);
+    display_label(ui.message, human_message(text));
     position_message();
 }
 
 static void apply_state(friday_state_t state)
 {
     friday_state_set(state);
+    if(state==FRIDAY_STATE_SPEAKING)ui.voice_notice=false;
     if(overlay.active&&ui.scene_active&&!strcmp(ui.scene_kind,"media")&&
        (state==FRIDAY_STATE_LISTENING||state==FRIDAY_STATE_THINKING||state==FRIDAY_STATE_SPEAKING)) {
         for(int i=0;i<4;i++){lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);}
@@ -167,7 +206,13 @@ static void apply_state(friday_state_t state)
     const char *states[] = {"Here when you need me", "Listening carefully", "Connecting the dots", "Speaking", "Something needs your attention"};
     const char *headings[] = {"A little more space\nfor your day.", "I'm listening.", "Let me connect\nthe dots.", "Here's what I found.", "A moment of\nyour attention."};
     int index=state>=FRIDAY_STATE_IDLE&&state<=FRIDAY_STATE_ALERT?state:FRIDAY_STATE_IDLE;
-    display_label(ui.status, states[index]);
+    (void)states;
+    if(ui.voice_notice) {
+        display_label(ui.status,"Voice isn't available. You can read the response.");
+        lv_obj_set_size(ui.status,624,24);lv_obj_align(ui.status,LV_ALIGN_TOP_LEFT,48,666);
+        lv_obj_remove_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
+        if(ui.scene_active&&!strcmp(ui.scene_kind,"media"))lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,694);
+    } else lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
     if (!ui.scene_active) {
         display_label(ui.title, headings[index]);
         if (state==FRIDAY_STATE_LISTENING) set_message_text("Go ahead. I'll keep up.");
@@ -288,7 +333,9 @@ static void scene_action_event(lv_event_t *event)
 static void scene_layout(bool active)
 {
     ui.scene_active=active;
+    lv_obj_remove_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
     ui.browse_mode=0;
+    ui.hide_scene_summary=false;
     lv_obj_add_flag(ui.browse_date,LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.browse_meta,LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_size(ui.fact_panel,656,104);lv_obj_align(ui.fact_panel,LV_ALIGN_TOP_LEFT,32,138);
@@ -321,9 +368,9 @@ static void scene_layout(bool active)
         lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     } else {
-        lv_obj_remove_flag(ui.microphone,LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(ui.network,LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.microphone,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.network,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     }
     for(int i=0;i<4;i++) {
@@ -332,6 +379,7 @@ static void scene_layout(bool active)
         lv_obj_set_style_bg_color(ui.cards[i],color_hex(UI_CARD),0);
         lv_obj_set_style_radius(ui.cards[i],20,0);
         lv_obj_set_style_border_width(ui.cards[i],0,0);
+        lv_obj_set_style_anim_duration(ui.card_labels[i],0,0);
         lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_DOTS);
         lv_label_set_long_mode(ui.card_times[i],LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_18,0);
@@ -380,17 +428,17 @@ static void launcher_icon(lv_event_t *event)
     const char *action=lv_event_get_user_data(event);lv_obj_t *object=lv_event_get_target(event);
     lv_area_t area;lv_obj_get_coords(object,&area);int x=area.x1,y=area.y1;
     lv_layer_t *layer=lv_event_get_layer(event);
-    uint32_t color=!strcmp(action,"calendar")?0x434D54:0xB8C6E8;
+    uint32_t color=0xB8C6D8;
     if(!strcmp(action,"calendar")) {
         icon_box(layer,x+3,y+8,36,32,7,color,false);
         icon_line(layer,x,y,3,18,38,18,color);icon_line(layer,x,y,12,3,12,12,color);icon_line(layer,x,y,30,3,30,12,color);
         icon_box(layer,x+11,y+25,5,5,2,color,true);icon_box(layer,x+25,y+25,5,5,2,color,true);
     } else if(!strcmp(action,"music")) {
         icon_line(layer,x,y,17,33,17,8,color);icon_line(layer,x,y,17,8,34,4,color);
-        icon_line(layer,x,y,34,4,34,29,color);icon_box(layer,x+6,y+30,12,8,4,color,true);icon_box(layer,x+23,y+26,12,8,4,color,true);
+        icon_line(layer,x,y,34,4,34,29,color);icon_box(layer,x+6,y+30,12,8,4,color,false);icon_box(layer,x+23,y+26,12,8,4,color,false);
     } else if(!strcmp(action,"reminders")) {
-        icon_line(layer,x,y,9,29,12,12,color);icon_line(layer,x,y,12,12,21,7,color);
-        icon_line(layer,x,y,21,7,30,12,color);icon_line(layer,x,y,30,12,33,29,color);
+        const int points[][2]={{9,29},{11,25},{12,15},{14,11},{18,8},{24,8},{28,11},{30,15},{31,25},{33,29}};
+        for(unsigned i=1;i<sizeof(points)/sizeof(points[0]);i++)icon_line(layer,x,y,points[i-1][0],points[i-1][1],points[i][0],points[i][1],color);
         icon_line(layer,x,y,7,31,35,31,color);icon_line(layer,x,y,18,37,24,37,color);
     } else {
         icon_box(layer,x+10,y+4,29,30,6,color,false);icon_box(layer,x+3,y+11,29,30,6,color,false);
@@ -413,7 +461,7 @@ static void agenda_mark(lv_event_t *event)
     if(ui.browse_mode!=2)return;
     lv_obj_t *object=lv_event_get_target(event);lv_area_t area;lv_obj_get_coords(object,&area);
     lv_layer_t *layer=lv_event_get_layer(event);
-    icon_box(layer,area.x1+110,area.y1+21,3,36,1,0x505B69,true);
+    (void)layer;(void)area; /* Alignment and spacing carry the agenda; no ornamental separators. */
 }
 
 /* One browsing component system: launcher, editorial agenda and empty states.
@@ -432,35 +480,29 @@ static void browse_layout(const cJSON *surface)
     lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_LEFT,0);
     lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     if(launcher) {
-        display_label(ui.message,"A little space for the things that matter.");
+        display_label(ui.title,"Your day");
+        lv_obj_add_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
+        ui.hide_scene_summary=true;
         ui.browse_message_y=158;ui.browse_message_height=48;position_message();
         const char *hints[]={"Saved with care","Small things, remembered","Your day at a glance","Pick up the rhythm"};
-        const uint32_t backgrounds[]={0x232631,0x1C2B29,0xDEDCD5,0x202936};
-        char status[1024]={0};size_t used=0;
-        const cJSON *items=cJSON_GetObjectItemCaseSensitive(surface,"items");
+        const uint32_t backgrounds[]={UI_CARD,UI_CARD,UI_CARD,UI_CARD};
         for(int i=0;i<4;i++) {
-            const cJSON *item=cJSON_GetArrayItem(items,i);
-            if(cJSON_IsObject(item)&&used<sizeof(status)-1) {
-                int n=snprintf(status+used,sizeof(status)-used,"%s%s: %s",used?"  /  ":"",scene_string(item,"label"),scene_string(item,"time"));
-                if(n>0)used+=(size_t)n<sizeof(status)-used?(size_t)n:sizeof(status)-used-1;
-            }
             lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_size(ui.buttons[i],300,184);lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+(i%2)*324,230+(i/2)*208);
-            lv_obj_set_style_radius(ui.buttons[i],28,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
+            lv_obj_set_size(ui.buttons[i],300,172);lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+(i%2)*324,236+(i/2)*196);
+            lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
             lv_obj_set_style_bg_color(ui.buttons[i],color_hex(backgrounds[i]),0);
-            lv_obj_set_size(ui.button_labels[i],252,42);lv_obj_align(ui.button_labels[i],LV_ALIGN_TOP_LEFT,24,94);
+            lv_obj_set_size(ui.button_labels[i],252,42);lv_obj_align(ui.button_labels[i],LV_ALIGN_TOP_LEFT,24,112);
             lv_obj_set_style_text_align(ui.button_labels[i],LV_TEXT_ALIGN_LEFT,0);
             lv_obj_set_style_text_font(ui.button_labels[i],&lv_font_montserrat_32,0);
-            lv_obj_set_style_text_color(ui.button_labels[i],color_hex(i==2?0x202932:UI_TEXT),0);
+            lv_obj_set_style_text_color(ui.button_labels[i],color_hex(UI_TEXT),0);
             lv_obj_set_style_text_color(ui.browse_hints[i],color_hex(i==2?0x5E666B:0xABB5BE),0);
             display_label(ui.browse_hints[i],hints[i]);
-            lv_obj_remove_flag(ui.browse_icons[i],LV_OBJ_FLAG_HIDDEN);lv_obj_remove_flag(ui.browse_hints[i],LV_OBJ_FLAG_HIDDEN);
+            lv_obj_remove_flag(ui.browse_icons[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(ui.browse_hints[i],LV_OBJ_FLAG_HIDDEN);
         }
-        display_label(ui.browse_meta,status);lv_obj_set_size(ui.browse_meta,624,28);
-        lv_obj_align(ui.browse_meta,LV_ALIGN_TOP_LEFT,48,660);lv_label_set_long_mode(ui.browse_meta,LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-        lv_obj_remove_flag(ui.browse_meta,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.browse_meta,LV_OBJ_FLAG_HIDDEN);
         return;
     }
+    ui.hide_scene_summary=true;
     const char *subtitle=scene_string(surface,"subtitle");const char *split=strchr(subtitle,'\n');
     if(split) {
         char date[128];size_t length=(size_t)(split-subtitle);if(length>=sizeof(date))length=sizeof(date)-1;
@@ -468,15 +510,26 @@ static void browse_layout(const cJSON *surface)
         lv_obj_remove_flag(ui.browse_date,LV_OBJ_FLAG_HIDDEN);
         display_label(ui.message,split+1);
     }
+    bool detail=!strcmp(scene_string(surface,"kind"),"artifact");
     int rows=0,buttons=0;
     for(int i=0;i<4;i++){if(!lv_obj_has_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN))rows++;if(!lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))buttons++;}
+    bool stale=strstr(subtitle,"Cached calendar")||strstr(subtitle,"Cached event");
+    const char *heading=scene_string(surface,"title");
+    if(!strcmp(heading,"Calendar access revoked")||!strcmp(heading,"Calendar not connected"))display_label(ui.message,"Connect Calendar on the Mac to continue.");
+    else if(!strcmp(heading,"Calendar unavailable"))display_label(ui.message,"Refresh Calendar and try again.");
+    if(stale)display_label(ui.message,"Refresh to see the latest events.");
+    else if(rows) {
+        ui.hide_scene_summary=true;lv_obj_add_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
+    } else if(strstr(subtitle,"No events today"))display_label(ui.message,"No events today.");
+    else if(strstr(subtitle,"No events retrieved"))display_label(ui.message,"No events found. Refresh to try again.");
     lv_obj_set_style_text_font(ui.message,rows?&lv_font_montserrat_18:&lv_font_montserrat_24,0);
     lv_obj_set_style_text_color(ui.message,color_hex(0x9EA8B5),0);
-    ui.browse_message_height=rows?52:216;
-    ui.browse_message_y=rows?(split?190:158):238;position_message();
+    ui.browse_message_height=rows?52:144;
+    ui.browse_message_y=rows?(split?190:158):386;position_message();
     lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_WRAP);
     if(!rows) {
-        lv_obj_set_size(ui.fact_panel,112,112);lv_obj_align(ui.fact_panel,LV_ALIGN_TOP_LEFT,304,414);
+        lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_CENTER,0);
+        lv_obj_set_size(ui.fact_panel,112,112);lv_obj_align(ui.fact_panel,LV_ALIGN_TOP_LEFT,304,250);
         lv_obj_set_style_radius(ui.fact_panel,36,0);lv_obj_set_style_bg_color(ui.fact_panel,color_hex(0x1B242C),0);
         lv_obj_remove_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     }
@@ -484,19 +537,21 @@ static void browse_layout(const cJSON *surface)
         lv_obj_set_size(ui.cards[i],624,78);lv_obj_align(ui.cards[i],LV_ALIGN_TOP_LEFT,48,254+i*84);
         lv_obj_set_style_radius(ui.cards[i],24,0);lv_obj_set_style_border_width(ui.cards[i],0,0);
         lv_obj_set_style_bg_color(ui.cards[i],color_hex(0x1B242C),0);
-        lv_obj_set_style_bg_opa(ui.cards[i],i==0?LV_OPA_COVER:LV_OPA_TRANSP,0);
-        lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_24,0);
-        lv_obj_set_style_text_color(ui.card_times[i],color_hex(i==0?0xC1CAEF:0x98A4B2),0);
-        lv_obj_set_size(ui.card_times[i],88,56);lv_obj_align(ui.card_times[i],LV_ALIGN_LEFT_MID,14,0);
+        lv_obj_set_style_bg_opa(ui.cards[i],LV_OPA_TRANSP,0);
+        lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_18,0);
+        lv_obj_set_style_text_color(ui.card_times[i],color_hex(0x98A4B2),0);
+        lv_obj_set_size(ui.card_times[i],88,28);lv_obj_align(ui.card_times[i],LV_ALIGN_LEFT_MID,14,0);
         lv_label_set_long_mode(ui.card_times[i],LV_LABEL_LONG_MODE_WRAP);
-        lv_obj_set_size(ui.card_labels[i],474,58);lv_obj_align(ui.card_labels[i],LV_ALIGN_LEFT_MID,134,0);
+        lv_obj_set_style_text_font(ui.card_labels[i],detail?&lv_font_montserrat_24:&lv_font_montserrat_32,0);
+        lv_obj_set_size(ui.card_labels[i],474,detail?38:48);
+        lv_obj_set_style_anim_duration(ui.card_labels[i],9000,0);lv_obj_align(ui.card_labels[i],LV_ALIGN_LEFT_MID,134,0);
         lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     }
     int visible=0,width=buttons?(624-(buttons-1)*16)/buttons:624;
     for(int i=0;i<4;i++) {
         if(lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))continue;
         lv_obj_set_size(ui.buttons[i],width,64);lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+visible*(width+16),626);visible++;
-        lv_obj_set_style_radius(ui.buttons[i],32,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
+        lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
         bool primary=visible==1&&strcmp(ui.button_actions[i],"dismiss");
         lv_obj_set_style_bg_color(ui.buttons[i],color_hex(primary?UI_PRIMARY:UI_CONTROL),0);
         lv_obj_set_style_text_color(ui.button_labels[i],color_hex(primary?UI_PRIMARY_TEXT:UI_TEXT),0);
@@ -556,11 +611,9 @@ static void countdown_tick(lv_timer_t *timer)
 
 bool friday_ui_set_scene(const cJSON *surface)
 {
+    if(!bsp_display_lock(1000))return false;
     if (!friday_ui_set_surface(scene_string(surface, "kind"), scene_string(surface, "title"),
-                               scene_string(surface, "subtitle"))) return false;
-    if (!bsp_display_lock(1000)) {
-        return false;
-    }
+                               scene_string(surface, "subtitle"))) {bsp_display_unlock();return false;}
     const cJSON *items = cJSON_GetObjectItemCaseSensitive(surface, "items");
     const cJSON *actions = cJSON_GetObjectItemCaseSensitive(surface, "actions");
     for (int i = 0; i < 4; i++) {
@@ -572,8 +625,17 @@ bool friday_ui_set_scene(const cJSON *surface)
             char time[64], label[240], text[308];
             friday_display_text(time, sizeof(time), scene_string(item, "time"), supports_glyph, (void *)&lv_font_montserrat_24);
             friday_display_text(label, sizeof(label), scene_string(item, "label"), supports_glyph, (void *)&lv_font_montserrat_24);
-            lv_snprintf(text, sizeof(text), "%s", label);
-            display_label(ui.card_times[i], time);
+            const char *content=!strcmp(time,"Series")&&!strcmp(label,"Recurring event instance")?"Recurring event":label;
+            const char *item_action=scene_string(item,"action");
+            if((!strncmp(item_action,"reminder:",9)||(!strcmp(scene_string(surface,"kind"),"reminder")&&!strcmp(scene_string(surface,"title"),"Reminders")))&&label[0]=='#') {
+                const char *after=label+1;while(*after>='0'&&*after<='9')after++;
+                if(*after==' ')content=after+1;
+            }
+            lv_snprintf(text, sizeof(text), "%s", content);
+            if(!strncmp(item_action,"memory:",7)) {
+                display_label(ui.card_times[i],"");
+                lv_obj_set_size(ui.card_labels[i],584,38);lv_obj_align(ui.card_labels[i],LV_ALIGN_LEFT_MID,20,0);
+            } else display_label(ui.card_times[i], time);
             lv_obj_set_style_text_font(ui.card_labels[i], &lv_font_montserrat_24, 0);
             display_label(ui.card_labels[i], text);
             lv_snprintf(ui.card_actions[i], sizeof(ui.card_actions[i]), "%s", scene_string(item, "action"));
@@ -591,6 +653,7 @@ bool friday_ui_set_scene(const cJSON *surface)
                 else if (strcmp(button_text, "Pause") == 0) button_text = LV_SYMBOL_PAUSE "  Pause";
                 else if (strcmp(button_text, "Resume") == 0) button_text = LV_SYMBOL_PLAY "  Resume";
             }
+            if(!strcmp(button_text,"Local status")&&!strcmp(scene_string(action,"id"),"status"))button_text="Open views";
             display_label(ui.button_labels[i], button_text);
             lv_snprintf(ui.button_actions[i], sizeof(ui.button_actions[i]), "%s", scene_string(action, "id"));
             if (ui.button_actions[i][0]&&!(overlay.active&&overlay.protected&&!strcmp(ui.button_actions[i],"dismiss"))) lv_obj_remove_state(ui.buttons[i], LV_STATE_DISABLED);
@@ -609,7 +672,7 @@ bool friday_ui_set_scene(const cJSON *surface)
         lv_obj_set_style_text_font(ui.message,&lv_font_montserrat_32,0);
         lv_obj_set_style_text_letter_space(ui.message,0,0);
         lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_LEFT,0);
-        if(!owned_media_render||strcmp(scene_string(surface,"subtitle"),last_media_line))display_label(ui.message,scene_string(surface,"subtitle"));
+        if(!owned_media_render||strcmp(scene_string(surface,"subtitle"),last_media_line))display_label(ui.message,human_message(scene_string(surface,"subtitle")));
         lv_obj_set_size(ui.message,624,100);lv_obj_align(ui.message,LV_ALIGN_TOP_LEFT,48,404);
         layout_lyric(!owned_media_render||strcmp(scene_string(surface,"subtitle"),last_media_line));
         const char *artist="",*state="Playback unavailable",*source="",*stamp="";
@@ -620,10 +683,14 @@ bool friday_ui_set_scene(const cJSON *surface)
             else if(!strcmp(kind,"Source"))source=scene_string(item,"label");
             else if(!strcmp(kind,"Progress"))stamp=scene_string(item,"label");
         }
-        display_label(ui.artist,artist);display_label(ui.media_state,state);
+        display_label(ui.artist,artist);(void)state;lv_obj_add_flag(ui.media_state,LV_OBJ_FLAG_HIDDEN);
         display_label(ui.media_time,stamp);
-        if(!strstr(source,"Spotify")&&!strstr(source,"synthetic")){char attribution[320];lv_snprintf(attribution,sizeof(attribution),"Spotify | %s",source);display_label(ui.attribution,attribution);}
-        else display_label(ui.attribution,source);
+        /* Preserve attribution, not transport/record identifiers. */
+        if(strstr(source,"LRCLIB"))display_label(ui.attribution,"Spotify / Lyrics: LRCLIB / rights unverified");
+        else if(strstr(source,"synthetic")||strstr(source,"Synthetic"))lv_obj_add_flag(ui.attribution,LV_OBJ_FLAG_HIDDEN);
+        else if(!source[0]||strstr(source,"Spotify"))display_label(ui.attribution,"Spotify");
+        else {char credit[320];lv_snprintf(credit,sizeof(credit),"Spotify / %s",source);display_label(ui.attribution,credit);}
+        lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,ui.voice_notice?694:682);
         lv_obj_add_flag(ui.progress,LV_OBJ_FLAG_HIDDEN);
         int em,es,dm,ds;
         if(sscanf(stamp,"%4d:%2d / %4d:%2d",&em,&es,&dm,&ds)==4&&em>=0&&em<=1440&&es>=0&&es<60&&dm>=0&&dm<=1440&&ds>=0&&ds<60&&(dm*60+ds)>0) {
@@ -674,7 +741,24 @@ bool friday_ui_set_scene(const cJSON *surface)
         lv_timer_set_repeat_count(ui.expiry, 1);
         lv_timer_set_auto_delete(ui.expiry, false);
     }
-    bool browse=!strcmp(ui.scene_kind,"metric")||!strcmp(ui.scene_kind,"timeline");
+    bool memory_detail=!strncmp(scene_string(surface,"title"),"Memory #",8);
+    bool memory_list=!strcmp(scene_string(surface,"title"),"What Friday remembers");
+    bool reminders_list=!strcmp(scene_string(surface,"title"),"Your reminders");
+    if(memory_detail)for(int i=0;i<4;i++)lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+    if(memory_list||(reminders_list&&cJSON_GetArraySize(items)>0)) {
+        ui.hide_scene_summary=true;lv_obj_add_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
+    }
+    for(int i=0;i<4;i++) {
+        const cJSON *item=cJSON_GetArrayItem(items,i);const char *field=scene_string(item,"label");
+        if(!strcmp(ui.scene_kind,"metric")&&(!strcmp(field,"Provider")||!strcmp(field,"Network")||
+            !strcmp(field,"Microphone")||!strcmp(field,"Runtime")||!strcmp(field,"Transport")||
+            !strcmp(field,"Device speech playback")||!strcmp(field,"Music / smart home / computer")))lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+        if(!strcmp(scene_string(item,"label"),"Open-Meteo · UTC")) {
+            lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);display_label(ui.attribution,"Weather: Open-Meteo");lv_obj_remove_flag(ui.attribution,LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    bool browse=!strcmp(ui.scene_kind,"timeline")||(!strcmp(ui.scene_kind,"metric")&&
+        !strcmp(ui.button_actions[0],"memories")&&!strcmp(ui.button_actions[3],"music"));
     for(int i=0;i<4;i++) {
         const char *id=ui.button_actions[i];
         if(!strncmp(id,"calendar",8)||!strncmp(id,"event:",6))browse=true;
@@ -735,7 +819,7 @@ void friday_ui_create(void)
     ui.cover=lv_obj_create(screen);lv_obj_remove_style_all(ui.cover);lv_obj_set_size(ui.cover,272,272);lv_obj_align(ui.cover,LV_ALIGN_TOP_LEFT,48,88);
     lv_obj_set_style_bg_color(ui.cover,color_hex(0x222730),0);lv_obj_set_style_bg_opa(ui.cover,LV_OPA_COVER,0);lv_obj_set_style_radius(ui.cover,24,0);lv_obj_set_style_clip_corner(ui.cover,true,0);
     lv_obj_remove_flag(ui.cover,LV_OBJ_FLAG_CLICKABLE);lv_obj_remove_flag(ui.cover,LV_OBJ_FLAG_SCROLLABLE);
-    ui.cover_label=make_label(ui.cover,"No cover available",&lv_font_montserrat_18,0x929AA7);lv_obj_set_width(ui.cover_label,220);lv_obj_set_style_text_align(ui.cover_label,LV_TEXT_ALIGN_CENTER,0);lv_obj_center(ui.cover_label);
+    ui.cover_label=make_label(ui.cover,"",&lv_font_montserrat_18,0x929AA7);lv_obj_add_flag(ui.cover_label,LV_OBJ_FLAG_HIDDEN);lv_obj_set_width(ui.cover_label,220);lv_obj_set_style_text_align(ui.cover_label,LV_TEXT_ALIGN_CENTER,0);lv_obj_center(ui.cover_label);
     ui.cover_image=lv_image_create(ui.cover);lv_image_set_pivot(ui.cover_image,0,0);lv_image_set_scale(ui.cover_image,342);lv_image_set_antialias(ui.cover_image,true);lv_obj_align(ui.cover_image,LV_ALIGN_TOP_LEFT,8,8);
     ui.artist=make_label(screen,"",&lv_font_montserrat_24,0xB7B4AF);lv_obj_set_size(ui.artist,320,64);lv_obj_align(ui.artist,LV_ALIGN_TOP_LEFT,352,216);lv_label_set_long_mode(ui.artist,LV_LABEL_LONG_MODE_DOTS);
     ui.media_state=make_label(screen,"",&lv_font_montserrat_18,0x9BCAA8);lv_obj_set_size(ui.media_state,320,48);lv_obj_align(ui.media_state,LV_ALIGN_TOP_LEFT,352,296);lv_label_set_long_mode(ui.media_state,LV_LABEL_LONG_MODE_DOTS);
@@ -799,18 +883,28 @@ bool friday_ui_set_surface(const char *kind, const char *title, const char *subt
     if (kind != NULL && kind[0] != '\0') {
         display_label(ui.eyebrow, strcmp(kind, "media") == 0 ? "Music" :
             strcmp(kind, "timeline") == 0 ? "Your day" :
-            strcmp(kind, "metric") == 0 ? "Device status" :
+            strcmp(kind, "metric") == 0 ? "Friday" :
             strcmp(kind, "message") == 0 ? "For your review" :
             strcmp(kind, "reminder") == 0 ? "A gentle nudge" :
-            strcmp(kind, "timer") == 0 ? "Focus" : kind);
+            strcmp(kind, "timer") == 0 ? "Focus" :
+            strcmp(kind, "PAIRING") == 0 ? "Connect Friday" :
+            strcmp(kind, "ERROR") == 0 ? "A little help" : "Friday");
         lv_obj_align(ui.eyebrow, LV_ALIGN_TOP_LEFT, 48, 38);
     }
     if (title != NULL && title[0] != '\0') {
-        display_label(ui.title, title);
+        const char *heading=title;
+        char memory_title[80];
+        if(kind&&!strcmp(kind,"reminder")&&!strncmp(title,"Reminder #",10))heading="Reminder";
+        if(!strncmp(title,"Memory #",8)) {
+            const char *page=strchr(title+8,' ');
+            lv_snprintf(memory_title,sizeof(memory_title),"Memory%s",page?page:"");heading=memory_title;
+        }
+        if(!strcmp(title,"Mock mode"))heading="Friday";
+        display_label(ui.title, heading);
         lv_obj_align(ui.title, LV_ALIGN_TOP_LEFT, 48, ui.scene_active ? 84 : 138);
     }
     if (subtitle != NULL && subtitle[0] != '\0' && (!owned_media_render || strcmp(subtitle,last_media_line) != 0)) {
-        set_message_text(subtitle);
+        set_message_text(kind&&!strcmp(kind,"ERROR")?human_error(subtitle):subtitle);
     }
     bsp_display_unlock();
     return true;
@@ -820,42 +914,40 @@ bool friday_ui_set_response(const char *text)
 {
     // Keep the director's cards and touch actions when assistant.text follows surface.
     if (ui.message != NULL && bsp_display_lock(1000)) {
-        set_message_text(text);
+        if(!ui.hide_scene_summary)set_message_text(text);
         bsp_display_unlock();
         return true;
     }
     return false;
 }
 
-void friday_ui_set_tool(const char *name, const char *status)
+void friday_ui_set_tool(const char *name,const char *status)
 {
-    char detail[96];
-    lv_snprintf(detail, sizeof(detail), "%s  %s",
-                name != NULL ? name : "tool", status != NULL ? status : "working");
-    friday_ui_set_surface("TOOL", "At your service", detail);
+    (void)name;
+    if(status&&!strcmp(status,"complete"))return;
+    if(status&&!strcmp(status,"failed"))friday_ui_set_surface("TOOL","Please try again","That didn't finish. Please try again.");
+    else friday_ui_set_surface("TOOL","One moment","I'm working on that.");
 }
 
 void friday_ui_set_backend(const char *status)
 {
-    if (ui.network == NULL || !bsp_display_lock(1000)) {
-        return;
+    if(ui.network==NULL||!bsp_display_lock(1000))return;
+    lv_obj_add_flag(ui.network,LV_OBJ_FLAG_HIDDEN);
+    if(status&&(strstr(status,"VOICE UNAVAILABLE")||!strcmp(status,"SPEAKER ERROR"))) {
+        ui.voice_notice=true;apply_state(friday_state_get());
+    } else if(status&&!strcmp(status,"FRIDAY ONLINE")) {
+        ui.voice_notice=false;lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
     }
-    display_label(ui.network, status != NULL ? status : "FRIDAY OFFLINE");
-    lv_obj_align(ui.network, LV_ALIGN_TOP_RIGHT, -48, 40);
     bsp_display_unlock();
 }
 
-void friday_ui_set_network(const char *status, const char *detail)
+void friday_ui_set_network(const char *status,const char *detail)
 {
-    if (ui.network == NULL || !bsp_display_lock(1000)) {
-        return;
-    }
-
-    display_label(ui.network, status);
-    lv_obj_align(ui.network, LV_ALIGN_TOP_RIGHT, -48, 40);
-    if (detail != NULL && detail[0] != '\0') {
-        set_message_text(detail);
-    }
+    if(ui.network==NULL||!bsp_display_lock(1000))return;
+    lv_obj_add_flag(ui.network,LV_OBJ_FLAG_HIDDEN);
+    /* Setup instructions are actionable; routine IP/SSID/credential state isn't. */
+    if(status&&strstr(status,"WI-FI SETUP")&&detail&&detail[0]&&!ui.scene_active)set_message_text(detail);
+    else if(status&&!strcmp(status,"WI-FI SAVED"))set_message_text("Joining your network…");
     bsp_display_unlock();
 }
 
@@ -869,7 +961,7 @@ void friday_ui_set_microphone(const char *status, int32_t peak, int32_t rms)
 
     (void)peak;
     friday_presence_set_level(ui.presence,rms);
-    display_label(ui.microphone,status&&strstr(status,"READY")?"Microphone ready":status);
+    (void)status;lv_obj_add_flag(ui.microphone,LV_OBJ_FLAG_HIDDEN);
     lv_obj_align(ui.microphone,LV_ALIGN_TOP_LEFT,48,676);
     bsp_display_unlock();
 }
