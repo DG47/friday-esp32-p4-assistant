@@ -1,0 +1,11 @@
+# Music confirmation recovery candidate
+
+Base: installed 8e7911c1b16cbe024bcdacd156004cf9ade013fd. Isolated branch: candidate/music-confirmation-recovery.
+
+A Music tap after dismissing a reminder confirmation reached the valid Music route, but the persisted confirmation correctly blocked opening. The route converted that guard into generic bad_action, hiding the remaining resolution. Synthetic production-runtime + isolated SQLite reproduction established this behavior; live logs alone did not identify the rejected action.
+
+The candidate gives the guard a typed exception. The real WebSocket action route re-reads the current reminder confirmation and restores its summary with “Before returning to Music, say yes to continue or no to cancel.” It preserves the existing voice confirmation path, with no new consent buttons, token changes, playback calls, autoaccept, cancellation, or expiry changes. Restoration does not replace active voice/tool ownership, a reminder alert, or a pending memory review. Those cases retain their owners and receive interaction_pending with a friendly explanation. Memory review recovery remains through its existing review surface; this candidate does not recreate review pages or bypass sequential review.
+
+Validation: 312 aggregate backend tests; authenticated real-route regression covers repeated dismiss/Music, zero opened views, unchanged pending identity, busy/alert/memory ownership, explicit cancellation, newer confirmation replacing stale copy, expiry and subsequent Music reopen. Existing memory tests cover token/supersession decisions. Native UI capture runs production LVGL and unchanged firmware: 480 routed browsing actions, 528 recovery notices, metadata and provenance audits; heap used 27144 / peak 86056 bytes. Existing loopback suite is synthetic; no Spotify or paid provider request is needed.
+
+No live service/configuration/credentials, firmware, playback or deployment changes. No new native animation/allocation path. This is a backend recovery checkpoint for independent review, not installed behavior. Native harness uses synthetic fixtures; it does not prove this new summary's physical text layout or real-device timing. Prior presence previews remain applicable only to the unchanged motion code.
