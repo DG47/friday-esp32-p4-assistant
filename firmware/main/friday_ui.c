@@ -56,6 +56,12 @@ typedef struct {
     lv_obj_t *card_labels[4];
     lv_obj_t *buttons[4];
     lv_obj_t *button_labels[4];
+    lv_obj_t *browse_icons[4];
+    lv_obj_t *browse_hints[4];
+    lv_obj_t *browse_date;
+    lv_obj_t *browse_meta;
+    int browse_message_y,browse_message_height;
+    int browse_mode; /* 0 standard/protected, 1 launcher, 2 agenda */
     char card_actions[4][64];
     char button_actions[4][64];
     bool scene_active;
@@ -72,6 +78,7 @@ static friday_ui_activation_callback_t activation_callback;
 static friday_ui_action_callback_t action_callback;
 static void scene_layout(bool active);
 static void scene_expire(lv_timer_t *timer);
+static const char *scene_string(const cJSON *object,const char *name);
 
 /* Shared palette used by ambient, Music, browsing and review surfaces. */
 enum { UI_CANVAS=0x111319, UI_PANEL=0x191C23, UI_CARD=0x1D2028,
@@ -85,6 +92,10 @@ static lv_color_t color_hex(uint32_t value)
 
 static void position_message(void)
 {
+    if(ui.browse_mode) {
+        lv_obj_set_size(ui.message,624,ui.browse_message_height);
+        lv_obj_align(ui.message,LV_ALIGN_TOP_LEFT,48,ui.browse_message_y);return;
+    }
     if(ui.scene_active&&!strcmp(ui.scene_kind,"media")) {lv_obj_set_size(ui.message,624,100);lv_obj_align(ui.message,LV_ALIGN_TOP_LEFT,48,404);return;}
     lv_obj_set_size(ui.message, FRIDAY_MESSAGE_WIDTH, ui.scene_active ? 76 : FRIDAY_MESSAGE_HEIGHT);
     lv_obj_align(ui.message, LV_ALIGN_TOP_MID, 0, ui.scene_active ? 154 : 550);
@@ -277,6 +288,14 @@ static void scene_action_event(lv_event_t *event)
 static void scene_layout(bool active)
 {
     ui.scene_active=active;
+    ui.browse_mode=0;
+    lv_obj_add_flag(ui.browse_date,LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.browse_meta,LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_size(ui.fact_panel,656,104);lv_obj_align(ui.fact_panel,LV_ALIGN_TOP_LEFT,32,138);
+    lv_obj_set_style_radius(ui.fact_panel,20,0);
+    lv_obj_set_style_bg_color(ui.fact_panel,color_hex(UI_PANEL),0);
+    lv_obj_set_style_text_color(ui.title,color_hex(UI_TEXT),0);
+    lv_obj_set_style_text_color(ui.message,color_hex(0xC9C6C1),0);
     lv_obj_remove_flag(ui.message,LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(ui.message,LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_text_line_space(ui.message,0,0);
@@ -308,10 +327,15 @@ static void scene_layout(bool active)
         lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     }
     for(int i=0;i<4;i++) {
+        lv_obj_add_flag(ui.browse_icons[i],LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.browse_hints[i],LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_bg_color(ui.cards[i],color_hex(UI_CARD),0);
+        lv_obj_set_style_radius(ui.cards[i],20,0);
         lv_obj_set_style_border_width(ui.cards[i],0,0);
         lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_DOTS);
         lv_label_set_long_mode(ui.card_times[i],LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_18,0);
+        lv_obj_set_style_text_color(ui.card_times[i],color_hex(0x9399A5),0);
         lv_obj_set_size(ui.card_times[i],104,28);
         lv_obj_align(ui.card_times[i],LV_ALIGN_LEFT_MID,20,0);
         lv_obj_set_size(ui.cards[i],624,64);
@@ -322,6 +346,11 @@ static void scene_layout(bool active)
         lv_obj_set_style_text_font(ui.card_labels[i],&lv_font_montserrat_24,0);
         lv_obj_set_style_text_color(ui.card_labels[i],color_hex(UI_TEXT),0);
         lv_obj_set_style_text_align(ui.card_labels[i],LV_TEXT_ALIGN_LEFT,0);
+        lv_obj_set_style_radius(ui.buttons[i],20,0);
+        lv_obj_set_style_border_width(ui.buttons[i],1,0);
+        lv_obj_set_style_border_color(ui.buttons[i],color_hex(UI_EDGE),0);
+        lv_obj_set_style_text_align(ui.button_labels[i],LV_TEXT_ALIGN_CENTER,0);
+        lv_obj_center(ui.button_labels[i]);
         lv_obj_set_size(ui.buttons[i],300,58);
         lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+(i%2)*324,558+(i/2)*70);
         lv_obj_set_style_bg_color(ui.buttons[i],color_hex(UI_CONTROL),0);
@@ -331,31 +360,147 @@ static void scene_layout(bool active)
     }
 }
 
-/* Shared browsing surfaces use the same spacing, type and layered controls
- * as Music. Protected review/message pagination deliberately stays unchanged. */
-static void browse_layout(void)
+/* Native line/rounded-rect icons: no raster assets, vector extension or HTTP. */
+static void icon_line(lv_layer_t *layer,int x,int y,int x1,int y1,int x2,int y2,uint32_t color)
 {
-    bool metric = !strcmp(ui.scene_kind, "metric");
-    display_label(ui.eyebrow,metric?"Local views":"Calendar");
+    lv_draw_line_dsc_t d;lv_draw_line_dsc_init(&d);d.color=color_hex(color);
+    d.width=2;d.round_start=1;d.round_end=1;
+    d.p1.x=x+x1;d.p1.y=y+y1;d.p2.x=x+x2;d.p2.y=y+y2;lv_draw_line(layer,&d);
+}
+static void icon_box(lv_layer_t *layer,int x,int y,int w,int h,int radius,uint32_t color,bool solid)
+{
+    lv_draw_rect_dsc_t d;lv_draw_rect_dsc_init(&d);d.radius=radius;
+    d.bg_color=color_hex(color);d.bg_opa=solid?LV_OPA_COVER:LV_OPA_TRANSP;
+    d.border_color=color_hex(color);d.border_width=solid?0:2;
+    lv_area_t area={x,y,x+w-1,y+h-1};lv_draw_rect(layer,&d,&area);
+}
+static void launcher_icon(lv_event_t *event)
+{
+    if(ui.browse_mode!=1)return;
+    const char *action=lv_event_get_user_data(event);lv_obj_t *object=lv_event_get_target(event);
+    lv_area_t area;lv_obj_get_coords(object,&area);int x=area.x1,y=area.y1;
+    lv_layer_t *layer=lv_event_get_layer(event);
+    uint32_t color=!strcmp(action,"calendar")?0x434D54:0xB8C6E8;
+    if(!strcmp(action,"calendar")) {
+        icon_box(layer,x+3,y+8,36,32,7,color,false);
+        icon_line(layer,x,y,3,18,38,18,color);icon_line(layer,x,y,12,3,12,12,color);icon_line(layer,x,y,30,3,30,12,color);
+        icon_box(layer,x+11,y+25,5,5,2,color,true);icon_box(layer,x+25,y+25,5,5,2,color,true);
+    } else if(!strcmp(action,"music")) {
+        icon_line(layer,x,y,17,33,17,8,color);icon_line(layer,x,y,17,8,34,4,color);
+        icon_line(layer,x,y,34,4,34,29,color);icon_box(layer,x+6,y+30,12,8,4,color,true);icon_box(layer,x+23,y+26,12,8,4,color,true);
+    } else if(!strcmp(action,"reminders")) {
+        icon_line(layer,x,y,9,29,12,12,color);icon_line(layer,x,y,12,12,21,7,color);
+        icon_line(layer,x,y,21,7,30,12,color);icon_line(layer,x,y,30,12,33,29,color);
+        icon_line(layer,x,y,7,31,35,31,color);icon_line(layer,x,y,18,37,24,37,color);
+    } else {
+        icon_box(layer,x+10,y+4,29,30,6,color,false);icon_box(layer,x+3,y+11,29,30,6,color,false);
+        icon_line(layer,x,y,11,23,24,23,color);icon_line(layer,x,y,11,30,20,30,color);
+    }
+}
+static void agenda_empty_mark(lv_event_t *event)
+{
+    if(ui.browse_mode!=2)return;
+    lv_area_t area;lv_obj_get_coords(lv_event_get_target(event),&area);
+    lv_layer_t *layer=lv_event_get_layer(event);int x=area.x1+34,y=area.y1+34;
+    uint32_t color=0x98ACBE;
+    icon_box(layer,x+3,y+8,36,32,7,color,false);
+    icon_line(layer,x,y,3,18,38,18,color);
+    icon_line(layer,x,y,12,3,12,12,color);icon_line(layer,x,y,30,3,30,12,color);
+    icon_box(layer,x+11,y+25,5,5,2,color,true);icon_box(layer,x+25,y+25,5,5,2,color,true);
+}
+static void agenda_mark(lv_event_t *event)
+{
+    if(ui.browse_mode!=2)return;
+    lv_obj_t *object=lv_event_get_target(event);lv_area_t area;lv_obj_get_coords(object,&area);
+    lv_layer_t *layer=lv_event_get_layer(event);
+    icon_box(layer,area.x1+110,area.y1+21,3,36,1,0x505B69,true);
+}
+
+/* One browsing component system: launcher, editorial agenda and empty states.
+ * Standard/protected review geometry and action ownership are untouched. */
+static void browse_layout(const cJSON *surface)
+{
+    bool launcher=!strcmp(ui.scene_kind,"metric")&&
+        !strcmp(ui.button_actions[0],"memories")&&!strcmp(ui.button_actions[3],"music");
+    ui.browse_mode=launcher?1:2;
+    display_label(ui.eyebrow,launcher?"Friday":"Calendar");
+    lv_obj_set_style_text_letter_space(ui.eyebrow,0,0);
     lv_obj_set_style_text_font(ui.title,&lv_font_montserrat_48,0);
-    lv_obj_set_size(ui.title,624,60);
+    lv_obj_set_size(ui.title,624,60);lv_obj_align(ui.title,LV_ALIGN_TOP_LEFT,48,88);
     lv_label_set_long_mode(ui.title,LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     lv_obj_set_style_text_letter_space(ui.message,0,0);
     lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_LEFT,0);
+    lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
+    if(launcher) {
+        display_label(ui.message,"A little space for the things that matter.");
+        ui.browse_message_y=158;ui.browse_message_height=48;position_message();
+        const char *hints[]={"Saved with care","Small things, remembered","Your day at a glance","Pick up the rhythm"};
+        const uint32_t backgrounds[]={0x232631,0x1C2B29,0xDEDCD5,0x202936};
+        char status[1024]={0};size_t used=0;
+        const cJSON *items=cJSON_GetObjectItemCaseSensitive(surface,"items");
+        for(int i=0;i<4;i++) {
+            const cJSON *item=cJSON_GetArrayItem(items,i);
+            if(cJSON_IsObject(item)&&used<sizeof(status)-1) {
+                int n=snprintf(status+used,sizeof(status)-used,"%s%s: %s",used?"  /  ":"",scene_string(item,"label"),scene_string(item,"time"));
+                if(n>0)used+=(size_t)n<sizeof(status)-used?(size_t)n:sizeof(status)-used-1;
+            }
+            lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_size(ui.buttons[i],300,184);lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+(i%2)*324,230+(i/2)*208);
+            lv_obj_set_style_radius(ui.buttons[i],28,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
+            lv_obj_set_style_bg_color(ui.buttons[i],color_hex(backgrounds[i]),0);
+            lv_obj_set_size(ui.button_labels[i],252,42);lv_obj_align(ui.button_labels[i],LV_ALIGN_TOP_LEFT,24,94);
+            lv_obj_set_style_text_align(ui.button_labels[i],LV_TEXT_ALIGN_LEFT,0);
+            lv_obj_set_style_text_font(ui.button_labels[i],&lv_font_montserrat_32,0);
+            lv_obj_set_style_text_color(ui.button_labels[i],color_hex(i==2?0x202932:UI_TEXT),0);
+            lv_obj_set_style_text_color(ui.browse_hints[i],color_hex(i==2?0x5E666B:0xABB5BE),0);
+            display_label(ui.browse_hints[i],hints[i]);
+            lv_obj_remove_flag(ui.browse_icons[i],LV_OBJ_FLAG_HIDDEN);lv_obj_remove_flag(ui.browse_hints[i],LV_OBJ_FLAG_HIDDEN);
+        }
+        display_label(ui.browse_meta,status);lv_obj_set_size(ui.browse_meta,624,28);
+        lv_obj_align(ui.browse_meta,LV_ALIGN_TOP_LEFT,48,660);lv_label_set_long_mode(ui.browse_meta,LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
+        lv_obj_remove_flag(ui.browse_meta,LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    const char *subtitle=scene_string(surface,"subtitle");const char *split=strchr(subtitle,'\n');
+    if(split) {
+        char date[128];size_t length=(size_t)(split-subtitle);if(length>=sizeof(date))length=sizeof(date)-1;
+        memcpy(date,subtitle,length);date[length]=0;display_label(ui.browse_date,date);
+        lv_obj_remove_flag(ui.browse_date,LV_OBJ_FLAG_HIDDEN);
+        display_label(ui.message,split+1);
+    }
+    int rows=0,buttons=0;
+    for(int i=0;i<4;i++){if(!lv_obj_has_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN))rows++;if(!lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))buttons++;}
+    lv_obj_set_style_text_font(ui.message,rows?&lv_font_montserrat_18:&lv_font_montserrat_24,0);
+    lv_obj_set_style_text_color(ui.message,color_hex(0x9EA8B5),0);
+    ui.browse_message_height=rows?52:216;
+    ui.browse_message_y=rows?(split?190:158):238;position_message();
+    lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_WRAP);
+    if(!rows) {
+        lv_obj_set_size(ui.fact_panel,112,112);lv_obj_align(ui.fact_panel,LV_ALIGN_TOP_LEFT,304,414);
+        lv_obj_set_style_radius(ui.fact_panel,36,0);lv_obj_set_style_bg_color(ui.fact_panel,color_hex(0x1B242C),0);
+        lv_obj_remove_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
+    }
     for(int i=0;i<4;i++) {
-        lv_obj_set_size(ui.cards[i],624,72);
-        lv_obj_align(ui.cards[i],LV_ALIGN_TOP_LEFT,48,250+i*76);
-        lv_obj_set_style_border_width(ui.cards[i],1,0);
-        lv_obj_set_style_border_color(ui.cards[i],color_hex(UI_EDGE),0);
-        lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_18,0);
-        lv_obj_set_size(ui.card_times[i],metric?284:104,48);
-        lv_obj_align(ui.card_times[i],LV_ALIGN_LEFT_MID,metric?320:20,0);
-        lv_label_set_long_mode(ui.card_times[i],metric?LV_LABEL_LONG_MODE_WRAP:LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-        lv_obj_set_size(ui.card_labels[i],metric?284:464,58);
-        lv_obj_align(ui.card_labels[i],LV_ALIGN_LEFT_MID,metric?20:136,0);
-        lv_label_set_long_mode(ui.card_labels[i],metric?LV_LABEL_LONG_MODE_WRAP:LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-        lv_obj_set_size(ui.buttons[i],300,64);
-        lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+(i%2)*324,558+(i/2)*74);
+        lv_obj_set_size(ui.cards[i],624,78);lv_obj_align(ui.cards[i],LV_ALIGN_TOP_LEFT,48,254+i*84);
+        lv_obj_set_style_radius(ui.cards[i],24,0);lv_obj_set_style_border_width(ui.cards[i],0,0);
+        lv_obj_set_style_bg_color(ui.cards[i],color_hex(0x1B242C),0);
+        lv_obj_set_style_bg_opa(ui.cards[i],i==0?LV_OPA_COVER:LV_OPA_TRANSP,0);
+        lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_24,0);
+        lv_obj_set_style_text_color(ui.card_times[i],color_hex(i==0?0xC1CAEF:0x98A4B2),0);
+        lv_obj_set_size(ui.card_times[i],88,56);lv_obj_align(ui.card_times[i],LV_ALIGN_LEFT_MID,14,0);
+        lv_label_set_long_mode(ui.card_times[i],LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_set_size(ui.card_labels[i],474,58);lv_obj_align(ui.card_labels[i],LV_ALIGN_LEFT_MID,134,0);
+        lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
+    }
+    int visible=0,width=buttons?(624-(buttons-1)*16)/buttons:624;
+    for(int i=0;i<4;i++) {
+        if(lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))continue;
+        lv_obj_set_size(ui.buttons[i],width,64);lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+visible*(width+16),626);visible++;
+        lv_obj_set_style_radius(ui.buttons[i],32,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
+        bool primary=visible==1&&strcmp(ui.button_actions[i],"dismiss");
+        lv_obj_set_style_bg_color(ui.buttons[i],color_hex(primary?UI_PRIMARY:UI_CONTROL),0);
+        lv_obj_set_style_text_color(ui.button_labels[i],color_hex(primary?UI_PRIMARY_TEXT:UI_TEXT),0);
+        lv_obj_set_size(ui.button_labels[i],width-16,32);lv_obj_center(ui.button_labels[i]);
     }
 }
 
@@ -534,7 +679,7 @@ bool friday_ui_set_scene(const cJSON *surface)
         const char *id=ui.button_actions[i];
         if(!strncmp(id,"calendar",8)||!strncmp(id,"event:",6))browse=true;
     }
-    if(browse)browse_layout();
+    if(browse)browse_layout(surface);
     log_ui_snapshot("scene");
     bsp_display_unlock();
     return true;
@@ -563,6 +708,7 @@ void friday_ui_create(void)
     lv_obj_set_size(ui.fact_panel,656,104);lv_obj_align(ui.fact_panel,LV_ALIGN_TOP_LEFT,32,138);
     lv_obj_set_style_bg_color(ui.fact_panel,color_hex(UI_PANEL),0);lv_obj_set_style_bg_opa(ui.fact_panel,LV_OPA_COVER,0);
     lv_obj_set_style_radius(ui.fact_panel,20,0);lv_obj_remove_flag(ui.fact_panel,LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(ui.fact_panel,agenda_empty_mark,LV_EVENT_DRAW_MAIN,NULL);
     lv_obj_move_to_index(ui.fact_panel,0);
     for(int i=0;i<4;i++) {
         ui.cards[i]=lv_obj_create(screen);lv_obj_remove_style_all(ui.cards[i]);
@@ -571,10 +717,18 @@ void friday_ui_create(void)
         ui.card_times[i]=make_label(ui.cards[i],"",&lv_font_montserrat_18,0x9399A5);
         lv_obj_set_size(ui.card_times[i],104,28);lv_obj_align(ui.card_times[i],LV_ALIGN_LEFT_MID,20,0);lv_label_set_long_mode(ui.card_times[i],LV_LABEL_LONG_MODE_DOTS);
         ui.card_labels[i]=make_label(ui.cards[i],"",&lv_font_montserrat_24,0xEEECE7);lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_add_event_cb(ui.cards[i],agenda_mark,LV_EVENT_DRAW_MAIN,NULL);
         lv_obj_add_event_cb(ui.cards[i],scene_action_event,LV_EVENT_CLICKED,ui.card_actions[i]);lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
         ui.buttons[i]=lv_button_create(screen);lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_shadow_width(ui.buttons[i],0,0);
         lv_obj_set_style_border_width(ui.buttons[i],1,0);lv_obj_set_style_border_color(ui.buttons[i],color_hex(UI_EDGE),0);
         lv_obj_set_style_pad_all(ui.buttons[i],0,0);ui.button_labels[i]=make_label(ui.buttons[i],"",&lv_font_montserrat_24,0xEEECE7);
+        ui.browse_icons[i]=lv_obj_create(ui.buttons[i]);lv_obj_remove_style_all(ui.browse_icons[i]);
+        lv_obj_set_size(ui.browse_icons[i],44,44);lv_obj_align(ui.browse_icons[i],LV_ALIGN_TOP_LEFT,24,24);
+        lv_obj_remove_flag(ui.browse_icons[i],LV_OBJ_FLAG_CLICKABLE);lv_obj_remove_flag(ui.browse_icons[i],LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(ui.browse_icons[i],launcher_icon,LV_EVENT_DRAW_MAIN,ui.button_actions[i]);
+        ui.browse_hints[i]=make_label(ui.buttons[i],"",&lv_font_montserrat_18,0xABB5BE);
+        lv_obj_set_size(ui.browse_hints[i],252,26);lv_obj_align(ui.browse_hints[i],LV_ALIGN_TOP_LEFT,24,140);
+        lv_label_set_long_mode(ui.browse_hints[i],LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_style_text_align(ui.button_labels[i],LV_TEXT_ALIGN_CENTER,0);lv_label_set_long_mode(ui.button_labels[i],LV_LABEL_LONG_MODE_DOTS);lv_obj_center(ui.button_labels[i]);
         lv_obj_add_event_cb(ui.buttons[i],scene_action_event,LV_EVENT_CLICKED,ui.button_actions[i]);lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
     }
@@ -590,6 +744,9 @@ void friday_ui_create(void)
     lv_obj_set_style_bg_color(ui.progress,color_hex(UI_EDGE),LV_PART_MAIN);lv_obj_set_style_bg_color(ui.progress,color_hex(0xC9C6C1),LV_PART_INDICATOR);lv_obj_remove_flag(ui.progress,LV_OBJ_FLAG_CLICKABLE);
     ui.media_time=make_label(screen,"",&lv_font_montserrat_18,0x8D939E);lv_obj_set_size(ui.media_time,624,28);lv_obj_align(ui.media_time,LV_ALIGN_TOP_LEFT,48,548);lv_label_set_long_mode(ui.media_time,LV_LABEL_LONG_MODE_DOTS);
     ui.attribution=make_label(screen,"",&lv_font_montserrat_18,0x757B86);lv_obj_set_size(ui.attribution,624,26);lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,682);lv_label_set_long_mode(ui.attribution,LV_LABEL_LONG_MODE_DOTS);
+    ui.browse_date=make_label(screen,"",&lv_font_montserrat_24,0xC8CED9);
+    lv_obj_set_size(ui.browse_date,624,32);lv_obj_align(ui.browse_date,LV_ALIGN_TOP_LEFT,48,154);
+    ui.browse_meta=make_label(screen,"",&lv_font_montserrat_18,0x7F8B98);
     scene_layout(false);set_message_text("Say Friday or touch the light.\nHold for local views.");apply_state(FRIDAY_STATE_IDLE);
     lv_timer_create(diagnostic_tick,10000,NULL);
 }

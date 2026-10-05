@@ -8,6 +8,13 @@ from app.scenes import local_scene
 async def main():
     values=await fixtures()
     values={'calendar-'+k:v for k,v in values.items()}
+    for value in values.values():
+        value['subtitle']=value['subtitle'].removeprefix('FIXTURE · ')
+    for page in ['calendar-first','calendar-second','calendar-stale']:
+        for item in values[page]['items']:
+            item['label']={'<script>Fixture literal text</script>':'Studio planning','Fixture all-day block':'A day for deep work','Fixture planning 3':'Design catch-up','Fixture planning 4':'Afternoon walk','Fixture planning 5':'Project review','Fixture planning 6':'Wrap up the day'}.get(item['label'],item['label'])
+    values['calendar-detail']['title']='Design catch-up'
+    values['calendar-detail']['items'][2]['label']='The studio'
     settings=SimpleNamespace(assistant_provider='Synthetic local',calendar_provider='none',tts_provider='none')
     values['local-menu']=local_scene('status','fixture',settings,None,None).model_dump(mode='json')
     values['calendar-long']={**values['calendar-first'],'items':[{'time':'All day','label':'Synthetic planning session with a deliberately very long title that remains available through native scrolling','action':'event:fixture'}]}

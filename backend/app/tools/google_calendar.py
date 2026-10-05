@@ -240,6 +240,7 @@ class CalendarService:
         label = 'Sample calendar' if snapshot.status=='sample' else ('Cached calendar · stale' if snapshot.status=='stale' else 'Google Calendar · read only')
         subtitle = f'{label} · {len(events)} events · {self.zone.key}' if events else (f'{label} · No events retrieved' if snapshot.truncated else f'{label} · No events today')
         if snapshot.truncated:subtitle += ' · Results limited'
+        subtitle = current.astimezone(self.zone).strftime('%A, %B %-d') + '\n' + subtitle
         return Surface(kind='timeline',title='Today' if snapshot.status!='sample' else 'Calendar preview',subtitle=subtitle,items=items,actions=actions,expires_ms=30000)
 
     async def close(self):

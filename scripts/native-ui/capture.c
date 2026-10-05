@@ -9,6 +9,7 @@
 static uint32_t pixels[720*720];
 static uint32_t tick;
 static int actions;
+static char last_action[64];
 /* Model a renderer holding the recursive display lock for 211 ms. No sleeps,
  * device access, or audio content: exercise the production meter call itself. */
 static int display_hold_ms, display_requested_ms, display_unlocks;
@@ -30,7 +31,7 @@ static void capture_lock_regression(void) {
     puts("Capture meter skips busy display lock and resumes: PASS");
 }
 #endif
-static bool action(const char *id) {assert(id && *id);actions++;return true;}
+static bool action(const char *id) {assert(id && *id);snprintf(last_action,sizeof(last_action),"%s",id);actions++;return true;}
 int64_t esp_timer_get_time(void) {return (int64_t)tick*1000;}
 static void flush(lv_display_t *d,const lv_area_t *a,uint8_t *p) {
     uint16_t *src=(uint16_t *)p;
@@ -126,7 +127,29 @@ int main(int argc,char **argv) {
     FILE *browsefile=fopen(browsepath,"rb");assert(browsefile);
     char browsejson[32768]={0};assert(fread(browsejson,1,sizeof(browsejson)-1,browsefile)>0);fclose(browsefile);
     cJSON *browse=cJSON_Parse(browsejson);assert(browse);
-    cJSON *browsefixture=NULL;cJSON_ArrayForEach(browsefixture,browse){assert(friday_ui_set_scene(browsefixture));capture(argv[1],browsefixture->string);}
+    cJSON *browsefixture=NULL;cJSON_ArrayForEach(browsefixture,browse){
+        assert(friday_ui_set_scene(browsefixture));capture(argv[1],browsefixture->string);
+        if(!strcmp(browsefixture->string,"calendar-long")) {
+#ifndef FRIDAY_COMPARE_BASE
+            lv_obj_t *screen=lv_screen_active();bool found=false;
+            const char *title=field(cJSON_GetArrayItem(cJSON_GetObjectItem(browsefixture,"items"),0),"label");
+            for(uint32_t i=0;i<lv_obj_get_child_count(screen);i++) {
+                lv_obj_t *o=lv_obj_get_child(screen,i);
+                if(lv_obj_is_visible(o)&&lv_obj_get_child_count(o)==2) {
+                    lv_obj_t *label=lv_obj_get_child(o,1);
+                    if(lv_obj_check_type(label,&lv_label_class)&&!strcmp(lv_label_get_text(label),title)) {
+#ifndef FRIDAY_COMPARE_BASE
+                        assert(lv_label_get_long_mode(label)==LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
+#endif
+                        found=true;
+                    }
+                }
+            }
+            assert(found);
+#endif
+            tick+=4000;lv_tick_inc(4000);capture(argv[1],"calendar-long-scrolled");
+        }
+    }
     for(int cycle=0;cycle<20;cycle++) {
         cJSON_ArrayForEach(browsefixture,browse){
             assert(friday_ui_set_scene(browsefixture));lv_obj_update_layout(lv_screen_active());
@@ -135,6 +158,14 @@ int main(int argc,char **argv) {
                 lv_obj_t *object=lv_obj_get_child(screen,child);
                 if(lv_obj_get_width(object)>=200&&lv_obj_is_visible(object)&&lv_obj_has_flag(object,LV_OBJ_FLAG_CLICKABLE)) {
                     int prior=actions;lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);assert(actions==prior+1);
+                    if(lv_obj_check_type(object,&lv_button_class)) {
+                        const char *caption=lv_label_get_text(lv_obj_get_child(object,0));
+                        cJSON *declared=NULL;bool bound=false;
+                        cJSON_ArrayForEach(declared,cJSON_GetObjectItem(browsefixture,"actions")) {
+                            if(!strcmp(field(declared,"label"),caption)){assert(!strcmp(field(declared,"id"),last_action));bound=true;}
+                        }
+                        assert(bound);
+                    }
                 }
             }
         }

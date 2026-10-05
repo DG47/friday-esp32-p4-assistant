@@ -53,6 +53,17 @@ class CalendarTests(unittest.IsolatedAsyncioTestCase):
 
     def gets(self):return [r for r in self.requests if r.method=='GET']
 
+    async def test_agenda_date_uses_configured_zone_across_utc_midnight(self):
+        from app.tools.google_calendar import CalendarSnapshot
+        self.now=datetime(2026,10,2,1,tzinfo=timezone.utc)
+        surface=await self.service.scene('calendar','date-fixture',snapshot=CalendarSnapshot('ready',[],self.now))
+        self.assertTrue(surface.subtitle.startswith('Thursday, October 1\n'))
+        self.assertIn('read only',surface.subtitle)
+        self.assertIn('No events today',surface.subtitle)
+        self.now=datetime(2026,10,2,5,tzinfo=timezone.utc)
+        surface=await self.service.scene('calendar','date-fixture',snapshot=CalendarSnapshot('ready',[],self.now))
+        self.assertTrue(surface.subtitle.startswith('Friday, October 2\n'))
+
     async def test_expanded_recurring_all_day_cancelled_and_empty_page_pagination(self):
         self.responses=[{'items':[], 'nextPageToken':'page2'}, {'items':[
             event('recurring-one',recurringEventId='series'),
