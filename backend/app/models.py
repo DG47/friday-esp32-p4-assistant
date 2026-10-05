@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -17,6 +17,11 @@ class CalendarEvent(BaseModel):
     people: list[str] = Field(default_factory=list)
     notes: str = ""
     priority: Literal["normal", "high"] = "normal"
+    all_day: bool = False
+    all_day_start: date | None = None
+    all_day_end: date | None = None
+    recurring: bool = False
+    location: str = ""
 
 
 class Reminder(BaseModel):
@@ -32,7 +37,7 @@ class Reminder(BaseModel):
 
 
 class SurfaceAction(BaseModel):
-    id: str = Field(max_length=64, pattern=r"^(status|reminders(?::[0-9]+)?|calendar|dismiss|confirm|decline|reminder:[1-9][0-9]*|snooze:[1-9][0-9]*|complete:[1-9][0-9]*|cancel:[1-9][0-9]*)$")
+    id: str = Field(max_length=64, pattern=r"^(music|musicctl:[0-9a-f]{24}|memories(?::[0-9]+)?|memory:[1-9][0-9]*(?::[0-9]+)?|memreview:[0-9a-f]{24}:[0-9]+|memforget:[1-9][0-9]*|memyes:[0-9a-f]{24}|memno:[0-9a-f]{24}|status|reminders(?::[0-9]+)?|calendar(?::[0-9]+)?|calendar_refresh|calendar_next|event:[0-9a-f]{16}|dismiss|confirm|decline|reminder:[1-9][0-9]*|snooze:[1-9][0-9]*|complete:[1-9][0-9]*|cancel:[1-9][0-9]*)$")
     label: str = Field(min_length=1, max_length=32)
 
 

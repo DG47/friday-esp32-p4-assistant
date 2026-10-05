@@ -12,3 +12,7 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/
 work/
+
+# Private Google OAuth client and refresh-token storage
+data/google-calendar/
+client_secret*.json

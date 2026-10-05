@@ -27,3 +27,19 @@ void friday_ui_set_tool(const char *name, const char *status);
 void friday_ui_set_backend(const char *status);
 void friday_ui_set_network(const char *status, const char *detail);
 void friday_ui_set_microphone(const char *status, int32_t peak, int32_t rms);
+
+void friday_ui_media_begin(const char *request);
+void friday_ui_media_clear(void);
+bool friday_ui_set_media(const cJSON *message);
+
+/* Authenticated priority overlay lifecycle; result binding is checked natively. */
+bool friday_ui_media_suspended(void);
+bool friday_ui_media_prepare_overlay(const cJSON *root);
+void friday_ui_media_resume_result(const cJSON *root);
+cJSON *friday_ui_media_resume_request(void);
+void friday_ui_media_resume_sent(bool sent);
+void friday_ui_media_overlay_resolved(void);
+void friday_ui_media_note_action(const char *action);
+void friday_ui_media_overlay_completed(const cJSON *root);
+bool friday_ui_media_overlay_needs_resume(void);
+bool friday_ui_media_visible(void);

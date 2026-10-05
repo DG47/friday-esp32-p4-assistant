@@ -1,0 +1,57 @@
+name: Friday regression tests
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: python -m pip install -r backend/requirements.txt
+      - name: Provider-free backend regression suite
+        env:
+          PYTHONPATH: backend
+          ASSISTANT_PROVIDER: mock
+          TTS_PROVIDER: none
+          WEATHER_PROVIDER: none
+          STT_PROVIDER: none
+        run: python -m unittest discover -s backend/tests -v
+      - name: Synthetic real-loopback Spotify callback regression
+        run: python scripts/test_spotify_loopback.py
+      - name: Python syntax and whitespace
+        run: |
+          python -m compileall -q backend/app scripts
+          git diff --check
+  firmware-error-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libcjson-dev
+      - name: Native recoverable-error policy regression
+        run: |
+          cc -Wall -Wextra -Werror -I firmware/main -I /usr/include/cjson firmware/tests/test_error_scene.c firmware/main/friday_error_scene.c -lcjson -o /tmp/friday-error-test
+          /tmp/friday-error-test
+
+      - name: Pinned LVGL source for real glyph tests
+        uses: actions/checkout@v4
+        with:
+          repository: lvgl/lvgl
+          ref: v9.3.0
+          path: .ci-lvgl
+      - name: Native glyph and media ownership regressions
+        run: |
+          python3 scripts/test_native_display.py --lvgl-root .ci-lvgl
+          cc -std=c11 -Wall -Wextra -Werror -I firmware/main firmware/tests/test_media_guard.c firmware/main/friday_media_guard.c -lm -o /tmp/friday-media-test
+          /tmp/friday-media-test
+
+      - name: Native AEC reference and metadata regressions
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/main -I firmware/tests/voice_stubs firmware/tests/test_echo.c firmware/main/friday_echo.c -o /tmp/friday-echo-test
+          /tmp/friday-echo-test

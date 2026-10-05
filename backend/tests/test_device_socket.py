@@ -201,7 +201,7 @@ class DeviceSocketTests(unittest.TestCase):
         transcript = next(item for item in messages if item["type"] == "transcript")
         reply = next(item for item in messages if item["type"] == "assistant.text")
         self.assertEqual(transcript["text"], "What's next?")
-        self.assertIn("next event", reply["text"])
+        self.assertIn("Connect Google Calendar", reply["text"])
         self.assertEqual(transcriber.pcm, b"\x00\x00" * 3200)
 
     def test_physical_device_requires_pairing_then_reuses_its_identity(self):

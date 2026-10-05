@@ -20,6 +20,8 @@
 #include "friday_backend.h"
 #include "friday_ui.h"
 #include "friday_vad.h"
+#include "friday_echo.h"
+#include "esp_timer.h"
 
 #define FRIDAY_AUDIO_SAMPLE_RATE 24000
 #define FRIDAY_AUDIO_STREAM_SAMPLE_RATE 12000
@@ -64,6 +66,7 @@ void friday_audio_stop_speech(void)
     if (playback_lock == NULL) return;
     xSemaphoreTake(playback_lock, portMAX_DELAY);
     playback_epoch++;
+    friday_echo_invalidate();
     playback_busy = false;
     free(collecting);
     collecting = NULL;
@@ -81,6 +84,7 @@ static void playback_task(void *argument)
     while (true) {
         if (xQueueReceive(playback_queue, &job, portMAX_DELAY) != pdTRUE) continue;
         bool success = true;
+        uint32_t echo_owner=friday_echo_generation();
         for (size_t offset = 0; offset < job.size && job.epoch == playback_epoch; offset += 960) {
             size_t samples = (job.size - offset) / 2;
             if (samples > 480) samples = 480;
@@ -89,10 +93,12 @@ static void playback_task(void *argument)
                                         ((uint16_t)job.pcm[offset + index * 2 + 1] << 8));
                 stereo[index * 2] = stereo[index * 2 + 1] = mono;
             }
+            int64_t submitted=esp_timer_get_time();
             if (esp_codec_dev_write(speaker, stereo, (int)(samples * 4)) != ESP_OK) {
                 success = false;
                 break;
             }
+            friday_echo_reference(stereo,samples,submitted,echo_owner);
         }
         free(job.pcm);
         xSemaphoreTake(playback_lock, portMAX_DELAY);
@@ -252,10 +258,18 @@ static void microphone_task(void *argument)
             int32_t raw_mono = (left + right) / 2;
             mono_sum_squares += (uint64_t)(raw_mono * raw_mono);
 
-            mono[index] = amplify_sample(raw_mono);
+            mono[index] = (int16_t)raw_mono;
         }
         int32_t mono_rms = (int32_t)sqrt(
             (double)mono_sum_squares / (double)FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
+
+        bool clean_capture=friday_echo_process(mono,esp_timer_get_time(),friday_audio_playing());
+        mono_sum_squares=0;
+        for(size_t i=0;i<FRIDAY_AUDIO_SAMPLES_PER_CHANNEL;i++) {
+            int32_t sample=mono[i];mono_sum_squares+=(uint64_t)(sample*sample);
+            mono[i]=amplify_sample(sample);
+        }
+        mono_rms=(int32_t)sqrt((double)mono_sum_squares/FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
 
         for (size_t index = 0; index < FRIDAY_AUDIO_STREAM_SAMPLES; ++index) {
             int32_t filtered =
@@ -263,12 +277,13 @@ static void microphone_task(void *argument)
             mono[index] = (int16_t)filtered;
         }
 
-        if (friday_audio_playing()) {
+        if (!clean_capture) {
             idle_audio_used = 0;
             wake_window = false;
             wake_frames = 0;
             was_recording = false;
-            continue; /* Half duplex: never treat Friday playback as a wake word. */
+            friday_vad_begin_turn(&wake_vad);
+            continue; /* Missing/unsafe reference never opens a wake window. */
         }
         bool recording = friday_backend_audio_active();
         if (recording) {
@@ -410,6 +425,7 @@ esp_err_t friday_audio_start(void)
             microphone, BSP_AUDIO_ES7210_MIC_MASK_FL_FR, 37.5f),
         TAG, "Could not set microphone gain");
 
+    friday_echo_init();
     playback_lock = xSemaphoreCreateMutex();
     playback_queue = xQueueCreate(1, sizeof(playback_job_t));
     speaker = bsp_audio_codec_speaker_init();

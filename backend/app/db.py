@@ -479,14 +479,17 @@ class ReminderStore:
             connection.commit()
         return result
 
-    def conversation(self, device_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    def conversation(self, device_id: str, limit: int = 10, *, exclude_calendar: bool = False) -> list[dict[str, Any]]:
+        excluded = ("AND request_id NOT IN (SELECT request_id FROM conversation_messages "
+                    "WHERE device_id = ? AND name IN ('get_calendar', 'google_calendar')) ") if exclude_calendar else ""
+        parameters = (device_id, device_id, device_id, limit) if exclude_calendar else (device_id, device_id, limit)
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT * FROM conversation_messages WHERE device_id = ? "
                 "AND request_id IN (SELECT request_id FROM conversation_messages "
-                "WHERE device_id = ? GROUP BY request_id ORDER BY MAX(id) DESC LIMIT ?) "
-                "ORDER BY id",
-                (device_id, device_id, limit),
+                "WHERE device_id = ? " + excluded +
+                "GROUP BY request_id ORDER BY MAX(id) DESC LIMIT ?) ORDER BY id",
+                parameters,
             ).fetchall()
         messages: list[dict[str, Any]] = []
         for row in rows:

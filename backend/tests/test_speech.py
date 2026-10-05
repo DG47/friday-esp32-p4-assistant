@@ -136,3 +136,43 @@ class SpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[0]['response_format'], 'pcm')
         self.assertEqual(len(requests[0]['input']), 1000)
         await provider.close()
+
+    async def test_concurrent_replacements_leave_one_owned_stream(self):
+        class Provider:
+            async def synthesize(self, text): return b'\x00\x00' * 480
+        director, messages = self.setup_director(Provider(), ack=False)
+        for iteration in range(20):
+            await asyncio.gather(director.speak('device', 'original synthetic one'),
+                                 director.speak('device', 'original synthetic two'))
+            for _ in range(20):
+                await asyncio.sleep(0)
+                if director.waiting.get('device'): break
+            self.assertEqual(len(director.tasks), 1)
+            stream, done = director.waiting['device']
+            director.finished('device', '0' * 32)
+            self.assertFalse(done.is_set())
+            director.finished('device', stream)
+            await director.tasks['device']
+            self.assertFalse(director.waiting)
+        await director.cancel('device')
+        self.assertFalse(director.tasks)
+
+    async def test_cancel_and_replacement_cannot_emit_cancel_after_new_start(self):
+        class Provider:
+            async def synthesize(self, text): return b'\x00\x00' * 480
+        director, messages = self.setup_director(Provider(), ack=False)
+        await director.speak('device', 'original synthetic first')
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if director.waiting.get('device'): break
+        start = len(messages)
+        await asyncio.gather(director.cancel('device'), director.speak('device', 'original synthetic replacement'))
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if director.waiting.get('device'): break
+        kinds = [m['type'] for m in messages[start:]]
+        self.assertIn('speech.start', kinds)
+        self.assertNotIn('speech.cancel', kinds[len(kinds)-kinds[::-1].index('speech.start'):])
+        await director.cancel('device')
+        self.assertFalse(director.tasks)
+        self.assertFalse(director.waiting)

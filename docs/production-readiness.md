@@ -1,3 +1,35 @@
+# Current personal-device status
+
+The sections below describe earlier release candidates and are retained as historical
+engineering notes. They are not the current deployment/configuration status.
+
+The published baseline is `5e467ce` on `friday/readiness-context-scenes-recovery`;
+its backend and native-policy GitHub checks passed. Modern native UI, real Spotify
+artwork, persistent Music and multiline lyrics were installed with an app-only flash.
+Strict-TLS backend health/readiness passed. Explicit reviewed memory is enabled.
+Google Calendar is enabled by the supervised LaunchAgent with model sharing disabled;
+a minimal existing-grant authorization check passed without reading events.
+Local Whisper handles recognition, Anthropic handles reasoning, and supervised macOS
+speech is selected. Weather is disabled. These integrations are implemented; they
+must not be described as awaiting initial adapter work.
+
+The controlled voice trial is installed with experimental Espressif AEC enabled,
+serialized speech cancellation/replacement, and metadata-only reference/timing/heap
+diagnostics (reviewed source through `656870a`). AEC remains off by default for new
+builds. Installation, initialization and authenticated reconnect are verified;
+acoustic suppression, double-talk and spoken-interruption quality remain unverified.
+See `voice-reliability.md` for bounds and remaining gates.
+
+Remaining personal-device priorities are physical audio/touch/reconnect/alert soak,
+reference-delay calibration and measured echo cancellation/spoken interruption,
+fully on-device wake detection, and backup/security/monitoring lifecycle work.
+Gmail, Home Assistant and computer-control integration remain separate future scope.
+The old activation-approval and missing-memory/Spotify/Calendar blockers below are
+superseded. Production container, multi-process deployment and physical NVS encryption
+are not claimed by the personal-device installation.
+
+---
+
 # Friday release readiness — 2026-09-30
 
 This change is a hardened local release candidate, not a declaration of
