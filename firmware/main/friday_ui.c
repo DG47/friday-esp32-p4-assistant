@@ -75,6 +75,7 @@ typedef struct {
     char scene_kind[24];
     unsigned long scene_generation;
     bool long_pressed;
+    bool activity_message; /* Provenance, never inferred from user text. */
     lv_timer_t *expiry;
     lv_timer_t *countdown;
     int64_t countdown_deadline;
@@ -118,6 +119,7 @@ static bool supports_glyph(uint32_t codepoint, void *context)
 
 static void display_label(lv_obj_t *label, const char *text)
 {
+    if(label==ui.message)ui.activity_message=false;
     const char *source = text != NULL ? text : "";
     size_t length = strlen(source);
     if (length > (SIZE_MAX - 1) / 4) return;
@@ -198,6 +200,11 @@ static void set_message_text(const char *text)
     position_message();
 }
 
+static void set_activity_message(const char *text)
+{
+    set_message_text(text);ui.activity_message=true;
+}
+
 /* The top 28px are reserved for actionable recovery notices on every scene.
  * Keep them separate from response text, protected facts, credits and targets. */
 static void recovery_notice_update(void)
@@ -224,6 +231,7 @@ static void recovery_notice_tick(lv_timer_t *timer)
 
 static void apply_state(friday_state_t state)
 {
+    friday_state_t previous=friday_state_get();
     friday_state_set(state);
     if(state==FRIDAY_STATE_SPEAKING)ui.voice_notice=false;
     if(overlay.active&&ui.scene_active&&!strcmp(ui.scene_kind,"media")&&
@@ -239,10 +247,10 @@ static void apply_state(friday_state_t state)
     recovery_notice_update();
     if (!ui.scene_active) {
         display_label(ui.title, headings[index]);
-        if (state==FRIDAY_STATE_IDLE) set_message_text("Touch the light to begin.\nHold for local views.");
-        else if (state==FRIDAY_STATE_LISTENING) set_message_text("Go ahead. I'll keep up.");
-        else if (state==FRIDAY_STATE_THINKING) set_message_text("A little thought before a useful answer.");
-        else if (state==FRIDAY_STATE_ALERT) set_message_text("Let's take care of this.");
+        if (state==FRIDAY_STATE_IDLE&&ui.activity_message) set_message_text("Touch the light to begin.\nHold for local views.");
+        else if (state==FRIDAY_STATE_LISTENING&&previous!=state) set_activity_message("Go ahead. I'll keep up.");
+        else if (state==FRIDAY_STATE_THINKING&&previous!=state) set_activity_message("A little thought before a useful answer.");
+        else if (state==FRIDAY_STATE_ALERT&&previous!=state) set_activity_message("Let's take care of this.");
     }
     ESP_LOGI(TAG, "State changed to %s", friday_state_name(state));
 }
@@ -312,7 +320,7 @@ static void presence_event_cb(lv_event_t *event)
         bool recording = result == FRIDAY_UI_ACTIVATION_RECORDING;
         apply_state(recording ? FRIDAY_STATE_LISTENING : FRIDAY_STATE_THINKING);
         if (recording) {
-            set_message_text("Listening - pause when you are finished");
+            set_activity_message("Listening - pause when you are finished");
         }
     }
 }

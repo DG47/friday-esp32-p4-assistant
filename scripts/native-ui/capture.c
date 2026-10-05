@@ -103,6 +103,28 @@ static void metadata_audit(const char *directory)
     friday_ui_set_surface("ambient","Friday","Ready");friday_ui_set_network("WI-FI SETUP","Join Demo-Setup and open 192.0.2.1.");shown("Demo-Setup");shown("192.0.2.1");capture(directory,"audit-setup");
     puts("ALL_SCREEN_METADATA_AUDIT generated diagnostics hidden, user content/credits/errors/protected text retained: PASS");
 }
+static void activity_copy_audit(const char *directory)
+{
+    friday_ui_media_clear();friday_ui_set_surface("ambient","Friday","Touch the light to begin.");
+    friday_ui_set_state(FRIDAY_STATE_IDLE);friday_ui_set_state(FRIDAY_STATE_THINKING);
+    shown("A little thought before a useful answer.");friday_ui_set_state(FRIDAY_STATE_IDLE);
+    hidden_text("A little thought before a useful answer.");shown("Touch the light to begin.");
+    friday_ui_set_state(FRIDAY_STATE_THINKING);
+    friday_ui_set_network("WI-FI SETUP","Join Synthetic-Setup and open 192.0.2.10.");
+    for(int i=0;i<10;i++) {friday_ui_set_state(FRIDAY_STATE_THINKING);shown("Synthetic-Setup");}
+    for(int i=0;i<10;i++) {friday_ui_set_state(FRIDAY_STATE_IDLE);shown("Synthetic-Setup");}
+    capture(directory,"presence-preserved-setup");
+    const char *explicit_copy[]={"A little thought before a useful answer.","My own note about thinking and listening.","Pairing code: DEMO-CODE"};
+    for(unsigned i=0;i<3;i++) {
+        friday_ui_set_state(FRIDAY_STATE_THINKING);friday_ui_set_response(explicit_copy[i]);
+        for(int j=0;j<10;j++)friday_ui_set_state(FRIDAY_STATE_THINKING);
+        shown(explicit_copy[i]);friday_ui_set_state(FRIDAY_STATE_IDLE);shown(explicit_copy[i]);
+        friday_ui_set_state(FRIDAY_STATE_IDLE);shown(explicit_copy[i]);
+    }
+    friday_ui_set_surface("PAIRING","Friday","Pairing code: DEMO-CODE");
+    for(int i=0;i<10;i++){friday_ui_set_state(FRIDAY_STATE_IDLE);shown("DEMO-CODE");}
+    puts("ACTIVITY_COPY provenance: generated thinking cleared; setup/pairing/explicit and identical user copy retained through repeated/idle states PASS");
+}
 static lv_obj_t *notice_label(void)
 {
     lv_obj_t *screen=lv_screen_active();
@@ -359,6 +381,7 @@ int main(int argc,char **argv) {
 #ifndef FRIDAY_COMPARE_BASE
     metadata_audit(argv[1]);
     recovery_audit(argv[1]);
+    activity_copy_audit(argv[1]);
 #endif
     /* Native short sequence, synthetic labels only; no content animation. */
     friday_ui_media_clear();friday_ui_set_surface("ambient","Friday","Touch the light to begin.");
