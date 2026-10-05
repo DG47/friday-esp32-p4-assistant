@@ -9,6 +9,27 @@
 static uint32_t pixels[720*720];
 static uint32_t tick;
 static int actions;
+/* Model a renderer holding the recursive display lock for 211 ms. No sleeps,
+ * device access, or audio content: exercise the production meter call itself. */
+static int display_hold_ms, display_requested_ms, display_unlocks;
+bool bsp_display_lock(int ms) {
+    display_requested_ms=ms;
+    return display_hold_ms==0 || ms<0 || ms>=display_hold_ms;
+}
+void bsp_display_unlock(void) {display_unlocks++;}
+#ifndef FRIDAY_BASELINE
+static void capture_lock_regression(void) {
+    display_hold_ms=211;
+    int unlocks=display_unlocks;
+    friday_ui_set_microphone("MICS ONLINE",0,100);
+    assert(display_requested_ms==0);
+    assert(display_unlocks==unlocks); /* Busy: no LVGL mutation/unlock. */
+    display_hold_ms=0;
+    friday_ui_set_microphone("MICS ONLINE",0,200);
+    assert(display_requested_ms==0 && display_unlocks==unlocks+1);
+    puts("Capture meter skips busy display lock and resumes: PASS");
+}
+#endif
 static bool action(const char *id) {assert(id && *id);actions++;return true;}
 int64_t esp_timer_get_time(void) {return (int64_t)tick*1000;}
 static void flush(lv_display_t *d,const lv_area_t *a,uint8_t *p) {
@@ -84,7 +105,11 @@ int main(int argc,char **argv) {
     assert(argc==2);lv_init();lv_display_t *d=lv_display_create(720,720);
     lv_display_set_color_format(d,LV_COLOR_FORMAT_RGB565);
     static uint16_t buffer[720*720];lv_display_set_buffers(d,buffer,NULL,sizeof(buffer),LV_DISPLAY_RENDER_MODE_FULL);lv_display_set_flush_cb(d,flush);
-    friday_ui_create();friday_ui_set_action_callback(action);friday_ui_set_network("Connected",NULL);friday_ui_set_microphone("Ready",0,0);capture(argv[1],"ambient");
+    friday_ui_create();
+#ifndef FRIDAY_BASELINE
+    capture_lock_regression();
+#endif
+    friday_ui_set_action_callback(action);friday_ui_set_network("Connected",NULL);friday_ui_set_microphone("Ready",0,0);capture(argv[1],"ambient");
     const char *names[]={"listening","reasoning","speaking","attention"};
     for(int i=1;i<=4;i++){friday_ui_set_state((friday_state_t)i);capture(argv[1],names[i-1]);}
     friday_ui_set_state(FRIDAY_STATE_IDLE);

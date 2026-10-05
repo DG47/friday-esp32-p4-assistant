@@ -658,7 +658,9 @@ void friday_ui_set_network(const char *status, const char *detail)
 
 void friday_ui_set_microphone(const char *status, int32_t peak, int32_t rms)
 {
-    if (ui.microphone == NULL || !bsp_display_lock(1000)) {
+    /* Capture runs every 20 ms. Meter/status refresh is best effort: never
+     * wait behind a scene render while the I2S receive queue fills. */
+    if (ui.microphone == NULL || !bsp_display_lock(0)) {
         return;
     }
 
