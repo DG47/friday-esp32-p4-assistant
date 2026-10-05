@@ -40,8 +40,17 @@ class SpeechDirector:
         self.latest = {}
         self.failed_streams = set()
         self.synthesis_slots = asyncio.Semaphore(4)
+        self.control_locks = {}
+
+    def control_lock(self, device_id):
+        # Serialize cancel/replacement so an old cancellation cannot stop a new stream.
+        return self.control_locks.setdefault(device_id, asyncio.Lock())
 
     async def cancel(self, device_id):
+        async with self.control_lock(device_id):
+            await self._cancel_locked(device_id)
+
+    async def _cancel_locked(self, device_id):
         task = self.tasks.pop(device_id, None)
         if task:
             task.cancel()
@@ -50,15 +59,17 @@ class SpeechDirector:
         await self.hub.broadcast(device_id, {"type": "speech.cancel"}, required_capability="pcm_speech")
 
     async def speak(self, device_id, text, job_id=None):
-        if device_id in self.latest and self.latest[device_id] != job_id:
-            return
-        await self.cancel(device_id)
-        if device_id in self.latest and self.latest[device_id] != job_id:
-            return
-        if self.provider and self.hub.has_capability(device_id, "pcm_speech"):
-            self.tasks[device_id] = asyncio.create_task(self._play(device_id, text))
-        else:
-            await self.hub.broadcast(device_id, {"type": "state", "state": "idle"}, required_capability="pcm_speech")
+        async with self.control_lock(device_id):
+            if device_id in self.latest and self.latest[device_id] != job_id:
+                return
+            await self._cancel_locked(device_id)
+            if device_id in self.latest and self.latest[device_id] != job_id:
+                return
+            if self.provider and self.hub.has_capability(device_id, "pcm_speech"):
+                self.tasks[device_id] = asyncio.create_task(self._play(device_id, text))
+            else:
+                await self.hub.broadcast(device_id, {"type": "state", "state": "idle"}, required_capability="pcm_speech")
+
 
     def finished(self, device_id, stream_id, status="completed"):
         entry = self.waiting.get(device_id)
@@ -99,7 +110,9 @@ class SpeechDirector:
             await self.hub.broadcast(device_id, {"type": "error", "code": "speech_unavailable", "message": "Speech playback failed; the written response is available."}, required_capability="pcm_speech")
         finally:
             self.failed_streams.discard(stream_id)
-            self.waiting.pop(device_id, None)
+            entry = self.waiting.get(device_id)
+            if entry and entry[0] == stream_id:
+                self.waiting.pop(device_id, None)
             if self.tasks.get(device_id) is asyncio.current_task():
                 self.tasks.pop(device_id, None)
             if not asyncio.current_task().cancelling():

@@ -50,3 +50,8 @@ jobs:
           python3 scripts/test_native_display.py --lvgl-root .ci-lvgl
           cc -std=c11 -Wall -Wextra -Werror -I firmware/main firmware/tests/test_media_guard.c firmware/main/friday_media_guard.c -lm -o /tmp/friday-media-test
           /tmp/friday-media-test
+
+      - name: Native AEC reference and metadata regressions
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/main -I firmware/tests/voice_stubs firmware/tests/test_echo.c firmware/main/friday_echo.c -o /tmp/friday-echo-test
+          /tmp/friday-echo-test

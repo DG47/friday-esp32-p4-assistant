@@ -8,3 +8,4 @@ dependencies:
   lvgl/lvgl:
     version: "9.3.0"
     public: true
+  espressif/esp-sr: "2.5.5"

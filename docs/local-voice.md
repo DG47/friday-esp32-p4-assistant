@@ -45,6 +45,9 @@ Mac; recognized user requests and recent conversation/tool context can go to
 Anthropic for reasoning. Local TTS stays on the Mac. Room audio is not logged.
 
 Conversation records persist locally and the model reads bounded recent context.
-An editable long-term facts/memory layer is not implemented. Calendar remains
-explicitly mock/sample; Gmail and Home Assistant are not wired. Timers/reminders
+Explicit reviewed long-term memory is implemented and enabled. The supervised
+Google Calendar integration is enabled with model sharing disabled; its existing
+grant authorization passed a content-free check. Gmail and Home Assistant are not wired. Timers/reminders
 are real local capabilities; weather's real adapter remains disabled pending setup.
+
+An isolated default-off echo-cancellation/spoken-wake-interruption candidate now exists; see `voice-reliability.md`. The separately approved controlled trial has experimental AEC enabled and metadata diagnostics installed. Physical echo suppression and delayed spoken-wake interruption remain unverified; half duplex remains the default for new builds.

@@ -65,4 +65,18 @@ config FRIDAY_VAD_SILENCE_END_MS
     range 200 3000
     default 800
 
+config FRIDAY_AEC_BARGE_IN
+    bool "Experimental echo-cancelled spoken interruption"
+    default n
+    help
+        Enables 16kHz Espressif AEC using a bounded software playback reference.
+        Requires physical reference-delay calibration and acoustic validation.
+        Missing reference suppresses microphone frames; half-duplex is default.
+
+config FRIDAY_AEC_REFERENCE_DELAY_MS
+    int "Playback reference alignment delay (ms)"
+    depends on FRIDAY_AEC_BARGE_IN
+    range 0 200
+    default 60
+
 endmenu
