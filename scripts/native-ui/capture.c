@@ -6,6 +6,7 @@
 #include <time.h>
 #include "lvgl.h"
 #include "friday_ui.h"
+#include "friday_presence.h"
 static uint32_t pixels[720*720];
 static uint32_t tick;
 static int actions;
@@ -359,5 +360,20 @@ int main(int argc,char **argv) {
     metadata_audit(argv[1]);
     recovery_audit(argv[1]);
 #endif
+    /* Native short sequence, synthetic labels only; no content animation. */
+    friday_ui_media_clear();friday_ui_set_surface("ambient","Friday","Touch the light to begin.");
+    friday_ui_set_state(FRIDAY_STATE_IDLE);capture(argv[1],"presence-00-rest");
+    lv_obj_t *presence=NULL;
+    for(uint32_t j=0;j<lv_obj_get_child_count(lv_screen_active());j++) {
+        lv_obj_t *o=lv_obj_get_child(lv_screen_active(),j);
+        if(lv_obj_get_width(o)==648&&lv_obj_get_height(o)==232)presence=o;
+    }
+    assert(presence);lv_obj_send_event(presence,LV_EVENT_PRESSED,NULL);capture(argv[1],"presence-01-touch");
+    lv_obj_send_event(presence,LV_EVENT_PRESS_LOST,NULL);
+    friday_ui_set_state(FRIDAY_STATE_LISTENING);capture(argv[1],"presence-02-listening");
+    capture(argv[1],"presence-03-listening");friday_ui_set_state(FRIDAY_STATE_THINKING);capture(argv[1],"presence-04-thinking");
+    capture(argv[1],"presence-05-thinking");friday_ui_set_state(FRIDAY_STATE_SPEAKING);capture(argv[1],"presence-06-speaking");
+    friday_ui_set_state(FRIDAY_STATE_IDLE);friday_ui_set_tool("synthetic","complete");capture(argv[1],"presence-07-complete");
+    capture(argv[1],"presence-08-settle");capture(argv[1],"presence-09-settle");capture(argv[1],"presence-10-rest");
     lv_mem_monitor_t m;lv_mem_monitor(&m);printf("HOST_HEAP used=%zu max=%zu\n",m.total_size-m.free_size,m.max_used);return 0;
 }

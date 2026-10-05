@@ -239,7 +239,8 @@ static void apply_state(friday_state_t state)
     recovery_notice_update();
     if (!ui.scene_active) {
         display_label(ui.title, headings[index]);
-        if (state==FRIDAY_STATE_LISTENING) set_message_text("Go ahead. I'll keep up.");
+        if (state==FRIDAY_STATE_IDLE) set_message_text("Touch the light to begin.\nHold for local views.");
+        else if (state==FRIDAY_STATE_LISTENING) set_message_text("Go ahead. I'll keep up.");
         else if (state==FRIDAY_STATE_THINKING) set_message_text("A little thought before a useful answer.");
         else if (state==FRIDAY_STATE_ALERT) set_message_text("Let's take care of this.");
     }
@@ -824,6 +825,8 @@ void friday_ui_create(void)
         ui.card_times[i]=make_label(ui.cards[i],"",&lv_font_montserrat_18,0x9399A5);
         lv_obj_set_size(ui.card_times[i],104,28);lv_obj_align(ui.card_times[i],LV_ALIGN_LEFT_MID,20,0);lv_label_set_long_mode(ui.card_times[i],LV_LABEL_LONG_MODE_DOTS);
         ui.card_labels[i]=make_label(ui.cards[i],"",&lv_font_montserrat_24,0xEEECE7);lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_style_bg_color(ui.cards[i],color_hex(0x263B50),LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(ui.cards[i],color_hex(0x8FE2C7),LV_STATE_PRESSED);
         lv_obj_add_event_cb(ui.cards[i],agenda_mark,LV_EVENT_DRAW_MAIN,NULL);
         lv_obj_add_event_cb(ui.cards[i],scene_action_event,LV_EVENT_CLICKED,ui.card_actions[i]);lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
         ui.buttons[i]=lv_button_create(screen);lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_shadow_width(ui.buttons[i],0,0);
@@ -837,6 +840,8 @@ void friday_ui_create(void)
         lv_obj_set_size(ui.browse_hints[i],252,26);lv_obj_align(ui.browse_hints[i],LV_ALIGN_TOP_LEFT,24,140);
         lv_label_set_long_mode(ui.browse_hints[i],LV_LABEL_LONG_MODE_DOTS);
         lv_obj_set_style_text_align(ui.button_labels[i],LV_TEXT_ALIGN_CENTER,0);lv_label_set_long_mode(ui.button_labels[i],LV_LABEL_LONG_MODE_DOTS);lv_obj_center(ui.button_labels[i]);
+        lv_obj_set_style_bg_color(ui.buttons[i],color_hex(0x263B50),LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(ui.buttons[i],color_hex(0x8FE2C7),LV_STATE_PRESSED);
         lv_obj_add_event_cb(ui.buttons[i],scene_action_event,LV_EVENT_CLICKED,ui.button_actions[i]);lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
     }
     ui.cover=lv_obj_create(screen);lv_obj_remove_style_all(ui.cover);lv_obj_set_size(ui.cover,272,272);lv_obj_align(ui.cover,LV_ALIGN_TOP_LEFT,48,88);
@@ -948,7 +953,12 @@ bool friday_ui_set_response(const char *text)
 void friday_ui_set_tool(const char *name,const char *status)
 {
     (void)name;
-    if(status&&!strcmp(status,"complete"))return;
+    if(status&&!strcmp(status,"complete")) {
+        if(ui.presence&&bsp_display_lock(0)) {
+            friday_presence_complete(ui.presence);bsp_display_unlock();
+        }
+        return;
+    }
     if(status&&!strcmp(status,"failed"))friday_ui_set_surface("TOOL","Please try again","That didn't finish. Please try again.");
     else friday_ui_set_surface("TOOL","One moment","I'm working on that.");
 }

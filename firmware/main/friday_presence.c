@@ -8,6 +8,10 @@ typedef struct {
     int phase;
     int level;
     bool compact;
+    int activity, from_activity, target_activity;
+    uint32_t changed_at, feedback_at;
+    bool feedback;
+    bool pressed;
 } presence_t;
 
 static int wave(int angle) { return lv_trigo_sin(angle) / 256; }
@@ -32,9 +36,13 @@ static void draw(lv_event_t *event)
             int t=i*360/segments;
             int envelope=wave(i*180/segments);
             int strength=p->compact?5:22;
-            if(p->state==FRIDAY_STATE_LISTENING)strength+=p->level/12+(p->compact?1:10);
-            if(p->state==FRIDAY_STATE_THINKING)strength+=p->compact?2:18;
-            if(p->state==FRIDAY_STATE_SPEAKING)strength+=p->compact?3:14;
+            strength+=p->activity*(p->compact?3:18)/256;
+            if(p->state==FRIDAY_STATE_LISTENING)strength+=p->level/12;
+            if(p->pressed)strength+=p->compact?3:12;
+            if(p->feedback) {
+                uint32_t elapsed=lv_tick_elaps(p->feedback_at);
+                strength+=(p->compact?4:16)*(320-(int)elapsed)/320;
+            }
             int frequency=p->state==FRIDAY_STATE_THINKING?2:1;
             int bend=wave(t*frequency+p->phase+ribbon*38)*strength/128;
             bend+=wave(t*2-p->phase/2+ribbon*47)*(p->compact?2:12)/128;
@@ -54,9 +62,26 @@ static void draw(lv_event_t *event)
 static void tick(lv_timer_t *timer)
 {
     presence_t *p=lv_timer_get_user_data(timer);
-    int speed=p->state==FRIDAY_STATE_THINKING?7:p->state==FRIDAY_STATE_SPEAKING?9:p->state==FRIDAY_STATE_LISTENING?5:2;
+    uint32_t elapsed=lv_tick_elaps(p->changed_at);
+    if(elapsed>240)elapsed=240;
+    p->activity=p->from_activity+(p->target_activity-p->from_activity)*(int)elapsed/240;
+    if(p->feedback&&lv_tick_elaps(p->feedback_at)>=320)p->feedback=false;
+    /* No idle animation while reading. Preserve phase across every view. */
+    int speed=p->state==FRIDAY_STATE_THINKING?7:p->state==FRIDAY_STATE_SPEAKING?9:p->state==FRIDAY_STATE_LISTENING?5:0;
     p->phase=(p->phase+speed)%720;
     if(lv_obj_is_visible(p->object))lv_obj_invalidate(p->object);
+    if(!speed&&elapsed==240&&!p->feedback&&!p->pressed)lv_timer_pause(p->timer);
+}
+
+static void touch(lv_event_t *event)
+{
+    presence_t *p=lv_event_get_user_data(event);
+    lv_event_code_t code=lv_event_get_code(event);
+    if(code==LV_EVENT_PRESSED)p->pressed=true;
+    else if(code==LV_EVENT_RELEASED||code==LV_EVENT_PRESS_LOST)p->pressed=false;
+    else return;
+    p->feedback=false; /* Interrupted input cannot leave a delayed cue. */
+    lv_timer_resume(p->timer);lv_timer_ready(p->timer);lv_obj_invalidate(p->object);
 }
 
 static void deleted(lv_event_t *event)
@@ -71,7 +96,8 @@ lv_obj_t *friday_presence_create(lv_obj_t *parent)
     lv_obj_remove_flag(p->object,LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_size(p->object,648,232);
     lv_obj_add_event_cb(p->object,draw,LV_EVENT_DRAW_MAIN,p);
-    p->timer=lv_timer_create(tick,100,p);
+    p->timer=lv_timer_create(tick,33,p);
+    lv_obj_add_event_cb(p->object,touch,LV_EVENT_ALL,p);
     lv_obj_add_event_cb(p->object,deleted,LV_EVENT_DELETE,p);
     return p->object;
 }
@@ -86,8 +112,10 @@ static presence_t *context(lv_obj_t *object)
 }
 void friday_presence_set_state(lv_obj_t *object,friday_state_t state)
 {
-    presence_t *p=context(object);if(!p)return;p->state=state;
-    lv_timer_set_period(p->timer,state==FRIDAY_STATE_IDLE?100:33);lv_obj_invalidate(object);
+    presence_t *p=context(object);if(!p||p->state==state)return;
+    p->from_activity=p->activity;p->target_activity=state==FRIDAY_STATE_IDLE?0:256;
+    p->changed_at=lv_tick_get();p->state=state;p->feedback=false;
+    lv_timer_resume(p->timer);lv_timer_ready(p->timer);lv_obj_invalidate(object);
 }
 void friday_presence_set_level(lv_obj_t *object,int32_t rms)
 {
@@ -95,5 +123,13 @@ void friday_presence_set_level(lv_obj_t *object,int32_t rms)
 }
 void friday_presence_set_compact(lv_obj_t *object,bool compact)
 {
-    presence_t *p=context(object);if(!p)return;p->compact=compact;lv_obj_invalidate(object);
+    presence_t *p=context(object);if(!p||p->compact==compact)return;
+    p->compact=compact;p->pressed=false;p->feedback=false;lv_obj_invalidate(object);
+}
+
+void friday_presence_complete(lv_obj_t *object)
+{
+    presence_t *p=context(object);if(!p)return;
+    p->feedback=true;p->feedback_at=lv_tick_get();
+    lv_timer_resume(p->timer);lv_timer_ready(p->timer);lv_obj_invalidate(object);
 }
