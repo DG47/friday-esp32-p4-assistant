@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -25,6 +26,9 @@ static bool overlay_action_pending;
 static bool overlay_resolution_pending;
 static bool overlay_memory_decision_pending;
 static char last_media_line[2001];
+/* Capture may report a one-shot allocation/read failure while the display is
+ * busy. Keep that state without waiting; the UI timer renders it when free. */
+static atomic_bool microphone_unavailable;
 
 #define FRIDAY_STATUS_BOTTOM_OFFSET -166
 #define FRIDAY_MESSAGE_TOP 570
@@ -65,6 +69,7 @@ typedef struct {
     char card_actions[4][64];
     char button_actions[4][64];
     bool voice_notice;
+    int recovery_notice_mask;
     bool hide_scene_summary;
     bool scene_active;
     char scene_kind[24];
@@ -193,6 +198,30 @@ static void set_message_text(const char *text)
     position_message();
 }
 
+/* The top 28px are reserved for actionable recovery notices on every scene.
+ * Keep them separate from response text, protected facts, credits and targets. */
+static void recovery_notice_update(void)
+{
+    int mask=(atomic_load_explicit(&microphone_unavailable,memory_order_relaxed)?1:0)|(ui.voice_notice?2:0);
+    if(mask==ui.recovery_notice_mask)return;
+    ui.recovery_notice_mask=mask;
+    if(!mask){lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);return;}
+    const char *text=mask==3?"Microphone and voice unavailable. Use touch controls.":
+        mask==1?"Microphone unavailable. Use touch controls.":
+        "Voice isn't available. You can read the response.";
+    display_label(ui.status,text);
+    lv_obj_set_size(ui.status,624,24);lv_obj_align(ui.status,LV_ALIGN_TOP_LEFT,48,4);
+    lv_obj_set_style_text_color(ui.status,color_hex(UI_TEXT),0);
+    lv_obj_remove_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(ui.status);
+}
+static void recovery_notice_tick(lv_timer_t *timer)
+{
+    (void)timer;
+    if(!bsp_display_lock(0))return;
+    recovery_notice_update();bsp_display_unlock();
+}
+
 static void apply_state(friday_state_t state)
 {
     friday_state_set(state);
@@ -207,12 +236,7 @@ static void apply_state(friday_state_t state)
     const char *headings[] = {"A little more space\nfor your day.", "I'm listening.", "Let me connect\nthe dots.", "Here's what I found.", "A moment of\nyour attention."};
     int index=state>=FRIDAY_STATE_IDLE&&state<=FRIDAY_STATE_ALERT?state:FRIDAY_STATE_IDLE;
     (void)states;
-    if(ui.voice_notice) {
-        display_label(ui.status,"Voice isn't available. You can read the response.");
-        lv_obj_set_size(ui.status,624,24);lv_obj_align(ui.status,LV_ALIGN_TOP_LEFT,48,666);
-        lv_obj_remove_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
-        if(ui.scene_active&&!strcmp(ui.scene_kind,"media"))lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,694);
-    } else lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
+    recovery_notice_update();
     if (!ui.scene_active) {
         display_label(ui.title, headings[index]);
         if (state==FRIDAY_STATE_LISTENING) set_message_text("Go ahead. I'll keep up.");
@@ -365,12 +389,10 @@ static void scene_layout(bool active)
     if(active) {
         lv_obj_add_flag(ui.microphone,LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui.network,LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(ui.microphone,LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui.network,LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     }
     for(int i=0;i<4;i++) {
@@ -690,7 +712,7 @@ bool friday_ui_set_scene(const cJSON *surface)
         else if(strstr(source,"synthetic")||strstr(source,"Synthetic"))lv_obj_add_flag(ui.attribution,LV_OBJ_FLAG_HIDDEN);
         else if(!source[0]||strstr(source,"Spotify"))display_label(ui.attribution,"Spotify");
         else {char credit[320];lv_snprintf(credit,sizeof(credit),"Spotify / %s",source);display_label(ui.attribution,credit);}
-        lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,ui.voice_notice?694:682);
+        lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,682);
         lv_obj_add_flag(ui.progress,LV_OBJ_FLAG_HIDDEN);
         int em,es,dm,ds;
         if(sscanf(stamp,"%4d:%2d / %4d:%2d",&em,&es,&dm,&ds)==4&&em>=0&&em<=1440&&es>=0&&es<60&&dm>=0&&dm<=1440&&ds>=0&&ds<60&&(dm*60+ds)>0) {
@@ -780,7 +802,8 @@ void friday_ui_create(void)
     ui.presence=friday_presence_create(screen);lv_obj_add_flag(ui.presence,LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(ui.presence,presence_event_cb,LV_EVENT_ALL,NULL);
     ui.status=make_label(screen,"Here when you need me",&lv_font_montserrat_18,0xAAA8A5);
-    lv_obj_align(ui.status,LV_ALIGN_TOP_LEFT,48,648);
+    lv_obj_align(ui.status,LV_ALIGN_TOP_LEFT,48,4);
+    ui.recovery_notice_mask=-1;lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
     ui.message=make_label(screen,"",&lv_font_montserrat_24,0xC9C6C1);
     lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_DOTS);
     ui.microphone=make_label(screen,"Microphone starting",&lv_font_montserrat_18,0x757B86);
@@ -833,6 +856,7 @@ void friday_ui_create(void)
     ui.browse_meta=make_label(screen,"",&lv_font_montserrat_18,0x7F8B98);
     scene_layout(false);set_message_text("Say Friday or touch the light.\nHold for local views.");apply_state(FRIDAY_STATE_IDLE);
     lv_timer_create(diagnostic_tick,10000,NULL);
+    lv_timer_create(recovery_notice_tick,100,NULL);
 }
 
 void friday_ui_set_activation_callback(friday_ui_activation_callback_t callback)
@@ -934,9 +958,9 @@ void friday_ui_set_backend(const char *status)
     if(ui.network==NULL||!bsp_display_lock(1000))return;
     lv_obj_add_flag(ui.network,LV_OBJ_FLAG_HIDDEN);
     if(status&&(strstr(status,"VOICE UNAVAILABLE")||!strcmp(status,"SPEAKER ERROR"))) {
-        ui.voice_notice=true;apply_state(friday_state_get());
+        ui.voice_notice=true;recovery_notice_update();
     } else if(status&&!strcmp(status,"FRIDAY ONLINE")) {
-        ui.voice_notice=false;lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
+        ui.voice_notice=false;recovery_notice_update();
     }
     bsp_display_unlock();
 }
@@ -955,13 +979,18 @@ void friday_ui_set_microphone(const char *status, int32_t peak, int32_t rms)
 {
     /* Capture runs every 20 ms. Meter/status refresh is best effort: never
      * wait behind a scene render while the I2S receive queue fills. */
+    if(status&&(!strcmp(status,"MIC ERROR")||!strcmp(status,"MIC READ ERROR")))
+        atomic_store_explicit(&microphone_unavailable,true,memory_order_relaxed);
+    else if(status&&(!strcmp(status,"MICS ONLINE")||!strcmp(status,"Ready")||!strcmp(status,"MIC READY")||!strcmp(status,"MICS READY")))
+        atomic_store_explicit(&microphone_unavailable,false,memory_order_relaxed);
     if (ui.microphone == NULL || !bsp_display_lock(0)) {
         return;
     }
 
     (void)peak;
     friday_presence_set_level(ui.presence,rms);
-    (void)status;lv_obj_add_flag(ui.microphone,LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.microphone,LV_OBJ_FLAG_HIDDEN);
+    recovery_notice_update();
     lv_obj_align(ui.microphone,LV_ALIGN_TOP_LEFT,48,676);
     bsp_display_unlock();
 }

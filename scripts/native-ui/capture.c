@@ -102,6 +102,85 @@ static void metadata_audit(const char *directory)
     friday_ui_set_surface("ambient","Friday","Ready");friday_ui_set_network("WI-FI SETUP","Join Demo-Setup and open 192.0.2.1.");shown("Demo-Setup");shown("192.0.2.1");capture(directory,"audit-setup");
     puts("ALL_SCREEN_METADATA_AUDIT generated diagnostics hidden, user content/credits/errors/protected text retained: PASS");
 }
+static lv_obj_t *notice_label(void)
+{
+    lv_obj_t *screen=lv_screen_active();
+    for(uint32_t i=0;i<lv_obj_get_child_count(screen);i++) {
+        lv_obj_t *object=lv_obj_get_child(screen,i);
+        if(lv_obj_is_visible(object)&&lv_obj_check_type(object,&lv_label_class)) {
+            const char *text=lv_label_get_text(object);
+            if(!strcmp(text,"Microphone unavailable. Use touch controls.")||
+                !strcmp(text,"Voice isn't available. You can read the response.")||
+                !strcmp(text,"Microphone and voice unavailable. Use touch controls."))return object;
+        }
+    }
+    return NULL;
+}
+static void notice_geometry(void)
+{
+    lv_obj_t *screen=lv_screen_active();lv_obj_update_layout(screen);
+    lv_obj_t *notice=notice_label();assert(notice);lv_area_t area;lv_obj_get_coords(notice,&area);
+    assert(area.x1>=0&&area.x2<720&&area.y1>=0&&area.y2<28);
+    lv_point_t size;lv_text_get_size(&size,lv_label_get_text(notice),lv_obj_get_style_text_font(notice,0),0,0,lv_obj_get_width(notice),LV_TEXT_FLAG_NONE);
+    assert(size.y<=lv_obj_get_height(notice));
+    for(uint32_t i=0;i<lv_obj_get_child_count(screen);i++) {
+        lv_obj_t *object=lv_obj_get_child(screen,i);if(object==notice||!lv_obj_is_visible(object))continue;
+        lv_area_t other;lv_obj_get_coords(object,&other);
+        /* Not merely outside buttons: no overlap with content, credits or ribbon. */
+        assert(area.x2<other.x1||other.x2<area.x1||area.y2<other.y1||other.y2<area.y1);
+    }
+}
+static void deferred_notice_tick(void){tick+=120;lv_tick_inc(120);lv_timer_handler();}
+static void recovery_audit(const char *directory)
+{
+    const char *surfaces[]={
+        "{\"kind\":\"timeline\",\"title\":\"Today\",\"subtitle\":\"Thursday, October 1\\nGoogle Calendar; read only\",\"items\":[{\"time\":\"09:00\",\"label\":\"Studio planning\"},{\"time\":\"12:00\",\"label\":\"Lunch\"},{\"time\":\"15:00\",\"label\":\"Project review\"},{\"time\":\"17:00\",\"label\":\"Wrap up\"}],\"actions\":[{\"id\":\"calendar:0\",\"label\":\"Previous\"},{\"id\":\"calendar:2\",\"label\":\"Next\"},{\"id\":\"calendar_refresh\",\"label\":\"Refresh\"},{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}",
+        "{\"kind\":\"message\",\"title\":\"Remember 1/1\",\"subtitle\":\"My provider and metadata note stays complete.\",\"actions\":[{\"id\":\"confirm:test\",\"label\":\"Remember this\"},{\"id\":\"cancel\",\"label\":\"Cancel\"}]}",
+        "{\"kind\":\"media\",\"title\":\"Quiet Satellites\",\"subtitle\":\"A complete original lyric line\",\"items\":[{\"time\":\"Artist\",\"label\":\"The Paper Observatory\"},{\"time\":\"Source\",\"label\":\"Spotify\"},{\"time\":\"Progress\",\"label\":\"1:24 / 3:42\"}],\"actions\":[{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}",
+        "{\"kind\":\"list\",\"title\":\"Your reminders\",\"items\":[{\"time\":\"15:30\",\"label\":\"#12 Stretch\",\"action\":\"reminder:12\"}],\"actions\":[{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}",
+        "{\"kind\":\"timer\",\"title\":\"Timer running\",\"subtitle\":\"Your timer is set.\",\"countdown_ms\":120000,\"actions\":[{\"id\":\"cancel:12\",\"label\":\"Cancel\"}]}",
+        "{\"kind\":\"metric\",\"title\":\"At your service\",\"actions\":[{\"id\":\"memories\",\"label\":\"Memory\"},{\"id\":\"reminders\",\"label\":\"Reminders\"},{\"id\":\"calendar\",\"label\":\"Calendar\"},{\"id\":\"music\",\"label\":\"Music\"}]}",
+        "{\"kind\":\"timeline\",\"title\":\"Today\",\"subtitle\":\"Thursday, October 1\\nNo events today\",\"actions\":[{\"id\":\"calendar_refresh\",\"label\":\"Refresh\"},{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}",
+        "{\"kind\":\"artifact\",\"title\":\"Design catch-up\",\"items\":[{\"time\":\"When\",\"label\":\"Thu Oct 01 - 11:00\"},{\"time\":\"Where\",\"label\":\"The studio\"}],\"actions\":[{\"id\":\"calendar\",\"label\":\"Today\"},{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}",
+        "{\"kind\":\"ambient\",\"title\":\"Friday\",\"subtitle\":\"Say Friday or touch the light.\"}",
+        "{\"kind\":\"PAIRING\",\"title\":\"Friday\",\"subtitle\":\"Pairing code: ABCD-EFGH\"}",
+        "{\"kind\":\"ERROR\",\"title\":\"Friday\",\"subtitle\":\"Expected a JSON object\"}"
+    };
+    const char *content[]={"Studio planning","My provider and metadata note stays complete.","A complete original lyric line","Stretch","Your timer is set.","Memory","No events today.","The studio","Say Friday or touch the light.","ABCD-EFGH","Please try again."};
+    friday_ui_set_backend("FRIDAY ONLINE");friday_ui_set_microphone("MICS ONLINE",0,0);
+    int checks=0;
+    for(int cycle=0;cycle<12;cycle++)for(unsigned sample=0;sample<sizeof(surfaces)/sizeof(surfaces[0]);sample++) {
+        scene(surfaces[sample]);shown(content[sample]);assert(!notice_label());
+        friday_ui_set_microphone("MIC ERROR",0,0);shown("Microphone unavailable");notice_geometry();shown(content[sample]);hidden_text("MIC ERROR");checks++;
+        friday_ui_set_microphone("MICS NOT READY",0,0);shown("Microphone unavailable");
+        friday_ui_set_microphone("MICS ONLINE",10,4);assert(!notice_label());shown(content[sample]);
+        /* The read-error path must remain visible even if capture's one-shot
+         * notification arrives while the renderer owns its recursive lock. */
+        display_hold_ms=211;int unlocks=display_unlocks;
+        friday_ui_set_microphone("MIC READ ERROR",0,0);assert(display_requested_ms==0&&display_unlocks==unlocks);
+        assert(!notice_label());display_hold_ms=0;deferred_notice_tick();shown("Microphone unavailable");notice_geometry();shown(content[sample]);checks++;
+        if(cycle==0&&sample==0)capture(directory,"recovery-calendar-mic");
+        friday_ui_set_backend("VOICE UNAVAILABLE — TEXT READY");shown("Microphone and voice unavailable");notice_geometry();shown(content[sample]);checks++;
+        if(cycle==0&&sample==1)capture(directory,"recovery-protected-both");
+        friday_ui_set_microphone("MICS ONLINE",8,4);shown("Voice isn't available");notice_geometry();shown(content[sample]);
+        if(sample==2)shown("Spotify");
+        if(cycle==0&&sample==0)capture(directory,"recovery-calendar-voice");
+        if(cycle==0&&sample==2)capture(directory,"recovery-music-voice");
+        friday_ui_set_backend("FRIDAY ONLINE");assert(!notice_label());shown(content[sample]);
+        friday_ui_set_backend("SPEAKER ERROR");shown("Voice isn't available");notice_geometry();shown(content[sample]);checks++;
+        /* A scene change must neither hide a pending failure nor rewrite user
+         * content. This includes Calendar->protected review and back. */
+        scene(surfaces[(sample+1)%(sizeof(surfaces)/sizeof(surfaces[0]))]);notice_geometry();
+        scene(surfaces[sample]);shown(content[sample]);shown("Voice isn't available");
+        friday_ui_set_backend("FRIDAY ONLINE");assert(!notice_label());shown(content[sample]);
+        friday_ui_set_microphone("MIC READ ERROR",0,0);notice_geometry();
+        display_hold_ms=211;unlocks=display_unlocks;friday_ui_set_microphone("MICS ONLINE",0,0);
+        assert(display_requested_ms==0&&display_unlocks==unlocks);assert(notice_label());
+        display_hold_ms=0;deferred_notice_tick();assert(!notice_label());shown(content[sample]);
+        if(cycle==0&&sample==0)capture(directory,"recovery-calendar-restored");
+    }
+    printf("RECOVERY_NOTICE_AUDIT cases=%d cycles=12 scenes=11 busy-zero-wait/pending/clear/no-overlap/no-content-loss PASS\n",checks);
+}
 #endif
 #ifndef FRIDAY_BASELINE
 static bool artwork_visible(void)
@@ -278,6 +357,7 @@ int main(int argc,char **argv) {
 #endif
 #ifndef FRIDAY_COMPARE_BASE
     metadata_audit(argv[1]);
+    recovery_audit(argv[1]);
 #endif
     lv_mem_monitor_t m;lv_mem_monitor(&m);printf("HOST_HEAP used=%zu max=%zu\n",m.total_size-m.free_size,m.max_used);return 0;
 }
