@@ -11,6 +11,22 @@ static uint32_t pixels[720*720];
 static uint32_t tick;
 static int actions;
 static char last_action[64];
+#ifdef FRIDAY_NATIVE_SENDER
+extern bool friday_backend_scene_action(const char *action);
+static int native_sender_result=-1,native_sender_calls;
+static bool native_sender_supersede;
+static char native_sender_request[129];
+int native_sender_send_text(const char *payload,int timeout)
+{
+    assert(timeout==250);native_sender_calls++;
+    cJSON *packet=cJSON_Parse(payload);assert(packet);
+    cJSON *request=cJSON_GetObjectItem(packet,"request_id");assert(cJSON_IsString(request));
+    snprintf(native_sender_request,sizeof(native_sender_request),"%s",request->valuestring);cJSON_Delete(packet);
+    if(native_sender_supersede)friday_ui_media_begin("sender-newer-owner");
+    return native_sender_result;
+}
+#endif
+
 /* Model a renderer holding the recursive display lock for 211 ms. No sleeps,
  * device access, or audio content: exercise the production meter call itself. */
 static int display_hold_ms, display_requested_ms, display_unlocks;
@@ -65,7 +81,7 @@ static bool visible_text(lv_obj_t *object,const char *needle)
     for(uint32_t i=0;i<lv_obj_get_child_count(object);i++)if(visible_text(lv_obj_get_child(object,i),needle))return true;
     return false;
 }
-static void shown(const char *text){assert(visible_text(lv_screen_active(),text));}
+static void shown(const char *text){if(!visible_text(lv_screen_active(),text))fprintf(stderr,"MISSING_TEXT %s\n",text);assert(visible_text(lv_screen_active(),text));}
 static void hidden_text(const char *text){assert(!visible_text(lv_screen_active(),text));}
 static void metadata_audit(const char *directory)
 {
@@ -134,7 +150,8 @@ static lv_obj_t *notice_label(void)
             const char *text=lv_label_get_text(object);
             if(!strcmp(text,"Microphone unavailable. Use touch controls.")||
                 !strcmp(text,"Voice isn't available. You can read the response.")||
-                !strcmp(text,"Microphone and voice unavailable. Use touch controls."))return object;
+                !strcmp(text,"Microphone and voice unavailable. Use touch controls.")||
+                strstr(text,"Finish or cancel")||strstr(text,"finish or cancel")||strstr(text,"Could not open Music"))return object;
         }
     }
     return NULL;
@@ -204,6 +221,108 @@ static void recovery_audit(const char *directory)
     }
     printf("RECOVERY_NOTICE_AUDIT cases=%d cycles=12 scenes=11 busy-zero-wait/pending/clear/no-overlap/no-content-loss PASS\n",checks);
 }
+static const char *field(const cJSON *o,const char *key);
+#ifdef FRIDAY_NATIVE_SENDER
+static void sender_failure_audit(const char *directory)
+{
+    friday_ui_media_clear();friday_ui_media_begin("sender-original");
+    cJSON *frame=cJSON_Parse("{\"type\":\"surface\",\"media_request_id\":\"sender-original\",\"media_session_id\":\"0123456789abcdef01234567\",\"media_sequence\":1,\"surface\":{\"kind\":\"media\",\"title\":\"Original music\"}}");assert(frame&&friday_ui_set_media(frame));
+    cJSON *binding=cJSON_Parse("{\"type\":\"surface\",\"media_overlay\":{\"state\":\"suspend\",\"media_request_id\":\"sender-original\",\"media_session_id\":\"0123456789abcdef01234567\",\"overlay_id\":\"sender-protected\",\"media_sequence\":1},\"surface\":{\"kind\":\"message\",\"actions\":[{\"id\":\"memno:ffffffffffffffffffffffff\",\"label\":\"Cancel review\"}]}}");
+    assert(binding&&friday_ui_media_prepare_overlay(binding));cJSON_Delete(binding);
+    scene("{\"kind\":\"message\",\"title\":\"Protected review\",\"subtitle\":\"Keep these protected facts unchanged.\",\"actions\":[{\"id\":\"music\",\"label\":\"Music\"},{\"id\":\"memno:ffffffffffffffffffffffff\",\"label\":\"Cancel review\"}]}");
+    uint32_t objects=lv_obj_get_child_count(lv_screen_active());
+    native_sender_result=-1;
+    for(int i=0;i<25;i++){
+        assert(!friday_backend_scene_action("music"));assert(friday_ui_media_suspended());assert(friday_ui_media_resume_request()==NULL);
+        shown("Keep these protected facts unchanged.");assert(lv_obj_get_child_count(lv_screen_active())==objects);
+        cJSON_ReplaceItemInObject(frame,"media_request_id",cJSON_CreateString(native_sender_request));assert(!friday_ui_set_media(frame));
+    }
+    /* Exercise the real touch wrapper too: failed send must not replace facts. */
+    friday_ui_set_action_callback(friday_backend_scene_action);int calls=native_sender_calls;
+    lv_obj_t *screen=lv_screen_active();
+    for(uint32_t j=0;j<lv_obj_get_child_count(screen);j++){
+        lv_obj_t *object=lv_obj_get_child(screen,j);
+        if(lv_obj_is_visible(object)&&lv_obj_check_type(object,&lv_button_class)&&visible_text(object,"Music"))lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);
+    }
+    assert(native_sender_calls==calls+1);shown("Keep these protected facts unchanged.");shown("Could not open Music");notice_geometry();
+    assert(friday_ui_media_suspended());assert(friday_ui_media_resume_request()==NULL);capture(directory,"music-failed-send-protected");
+    /* A newer staged owner during transport failure must survive old rollback. */
+    native_sender_supersede=true;calls=native_sender_calls;
+    for(uint32_t j=0;j<lv_obj_get_child_count(screen);j++){
+        lv_obj_t *object=lv_obj_get_child(screen,j);
+        if(lv_obj_is_visible(object)&&lv_obj_check_type(object,&lv_button_class)&&visible_text(object,"Music"))lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);
+    }
+    assert(native_sender_calls==calls+1);native_sender_supersede=false;
+    shown("Keep these protected facts unchanged.");
+    assert(friday_ui_media_suspended());
+    cJSON_ReplaceItemInObject(frame,"media_request_id",cJSON_CreateString("sender-newer-owner"));assert(friday_ui_set_media(frame));assert(!friday_ui_media_suspended());
+    friday_ui_media_begin("retry-original");cJSON_ReplaceItemInObject(frame,"media_request_id",cJSON_CreateString("retry-original"));assert(friday_ui_set_media(frame));
+    native_sender_result=1;assert(friday_backend_scene_action("music"));
+    cJSON_ReplaceItemInObject(frame,"media_request_id",cJSON_CreateString(native_sender_request));assert(friday_ui_set_media(frame));
+    cJSON_Delete(frame);friday_ui_set_action_callback(action);friday_ui_media_clear();
+    printf("ACTUAL_SENDER_FAILURE_AUDIT failures=27 protected-owner/facts/controls/no-objects/stale-frame-rejection/newer-owner/retry PASS\n");
+}
+#endif
+static void music_recovery_route_audit(const char *directory)
+{
+    char path[1024];snprintf(path,sizeof(path),"%s/../music-recovery-fixture.json",directory);
+    FILE *file=fopen(path,"rb");assert(file);char data[16384]={0};assert(fread(data,1,sizeof(data)-1,file)>0);fclose(file);
+    cJSON *packets=cJSON_Parse(data);assert(packets);cJSON *packet=NULL;int checks=0;
+    friday_ui_set_microphone("MIC READ ERROR",0,0);
+    cJSON_ArrayForEach(packet,packets){
+        const cJSON *surface=cJSON_GetObjectItem(packet,"surface");
+        if(surface){
+            assert(friday_ui_set_scene(surface));
+            const char *title=field(surface,"title");shown(title);shown("Microphone unavailable");notice_geometry();
+            const cJSON *first=cJSON_GetArrayItem(cJSON_GetObjectItem(surface,"actions"),0);
+            const char *expected=field(first,"id");int prior=actions;
+            lv_obj_t *screen=lv_screen_active();
+            for(uint32_t j=0;j<lv_obj_get_child_count(screen);j++){
+                lv_obj_t *object=lv_obj_get_child(screen,j);
+                if(lv_obj_is_visible(object)&&lv_obj_check_type(object,&lv_button_class)){
+                    lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);assert(!strcmp(last_action,expected));
+                }
+            }
+            assert(actions==prior+1);checks++;
+            capture(directory,!strcmp(title,"Request cancelled")?"music-request-cancelled":"music-touch-confirmation");
+        }else{
+            friday_ui_media_clear();friday_ui_media_begin("notice-original");
+            cJSON *original=cJSON_Parse("{\"type\":\"surface\",\"media_request_id\":\"notice-original\",\"media_session_id\":\"0123456789abcdef01234567\",\"media_sequence\":1,\"surface\":{\"kind\":\"media\",\"title\":\"Synthetic music\"}}");
+            assert(original&&friday_ui_set_media(original));
+            cJSON *binding=cJSON_Parse("{\"type\":\"surface\",\"media_overlay\":{\"state\":\"suspend\",\"media_request_id\":\"notice-original\",\"media_session_id\":\"0123456789abcdef01234567\",\"overlay_id\":\"notice-owned\",\"media_sequence\":1},\"surface\":{\"kind\":\"reminder\"}}");
+            assert(binding&&friday_ui_media_prepare_overlay(binding));cJSON_Delete(binding);
+            bool alert=!strcmp(field(packet,"fixture_owner"),"reminder");
+            if(alert)scene("{\"kind\":\"reminder\",\"title\":\"Reminder alert\",\"subtitle\":\"Keep this protected review visible.\",\"actions\":[{\"id\":\"snooze:12\",\"label\":\"Snooze\"}]}");
+            else scene("{\"kind\":\"message\",\"title\":\"Review request\",\"subtitle\":\"Keep this protected review visible.\",\"actions\":[{\"id\":\"memno:ffffffffffffffffffffffff\",\"label\":\"Cancel review\"}]}");
+            friday_ui_media_begin("notice-denied-music");assert(friday_ui_media_suspended());
+            assert(friday_ui_media_resume_request()==NULL);
+            display_hold_ms=211;int unlocks=display_unlocks;
+            assert(friday_ui_handle_notice(packet));assert(display_requested_ms==0&&display_unlocks==unlocks);
+            shown("Keep this protected review visible.");display_hold_ms=0;deferred_notice_tick();
+            assert(friday_ui_media_suspended());assert(friday_ui_media_resume_request()==NULL);
+            cJSON_ReplaceItemInObject(original,"media_request_id",cJSON_CreateString("notice-denied-music"));
+            assert(!friday_ui_set_media(original));cJSON_Delete(original);
+            shown("Keep this protected review visible.");shown("Finish or cancel");shown("Voice unavailable");notice_geometry();
+            int prior=actions;lv_obj_t *screen=lv_screen_active();
+            for(uint32_t j=0;j<lv_obj_get_child_count(screen);j++){lv_obj_t *object=lv_obj_get_child(screen,j);if(lv_obj_is_visible(object)&&lv_obj_check_type(object,&lv_button_class))lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);}
+            assert(actions==prior+1&&!strcmp(last_action,alert?"snooze:12":"memno:ffffffffffffffffffffffff"));
+            for(int repeat=0;repeat<10;repeat++) {
+                friday_ui_media_begin("notice-denied-music");assert(friday_ui_media_suspended());
+                assert(friday_ui_handle_notice(packet));assert(friday_ui_media_resume_request()==NULL);
+                shown("Keep this protected review visible.");notice_geometry();
+            }
+            capture(directory,alert?"music-alert-notice":"music-protected-notice");checks++;
+            tick+=5200;lv_tick_inc(5200);deferred_notice_tick();shown("Microphone unavailable");
+            assert(friday_ui_media_suspended());assert(friday_ui_media_resume_request()==NULL);
+            friday_ui_media_begin("notice-allowed-music");
+            cJSON *allowed=cJSON_Parse("{\"type\":\"surface\",\"media_request_id\":\"notice-allowed-music\",\"media_session_id\":\"abcdef0123456789abcdef01\",\"media_sequence\":1,\"surface\":{\"kind\":\"media\",\"title\":\"Allowed synthetic music\"}}");
+            assert(allowed&&friday_ui_set_media(allowed));assert(!friday_ui_media_suspended());cJSON_Delete(allowed);
+
+        }
+    }
+    cJSON_Delete(packets);friday_ui_set_microphone("MICS ONLINE",0,0);scene("{\"kind\":\"ambient\"}");
+    printf("MUSIC_RECOVERY_ROUTE_AUDIT backend-packets=%d microphone-unavailable/native-bound-actions/protected-scene/busy-deferred PASS\n",checks);
+}
 #endif
 #ifndef FRIDAY_BASELINE
 static bool artwork_visible(void)
@@ -215,7 +334,7 @@ static bool artwork_visible(void)
     }
     return false;
 }
-static const char *field(cJSON *o,const char *key){cJSON *v=cJSON_GetObjectItem(o,key);return cJSON_IsString(v)?v->valuestring:"";}
+static const char *field(const cJSON *o,const char *key){cJSON *v=cJSON_GetObjectItem(o,key);return cJSON_IsString(v)?v->valuestring:"";}
 static void backend_replay(const char *directory)
 {
     char path[1024];snprintf(path,sizeof(path),"%s/../backend-stream.jsonl",directory);FILE *f=fopen(path,"rb");if(!f)return;
@@ -381,6 +500,10 @@ int main(int argc,char **argv) {
 #ifndef FRIDAY_COMPARE_BASE
     metadata_audit(argv[1]);
     recovery_audit(argv[1]);
+    music_recovery_route_audit(argv[1]);
+#ifdef FRIDAY_NATIVE_SENDER
+    sender_failure_audit(argv[1]);
+#endif
     activity_copy_audit(argv[1]);
 #endif
     /* Native short sequence, synthetic labels only; no content animation. */

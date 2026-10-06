@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import hashlib
 import json
 import logging
 import re
@@ -29,7 +30,8 @@ from .scenes import local_scene
 from .tools.music import MusicService
 from .tools.spotify_runtime import create_runtime
 from .memory import prepare_memory_input
-from .models import SurfaceAction
+from .models import Surface, SurfaceAction
+from .tools.music_runtime import MusicInteractionPending
 from .speech import OpenAISpeech, SpeechDirector
 from .local_speech import MacSpeech
 from .scene_diagnostics import log_scene_action
@@ -492,6 +494,21 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             elif message_type == "scene.action":
                 try:
                     action = SurfaceAction(id=message.get("action"), label="Action").id
+                    if action.startswith("reqcancel:"):
+                        if device_id in local_music.busy or device_id in local_music.reminder_devices or (agent.memory.store is not None and agent.memory.store.pending_confirmation(device_id)):
+                            await send_error(websocket, "interaction_pending", "Finish the current interaction before cancelling this request.")
+                            continue
+                        pending = store.pending_confirmation(device_id)
+                        token = hashlib.sha256(pending.id.encode()).hexdigest()[:24] if pending else ""
+                        if not pending or not secrets.compare_digest(action.split(":", 1)[1], token) or not store.cancel_pending_confirmation(pending.id, device_id):
+                            await send_error(websocket, "interaction_pending", "That request is no longer current. Return to the current request.")
+                            continue
+                        # Consent is never inferred: this action only cancels the
+                        # exact pending request, without invoking its tools.
+                        surface = Surface(kind="message", title="Request cancelled",
+                            subtitle="You can return to Music.", actions=[SurfaceAction(id="music", label="Music")])
+                        await hub.broadcast(device_id, {"type": "surface", "status": "completed", "surface": surface.model_dump(mode="json")})
+                        continue
                     if action not in {'music'} and not action.startswith('musicctl:'):
                         if action == "dismiss":local_music.stop(device_id, websocket)
                         else:local_music.suspend(device_id, websocket)
@@ -504,7 +521,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             if owned is None or not local_music._allowed(owned):
                                 raise ValueError('Reopen Music before controlling playback')
                             if device_id in local_music.protected or device_id in local_music.busy or local_music.blocked(device_id):
-                                raise ValueError('Resolve the current interaction first')
+                                raise MusicInteractionPending('Resolve the current interaction first')
                             await music.scene(device_id, action)
                             local_music.stop(device_id, websocket)
                         surface = await local_music.open(device_id, websocket, message.get('request_id'))
@@ -538,6 +555,26 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                 raise ValueError("That reminder is no longer active for this device")
                             text = f"{verb} reminder #{reminder_id}" + (" for 10 minutes" if verb == "snooze" else "")
                         await handle_utterance(device_id, text, request_id=request_id)
+                except MusicInteractionPending:
+                    # Re-read authoritative ownership at delivery time; never retain
+                    # a stale confirmation or turn a Music tap into consent.
+                    pending = store.pending_confirmation(device_id)
+                    memory_pending = agent.memory.store is not None and agent.memory.store.pending_confirmation(device_id)
+                    if pending is not None and not memory_pending and device_id not in local_music.busy and device_id not in local_music.reminder_devices:
+                        surface = Surface(
+                            kind="message", title="Confirmation required",
+                            subtitle=pending.summary + "\nSay yes to continue, or tap Cancel request.",
+                            actions=[SurfaceAction(id="reqcancel:" + hashlib.sha256(pending.id.encode()).hexdigest()[:24], label="Cancel request")],
+                            expires_ms=30000,
+                        )
+                        await hub.broadcast(device_id, {"type": "surface", "surface": surface.model_dump(mode="json")})
+                    else:
+                        message = (
+                            "Finish or cancel the pending memory review before returning to Music."
+                            if memory_pending else
+                            "Finish the current interaction before returning to Music."
+                        )
+                        await send_error(websocket, "interaction_pending", message)
                 except ValueError:
                     await send_error(websocket, "bad_action", "Action is unavailable or invalid; refresh the scene")
             elif message_type == "result.ack":

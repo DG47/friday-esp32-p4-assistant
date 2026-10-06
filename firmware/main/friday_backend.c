@@ -281,7 +281,7 @@ bool friday_backend_scene_action(const char *action)
     bool media_action = strcmp(action,"music") == 0 || strncmp(action,"musicctl:",9) == 0;
     /* Navigation pauses the source-owned view; an authenticated overlay binds it. */
     if(!strcmp(action,"dismiss"))friday_ui_media_clear();
-    bool mutation = strncmp(action, "snooze:", 7) == 0 || strncmp(action, "complete:", 9) == 0 || strncmp(action, "cancel:", 7) == 0 || strncmp(action,"musicctl:",9) == 0;
+    bool mutation = strncmp(action,"reqcancel:",10) == 0 || strncmp(action, "snooze:", 7) == 0 || strncmp(action, "complete:", 9) == 0 || strncmp(action, "cancel:", 7) == 0 || strncmp(action,"musicctl:",9) == 0;
     if (mutation && scene_action_pending) {
         return true;
     }
@@ -301,7 +301,7 @@ bool friday_backend_scene_action(const char *action)
     bool sent = encoded != NULL && send_text(encoded, pdMS_TO_TICKS(250)) >= 0;
     cJSON_free(encoded);
     cJSON_Delete(message);
-    if (!sent && media_action) friday_ui_media_clear();
+    if (!sent && media_action) friday_ui_media_send_failed(request_id);
     if(sent)friday_ui_media_note_action(action);
     if (sent && mutation) {
         scene_action_pending = true;
@@ -371,6 +371,7 @@ static void handle_message(const char *payload)
     }
     ESP_LOGI(TAG, "Received backend message: %s", type);
 
+    if(friday_ui_handle_notice(root)){scene_action_pending=false;cJSON_Delete(root);return;}
     friday_ui_media_prepare_overlay(root);
     if(!strcmp(type,"media.resume.result")){friday_ui_media_resume_result(root);cJSON_Delete(root);return;}
     if (!friday_ui_media_suspended() && (strcmp(type,"agent.result") == 0 || strcmp(type,"reminder.alert") == 0 ||

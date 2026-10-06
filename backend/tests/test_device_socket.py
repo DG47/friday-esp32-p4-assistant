@@ -66,6 +66,91 @@ class DeviceSocketTests(unittest.TestCase):
             socket.receive_json(), {"type": "state", "state": "idle"}
         )
 
+    def test_music_restores_current_confirmation_without_consent(self):
+        from app import main
+        from app.tools.music_runtime import LocalMusicRuntime
+        packets = []
+        runtime = LocalMusicRuntime(main.hub, enabled=True,
+            blocked=lambda device: bool(self.reminder_store.pending_confirmation(device)))
+        with patch.object(settings, "music_provider", "spotify"), patch("app.main.local_music", runtime), patch("app.main.hub.scene_observer", runtime.interrupt_message):
+            with TestClient(app) as client:
+                with client.websocket_connect("/ws/device/music-recovery") as socket:
+                    self.authenticate(socket, "music-recovery")
+                    pending = self.reminder_store.request_confirmation(
+                        "fixture-confirm", "music-recovery", "fixture-request",
+                        [{"name": "complete_reminder", "arguments": {"reminder_id": 1}}],
+                        "Complete the synthetic reminder?", datetime.now(timezone.utc) + timedelta(minutes=5))
+                    for _ in range(3):
+                        socket.send_json({"type": "scene.action", "action": "dismiss", "request_id": "dismiss"})
+                        self.assertEqual(socket.receive_json()["type"], "surface")
+                        socket.send_json({"type": "scene.action", "action": "music", "request_id": "music"})
+                        packet = socket.receive_json()
+                        self.assertEqual(packet["type"], "surface")
+                        self.assertEqual(packet["surface"]["title"], "Confirmation required")
+                        self.assertIn("Say yes", packet["surface"]["subtitle"])
+                        self.assertEqual(packet["surface"]["actions"][0]["label"], "Cancel request")
+                        packets.append(packet)
+                        self.assertEqual(self.reminder_store.pending_confirmation("music-recovery").id, pending.id)
+                        self.assertEqual(runtime.views, {})
+                    from types import SimpleNamespace
+                    with patch("app.main.agent.memory.store", SimpleNamespace(pending_confirmation=lambda device: {"token": "f" * 24})):
+                        socket.send_json({"type": "scene.action", "action": "music", "request_id": "memory-owned"})
+                        packet = socket.receive_json()
+                        self.assertEqual(packet["code"], "interaction_pending")
+                        self.assertIn("memory review", packet["message"])
+                        packets.append(packet)
+                        other_action = packets[0]["surface"]["actions"][0]["id"]
+                        socket.send_json({"type": "scene.action", "action": other_action, "request_id": "memory-owned-cancel"})
+                        self.assertEqual(socket.receive_json()["code"], "interaction_pending")
+                        self.assertEqual(self.reminder_store.pending_confirmation("music-recovery").id, pending.id)
+                    runtime.reminder_devices.add("music-recovery")
+                    socket.send_json({"type": "scene.action", "action": "music", "request_id": "alert-owned"})
+                    alert_packet = socket.receive_json()
+                    self.assertEqual(alert_packet["code"], "interaction_pending")
+                    packets.append(dict(alert_packet, fixture_owner="reminder"))
+                    runtime.reminder_devices.clear()
+                    runtime.busy.add("music-recovery")
+                    socket.send_json({"type": "scene.action", "action": "music", "request_id": "busy"})
+                    packet = socket.receive_json()
+                    self.assertEqual(packet["code"], "interaction_pending")
+                    self.assertEqual(self.reminder_store.pending_confirmation("music-recovery").id, pending.id)
+                    runtime.busy.clear()
+                    cancel_action = packets[0]["surface"]["actions"][0]["id"]
+                    with client.websocket_connect("/ws/device/other-owner") as other:
+                        self.authenticate(other, "other-owner", token="b" * 64)
+                        other.send_json({"type": "scene.action", "action": cancel_action, "request_id": "wrong-owner"})
+                        self.assertEqual(other.receive_json()["code"], "interaction_pending")
+                        self.assertEqual(self.reminder_store.pending_confirmation("music-recovery").id, pending.id)
+                    socket.send_json({"type": "scene.action", "action": cancel_action, "request_id": "touch-cancel"})
+                    packet = socket.receive_json()
+                    self.assertEqual(packet["surface"]["title"], "Request cancelled")
+                    packets.append(packet)
+                    self.assertIsNone(self.reminder_store.pending_confirmation("music-recovery"))
+                    socket.send_json({"type": "scene.action", "action": "music", "request_id": "after-touch-cancel"})
+                    self.assertIn("client update", socket.receive_json()["surface"]["subtitle"])
+                    newer = self.reminder_store.request_confirmation(
+                        "newer-confirm", "music-recovery", "newer-request", [],
+                        "Newer synthetic confirmation", datetime.now(timezone.utc) + timedelta(minutes=5))
+                    socket.send_json({"type": "scene.action", "action": "music", "request_id": "newer"})
+                    packet = socket.receive_json()
+                    self.assertIn(newer.summary, packet["surface"]["subtitle"])
+                    self.assertNotIn(pending.summary, packet["surface"]["subtitle"])
+                    self.assertEqual(self.reminder_store.pending_confirmation("music-recovery").id, newer.id)
+                    socket.send_json({"type": "scene.action", "action": cancel_action, "request_id": "stale-cancel"})
+                    self.assertEqual(socket.receive_json()["code"], "interaction_pending")
+                    self.assertEqual(self.reminder_store.pending_confirmation("music-recovery").id, newer.id)
+                    # Expiry remains authoritative; old-client surface proves the
+                    # real websocket route now reaches open, with no source calls.
+                    self.reminder_store.pending_confirmation("music-recovery", now=datetime.now(timezone.utc) + timedelta(minutes=6))
+                    socket.send_json({"type": "scene.action", "action": "music", "request_id": "after-expiry"})
+                    self.assertIn("client update", socket.receive_json()["surface"]["subtitle"])
+                    socket.send_json({"type": "scene.action", "action": packet["surface"]["actions"][0]["id"], "request_id": "expired-cancel"})
+                    self.assertEqual(socket.receive_json()["code"], "interaction_pending")
+        import os, json
+        if os.environ.get("FRIDAY_RECOVERY_FIXTURE"):
+            Path(os.environ["FRIDAY_RECOVERY_FIXTURE"]).write_text(json.dumps(packets))
+
+
     def test_utterance_is_accepted_without_waiting_for_the_agent(self):
         queued = AgentJob(
             id="request-fast",

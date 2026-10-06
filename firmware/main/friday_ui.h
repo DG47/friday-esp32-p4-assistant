@@ -17,6 +17,8 @@ typedef friday_ui_activation_result_t (*friday_ui_activation_callback_t)(void);
 typedef bool (*friday_ui_action_callback_t)(const char *action);
 
 void friday_ui_create(void);
+/* Authenticated recovery notice; preserves the current scene and activity. */
+bool friday_ui_handle_notice(const cJSON *packet);
 void friday_ui_set_activation_callback(friday_ui_activation_callback_t callback);
 void friday_ui_set_action_callback(friday_ui_action_callback_t callback);
 bool friday_ui_set_scene(const cJSON *surface);
@@ -29,6 +31,8 @@ void friday_ui_set_network(const char *status, const char *detail);
 void friday_ui_set_microphone(const char *status, int32_t peak, int32_t rms);
 
 void friday_ui_media_begin(const char *request);
+/* Roll back only the matching staged send; leave a newer owner intact. */
+void friday_ui_media_send_failed(const char *request);
 void friday_ui_media_clear(void);
 bool friday_ui_set_media(const cJSON *message);
 

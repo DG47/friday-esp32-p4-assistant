@@ -11,6 +11,10 @@ from .lyrics_session import TimedLyricsSession
 
 CAPABILITY='media_updates_v1'
 
+class MusicInteractionPending(ValueError):
+    """Music cannot replace an unresolved or active interaction."""
+
+
 @dataclass
 class View:
     device: str
@@ -155,7 +159,7 @@ class LocalMusicRuntime:
     async def open(self,device,websocket,request):
         if not self.enabled or self.closed:raise ValueError('Local music disabled')
         if not isinstance(request,str) or not 1<=len(request)<=128:raise ValueError('Music request identity required')
-        if device in self.protected or device in self.busy or self.blocked(device):raise ValueError('Resolve the current interaction first')
+        if device in self.protected or device in self.busy or self.blocked(device):raise MusicInteractionPending('Resolve the current interaction first')
         if not self.hub.peer_has_capability(device,websocket,CAPABILITY):
             return Surface(kind='media',title='Local music',subtitle='Timed view requires a client update.',
                 items=[{'time':'Mode','label':'Read only; automatic updates unavailable'}],actions=[{'id':'dismiss','label':'Dismiss'}],expires_ms=30000)
