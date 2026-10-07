@@ -133,7 +133,7 @@ static void metadata_audit(const char *directory)
         if(i<4||i>5)shown("Humidity 65%");
         if(i==6)shown("Rain / snow: unknown");if(i==7){shown("1 am EDT");shown("1 am EST");}if(i==8)shown("Low rain / snow chance");
         hidden_text("07306");hidden_text("10010");shown("Next full hour");shown("Rain / snow:");
-        if(i==5){shown("-100 °C");shown("100 °C");shown("Wind 500 km/h");shown("Humidity 100%");}
+        if(i==5){shown("-148 °F");shown("212 °F");shown("Wind 500 km/h");shown("Humidity 100%");}
         lv_obj_update_layout(lv_screen_active());weather_text_fits(lv_screen_active());capture(directory,weather_names[i]);
     }
     puts("WEATHER_PRESENTATION_AUDIT cases=12 city-state/ZIP-hidden/source-credit/full-text-fit/both/either/partial/unavailable/extremes PASS");

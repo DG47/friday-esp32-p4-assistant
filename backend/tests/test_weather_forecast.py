@@ -80,7 +80,7 @@ class ForecastTests(unittest.IsolatedAsyncioTestCase):
         data=response_data();data.pop('hourly')
         service=WeatherService(1,2,httpx.MockTransport(lambda req:httpx.Response(200,json=data)))
         with patch('app.tools.weather.weather_now',return_value=NOW):
-            reading=await service.current();self.assertIsNone(reading['rain_forecast']);self.assertEqual(reading['temperature_2m'],21.5)
+            reading=await service.current();self.assertIsNone(reading['rain_forecast']);self.assertEqual(reading['temperature_2m'],70.7)
             service._cached_at-=301;service.transport=httpx.MockTransport(lambda req:httpx.Response(503))
             with self.assertRaises(WeatherUnavailable):await service.current()
     async def test_independent_unknown_forecast_and_area_failure_recovery(self):
@@ -130,6 +130,6 @@ class ForecastTests(unittest.IsolatedAsyncioTestCase):
             data=response_data();data['current'].update(weather_code=code,is_day=day)
             with patch('app.tools.weather.weather_now',return_value=NOW):
                 reading=await WeatherService(1,2,httpx.MockTransport(lambda req:httpx.Response(200,json=data))).current()
-            self.assertEqual(reading['temperature_2m'],21.5)
+            self.assertEqual(reading['temperature_2m'],70.7)
             self.assertEqual(weather_condition(reading['weather_code']),'Conditions unknown')
             if type(day) is not int or day not in (0,1):self.assertIsNone(reading['is_day'])

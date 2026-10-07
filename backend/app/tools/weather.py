@@ -133,6 +133,11 @@ class WeatherService:
 
     def _reading(self, result):
         reading = dict(result)
+        # Keep the validated provider cache in Celsius; publish Fahrenheit
+        # consistently to both the model/tool payload and the display. Never
+        # mutate cached measurements or reconvert a cache hit.
+        reading['temperature_2m'] = round(result['temperature_2m'] * 9 / 5 + 32, 1)
+        reading['units'] = {**result['units'], 'temperature': '°F'}
         forecast = reading.pop("forecast_hourly", {})
         reading["rain_forecast"] = precipitation_window(forecast.get("hourly", {}), forecast.get("units", {}), weather_now(), self.forecast_zone)
         return reading

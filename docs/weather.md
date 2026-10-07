@@ -97,7 +97,7 @@ public institutional examples, not personal addresses; no runtime geocoding or
 location request is added. The raw ZIP remains in model tool payloads and caches.
 
 The named-location screen has the agenda's 48px left margin, 48px headline,
-compact ribbon and open spacing. Each location has its name and large Celsius
+compact ribbon and open spacing. Each location has its name and large Fahrenheit
 reading on one line, followed by quieter wind in km/h and humidity in percent.
 The redundant summary panel is hidden; partial/total failures retain each city
 name and a clear unavailable/retry message. Dismiss and 30-second expiry remain.
@@ -176,3 +176,12 @@ are added; native peak LVGL heap is 88,464 bytes (816 bytes above the preceding
 unknown chance, current rain, and day/night, and verifies distinct city scenes.
 Existing navigation/recovery/protected text audits remain enabled. All supplied
 art mock readings and conditions are explicitly synthetic.
+# Temperature presentation
+
+Both configured cities display Fahrenheit. The adapter keeps validated
+Open-Meteo measurements and its private cache in Celsius, then converts each
+published reading with `°F = °C × 9/5 + 32`, rounded to one decimal place.
+Tool/model payloads, display labels and spoken temperature wording all use
+Fahrenheit. Cache hits do not reconvert previously converted values. Wind
+remains in km/h. This requires a backend deployment/restart, with no provider,
+credentials, private configuration or firmware change.
