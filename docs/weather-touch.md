@@ -22,6 +22,15 @@ Pending confirmation is restored with the existing bound Cancel request action;
 other protected/busy states keep their existing content and show an actionable
 notice. A protected request created during an awaited fetch wins over weather.
 
+A per-device ownership token is shared by authenticated peers. New scene actions,
+media resume, activation and utterances supersede an older touch Weather request.
+Weather progress, result and protected-state notices publish only while their
+owner remains current. A per-device lock serializes ownership claims with
+publication, closing the check-to-send race. State is retired when the last peer
+disconnects. The authenticated two-peer regression holds the old fetch, completes
+a newer Dismiss/menu/Reminders/Calendar/Music/Memory/Weather action, then releases
+the old fetch and verifies that neither late Weather progress nor result appears.
+
 Repeated reads reuse the existing independent location caches. Failed or
 unconfigured weather remains honest; re-open retries. A disconnected native
 send leaves menu/review content intact, shows a temporary connection notice,

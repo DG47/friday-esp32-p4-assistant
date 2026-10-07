@@ -141,3 +141,50 @@ class WeatherTouchTests(unittest.TestCase):
                 surface=receive_surface(socket)['surface']
                 self.assertEqual(surface['title'],'Weather unavailable')
                 self.assertIn('not connected',surface['subtitle'])
+
+    def test_two_authenticated_peers_supersede_delayed_weather(self):
+        import asyncio
+        import copy
+        import threading
+        for newer_action in ('dismiss','status','reminders','calendar','music','memories','weather'):
+            with self.subTest(newer_action=newer_action):
+                device='weather-race-'+newer_action
+                agent=weather_agent(self.reminder_store,lambda req:httpx.Response(200,json=payload()))
+                entered,release=threading.Event(),threading.Event()
+                original_read=agent._execute_read_tool
+                calls=0
+                async def held_read(*args,**kwargs):
+                    nonlocal calls
+                    calls+=1
+                    if calls==1:
+                        entered.set()
+                        await asyncio.to_thread(release.wait,5)
+                        if not release.is_set():raise AssertionError('Test release timed out')
+                    return await original_read(*args,**kwargs)
+                observed=[]
+                original_broadcast=main.hub.broadcast
+                async def observe(target,packet,*args,**kwargs):
+                    if target==device:observed.append(copy.deepcopy(packet))
+                    return await original_broadcast(target,packet,*args,**kwargs)
+                with patch('app.main.agent',agent),patch.object(agent,'_execute_read_tool',side_effect=held_read),patch.object(main.hub,'broadcast',side_effect=observe):
+                    with TestClient(main.app) as client,client.websocket_connect('/ws/device/'+device) as first,client.websocket_connect('/ws/device/'+device) as second:
+                        self.authenticate(first,device)
+                        self.authenticate(second,device)
+                        self.assertEqual(first.receive_json()['type'],'state')
+                        first.send_json({'type':'scene.action','action':'weather','request_id':'old-weather'})
+                        self.assertTrue(entered.wait(3))
+                        second.send_json({'type':'scene.action','action':newer_action,'request_id':'new-navigation'})
+                        newer=receive_surface(second)
+                        self.assertEqual(newer['type'],'surface')
+                        self.assertEqual(receive_surface(first)['surface'],newer['surface'])
+                        boundary=len(observed)
+                        release.set()
+                        # FIFO on the first authenticated peer is a completion
+                        # barrier: this menu runs only after its held Weather turn.
+                        first.send_json({'type':'scene.action','action':'status','request_id':'completion-barrier'})
+                        after=receive_surface(first)
+                        self.assertEqual(after['surface']['title'],'At your service')
+                        self.assertEqual(receive_surface(second)['surface']['title'],'At your service')
+                        late=observed[boundary:]
+                        self.assertFalse(any(packet.get('type')=='tool.activity' and packet.get('name')=='get_weather' for packet in late))
+                        self.assertFalse(any(packet.get('surface',{}).get('title')=='Weather' for packet in late))

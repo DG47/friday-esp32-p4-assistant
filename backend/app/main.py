@@ -193,6 +193,35 @@ def require_local_read_access(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Valid Friday read token required")
 
 
+# One ownership token per device, shared by all authenticated peers. Publication
+# and new navigation claims serialize so a checked result cannot race a newer tap.
+scene_navigation = {}
+
+
+async def claim_scene_navigation(device_id):
+    state = scene_navigation.setdefault(device_id, {"lock": asyncio.Lock(), "owner": None})
+    async with state["lock"]:
+        state["owner"] = object()
+        return state, state["owner"]
+
+
+def weather_navigation_current(device_id, navigation):
+    state, owner = navigation
+    return scene_navigation.get(device_id) is state and state["owner"] is owner
+
+
+async def publish_current_weather(device_id, navigation, packet, peer=None):
+    state, _ = navigation
+    async with state["lock"]:
+        if not weather_navigation_current(device_id, navigation):
+            return False
+        if peer is None:
+            await hub.broadcast(device_id, packet)
+        else:
+            await peer.send_json(packet)
+        return True
+
+
 def require_weather_navigation(device_id: str) -> None:
     # Read-only navigation must not replace protected ownership or imply consent.
     if (store.pending_confirmation(device_id)
@@ -206,6 +235,7 @@ def require_weather_navigation(device_id: str) -> None:
 async def handle_utterance(
     device_id: str, text: str, request_id: str | None = None
 ) -> str:
+    await claim_scene_navigation(device_id)
     text = prepare_memory_input(text)
     job = job_store.enqueue(device_id, text, request_id=request_id)
     speech.latest[device_id] = job.id
@@ -502,10 +532,12 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     "Send hello before other messages",
                 )
             elif message_type == "media.resume":
+                await claim_scene_navigation(device_id)
                 await local_music.resume(device_id, websocket, message)
             elif message_type == "scene.action":
                 try:
                     action = SurfaceAction(id=message.get("action"), label="Action").id
+                    navigation = await claim_scene_navigation(device_id)
                     if action.startswith("reqcancel:"):
                         if device_id in local_music.busy or device_id in local_music.reminder_devices or (agent.memory.store is not None and agent.memory.store.pending_confirmation(device_id)):
                             await send_error(websocket, "interaction_pending", "Finish the current interaction before cancelling this request.")
@@ -547,14 +579,19 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     elif action.startswith(("memories", "memory:", "memforget:", "memyes:", "memno:", "memreview:")):
                         surface = agent.memory.scene(device_id, action)
                     elif action == "weather":
-                        await publish_tool_progress(device_id, "get_weather", "working")
+                        if not await publish_current_weather(device_id, navigation,
+                            {"type": "tool.activity", "name": "get_weather", "status": "working"}):
+                            continue
                         outcome = await agent._execute_read_tool("get_weather", {}, device_id,
                             message.get("request_id") or "touch-weather", 0)
                         # Another authenticated peer may create a protected request
                         # while weather is loading. Recheck before publishing it.
+                        if not weather_navigation_current(device_id, navigation):
+                            continue
                         require_weather_navigation(device_id)
                         surface = outcome.surface
-                        await publish_tool_progress(device_id, "get_weather", "complete" if outcome.success else "failed")
+                        await publish_current_weather(device_id, navigation,
+                            {"type": "tool.activity", "name": "get_weather", "status": "complete" if outcome.success else "failed"})
                     elif action.startswith(("calendar", "event:")):
                         await publish_tool_progress(device_id, "get_calendar", "working")
                         surface = await agent.calendar.scene(action, device_id)
@@ -565,7 +602,11 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                         local_music.resolve_memory(device_id, action.split(':')[1], agent.memory.store.confirmation_resolved)
                     log_scene_action(device_id, action, surface)
                     if surface is not None:
-                        await hub.broadcast(device_id, {"type": "surface", "surface": surface.model_dump(mode="json")})
+                        packet = {"type": "surface", "surface": surface.model_dump(mode="json")}
+                        if action == "weather":
+                            await publish_current_weather(device_id, navigation, packet)
+                        else:
+                            await hub.broadcast(device_id, packet)
                     else:
                         request_id = message.get("request_id")
                         if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
@@ -579,6 +620,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             text = f"{verb} reminder #{reminder_id}" + (" for 10 minutes" if verb == "snooze" else "")
                         await handle_utterance(device_id, text, request_id=request_id)
                 except MusicInteractionPending:
+                    if action == "weather" and not weather_navigation_current(device_id, navigation):
+                        continue
                     # Re-read authoritative ownership at delivery time; never retain
                     # a stale confirmation or turn a Music tap into consent.
                     pending = store.pending_confirmation(device_id)
@@ -590,7 +633,11 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             actions=[SurfaceAction(id="reqcancel:" + hashlib.sha256(pending.id.encode()).hexdigest()[:24], label="Cancel request")],
                             expires_ms=30000,
                         )
-                        await hub.broadcast(device_id, {"type": "surface", "surface": surface.model_dump(mode="json")})
+                        packet = {"type": "surface", "surface": surface.model_dump(mode="json")}
+                        if action == "weather":
+                            await publish_current_weather(device_id, navigation, packet)
+                        else:
+                            await hub.broadcast(device_id, packet)
                     else:
                         destination = "opening Weather" if action == "weather" else "returning to Music"
                         message = (
@@ -598,7 +645,11 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             if memory_pending else
                             f"Finish the current interaction before {destination}."
                         )
-                        await send_error(websocket, "interaction_pending", message)
+                        if action == "weather":
+                            await publish_current_weather(device_id, navigation,
+                                {"type": "error", "code": "interaction_pending", "message": message}, websocket)
+                        else:
+                            await send_error(websocket, "interaction_pending", message)
                 except ValueError:
                     await send_error(websocket, "bad_action", "Action is unavailable or invalid; refresh the scene")
             elif message_type == "result.ack":
@@ -614,6 +665,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             elif message_type == "speech.cancel":
                 await speech.cancel(device_id)
             elif message_type == "activate":
+                await claim_scene_navigation(device_id)
                 speech.latest[device_id] = None
                 await speech.cancel(device_id)
                 wake_enabled = False
@@ -744,6 +796,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
         if registered:
             local_music.stop(device_id, websocket)
             hub.disconnect(device_id, websocket)
+            if not hub.connections.get(device_id):
+                scene_navigation.pop(device_id, None)
             local_music.disconnected(device_id)
             if device_id not in hub.device_ids():
                 await speech.cancel(device_id)
