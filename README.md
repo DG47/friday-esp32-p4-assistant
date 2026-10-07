@@ -242,3 +242,5 @@ on existing Spotify devices, with optional recording-bound timed lyrics. See
 [setup and runtime](docs/spotify-runtime.md), [authentication](docs/spotify-auth.md)
 and [display text](docs/display-text.md). Account grants, lyric rights and physical
 timing/readability checks are separate; no ESP32 audio streaming is provided.
+
+Two-location ZIP weather configuration, privacy boundaries and rollout: [docs/weather.md](docs/weather.md).

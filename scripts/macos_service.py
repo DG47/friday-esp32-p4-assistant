@@ -8,9 +8,11 @@ from pathlib import Path
 LABEL = 'com.friday.backend'
 
 
-def service_definition(root: Path, tts_provider='none') -> dict:
+def service_definition(root: Path, tts_provider='none', weather_provider='none') -> dict:
     if tts_provider not in {'none', 'macos'}:
         raise ValueError('Only disabled or local Mac speech may be selected')
+    if weather_provider not in {'none', 'open-meteo'}:
+        raise ValueError('Choose a supported weather provider')
     root = root.resolve()
     for name in ('.venv/bin/python', 'scripts/run_backend.py',
                  'data/tls/friday-backend.crt', 'data/tls/friday-backend.key'):
@@ -25,14 +27,14 @@ def service_definition(root: Path, tts_provider='none') -> dict:
         'ThrottleInterval': 15,
         'ExitTimeOut': 30,
         'Umask': 0o077,
-        'EnvironmentVariables': {'PYTHONUNBUFFERED': '1', 'TTS_PROVIDER': tts_provider, 'WEATHER_PROVIDER': 'none'},
+        'EnvironmentVariables': {'PYTHONUNBUFFERED': '1', 'TTS_PROVIDER': tts_provider, 'WEATHER_PROVIDER': weather_provider},
         'StandardOutPath': '/dev/null',
         'StandardErrorPath': '/dev/null',
     }
 
 
-def write_definition(root: Path, destination: Path, tts_provider='none') -> None:
-    data = plistlib.dumps(service_definition(root, tts_provider))
+def write_definition(root: Path, destination: Path, tts_provider='none', weather_provider='none') -> None:
+    data = plistlib.dumps(service_definition(root, tts_provider, weather_provider))
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, 'wb') as output:
         output.write(data)
@@ -43,6 +45,7 @@ if __name__ == '__main__':
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--tts-provider', choices=['none', 'macos'], default='none')
+    parser.add_argument('--weather-provider', choices=['none', 'open-meteo'], default='none')
     args = parser.parse_args()
-    write_definition(args.root, args.output, args.tts_provider)
+    write_definition(args.root, args.output, args.tts_provider, args.weather_provider)
     print('User LaunchAgent definition written; credentials remain in existing local configuration.')

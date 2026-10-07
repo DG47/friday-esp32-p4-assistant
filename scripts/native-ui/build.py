@@ -6,6 +6,7 @@ if a.before:
  (out/'before_ui.c').write_bytes(subprocess.check_output(['git','show',a.baseline+':firmware/main/friday_ui.c'],cwd=r))
 subprocess.run(['python3',str(h/'generate_fixture.py')],check=True)
 subprocess.run([sys.executable,str(h/'generate_browse_fixture.py')],check=True)
+subprocess.run([sys.executable,str(h/'generate_weather_fixture.py')],check=True)
 if not a.before:
  env=os.environ.copy();env['PYTHONPATH']=str(r/'backend')+os.pathsep+str(r/'backend/tests');env['FRIDAY_RECOVERY_FIXTURE']=str(out.parent/'music-recovery-fixture.json')
  subprocess.run([sys.executable,'-m','unittest','test_device_socket.DeviceSocketTests.test_music_restores_current_confirmation_without_consent'],cwd=r,env=env,check=True)
