@@ -60,12 +60,35 @@ class WeatherPersistenceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(boundary['_fresh_for_ms'], 2000)
         with patch('app.tools.weather.weather_now', return_value=NOW.replace(hour=18, minute=0)):
             exact = await service.current()
-            self.assertEqual(exact['_fresh_for_ms'], 1)
+            self.assertGreater(exact['_fresh_for_ms'], 9000)
+            self.assertLessEqual(exact['_fresh_for_ms'], 10000)
         data['current']['time'] = (NOW - timedelta(seconds=7199)).isoformat()
         service = WeatherService(1, 2, httpx.MockTransport(lambda request: httpx.Response(200, json=data)))
         with patch('app.tools.weather.weather_now', return_value=NOW):
             old_observation = await service.current()
             self.assertEqual(old_observation['_fresh_for_ms'], 1000)
+
+    async def test_fresh_exact_hour_before_and_after_preserve_window_and_expiry(self):
+        boundary = NOW.replace(hour=18, minute=0)
+        for instant, end_hour, probability in [(boundary - timedelta(microseconds=1), 19, 70),
+                (boundary, 19, 70), (boundary + timedelta(microseconds=1), 20, 40)]:
+            data = response_data()
+            data['current']['time'] = instant.isoformat()
+            service = WeatherService(1, 2, httpx.MockTransport(lambda request: httpx.Response(200, json=data)))
+            with patch('app.tools.weather.weather_now', return_value=instant):
+                reading = await service.current()
+            self.assertEqual(reading['rain_forecast']['ends_at'], boundary.replace(hour=end_hour).isoformat())
+            self.assertEqual(reading['rain_forecast']['probability'], probability)
+            if instant < boundary:
+                self.assertEqual(reading['_fresh_for_ms'], 1)
+            else:
+                self.assertGreater(reading['_fresh_for_ms'], 299000)
+                self.assertLessEqual(reading['_fresh_for_ms'], 300000)
+                deadline = reading['_fresh_until']
+                packet = {'type': 'surface', 'surface': {'kind': 'metric', 'title': 'Weather',
+                    'weather_valid_ms': reading['_fresh_for_ms'], 'deadline_at': deadline}}
+                self.assertGreater(weather_packet(packet, instant)['surface']['weather_valid_ms'], 299000)
+                self.assertEqual(weather_packet(packet, instant + timedelta(minutes=5))['surface']['weather_valid_ms'], 1)
 
     async def test_persistent_surface_zero_unknown_mixed_conditions_and_failed_refresh(self):
         for codes, probabilities, title in [((0, 0), (0, 0), 'Clear.'),

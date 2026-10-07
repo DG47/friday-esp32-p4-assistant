@@ -155,12 +155,17 @@ class WeatherService:
         now = weather_now()
         observed = datetime.fromisoformat(result['time'])
         observed = observed.replace(tzinfo=timezone.utc) if observed.tzinfo is None else observed.astimezone(timezone.utc)
-        start, _ = next_forecast_window(now)
+        start, end = next_forecast_window(now)
+        # At the exact hour the selected complete interval starts now. Its
+        # start is not an expiry: retain the normal bounded cache lease, with
+        # the interval's end as the additional absolute limit. Before/after
+        # the boundary retain the existing selected-window semantics.
+        window_limit = start if start > now else end
         # A long-lived view must clear data by cache expiry, observation expiry,
-        # or the next-full-hour label changing, whichever happens first.
+        # or the selected-window boundary guard, whichever happens first.
         remaining = min(300 - (time.monotonic() - self._cached_at),
                         7200 - (now - observed).total_seconds(),
-                        (start - now).total_seconds())
+                        (window_limit - now).total_seconds())
         reading['_fresh_for_ms'] = max(1, min(300000, int(remaining * 1000)))
         reading['_fresh_until'] = (now + timedelta(milliseconds=reading['_fresh_for_ms'])).isoformat()
         forecast = reading.pop("forecast_hourly", {})
