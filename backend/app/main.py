@@ -25,6 +25,7 @@ from .device_hub import DeviceHub
 from .discovery import FridayDiscoveryProtocol
 from .reminder_scheduler import ReminderScheduler
 from .stt import TranscriptionError, create_transcriber
+from .stt.diagnostics import FailureReason, Phase, TranscriptionDiagnostics, observe, log_failure
 from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
 from .scenes import local_scene
 from .tools.music import MusicService
@@ -46,6 +47,7 @@ credential_store = DeviceCredentialStore(settings.assistant_database_path)
 transcriber = create_transcriber(settings)
 static_dir = Path(__file__).parent / "static"
 logger = logging.getLogger(__name__)
+AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS = 60
 hub = DeviceHub()
 local_music, official_music = create_runtime(settings, hub, blocked=lambda device: bool(store.pending_confirmation(device) or agent.memory.store is not None and agent.memory.store.pending_confirmation(device)))
 if official_music is not None: music = official_music
@@ -668,21 +670,39 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                     continue
                 await hub.broadcast(device_id, {"type": "state", "state": "listening"})
             elif message_type == "audio.end":
-                try:
-                    pcm, audio_format = audio.finish()
-                    minimum_bytes = audio_format.sample_rate * audio_format.channels * 2 // 5
-                    if len(pcm) < minimum_bytes:
-                        raise AudioSessionError("Audio turn was too short")
-                    if transcriber is None:
-                        raise TranscriptionError("Speech transcription is disabled")
-                    await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
-                    text = (await asyncio.wait_for(transcriber.transcribe(pcm, audio_format), timeout=60)).strip()
-                    if not text:
-                        raise TranscriptionError("No speech was recognized")
-                except (AudioSessionError, TranscriptionError, TimeoutError) as error:
-                    await send_error(websocket, "transcription_failed", "Speech transcription timed out" if isinstance(error, TimeoutError) else str(error))
-                    await hub.broadcast(device_id, {"type": "state", "state": "idle"})
-                    continue
+                capture_format = audio.audio_format
+                diagnostics = TranscriptionDiagnostics(len(audio.data),
+                    capture_format.sample_rate if capture_format else 0,
+                    capture_format.channels if capture_format else 0)
+                reason = (FailureReason.CAPTURE_MISSING if not audio.active
+                          else FailureReason.CAPTURE_MALFORMED)
+                with observe(diagnostics):
+                    try:
+                        pcm, audio_format = audio.finish()
+                        minimum_bytes = audio_format.sample_rate * audio_format.channels * 2 // 5
+                        if len(pcm) < minimum_bytes:
+                            reason = FailureReason.INPUT_SHORT
+                            raise AudioSessionError("Audio turn was too short")
+                        if transcriber is None:
+                            reason = FailureReason.STT_DISABLED
+                            raise TranscriptionError("Speech transcription is disabled")
+                        reason = FailureReason.STT_ERROR
+                        await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
+                        diagnostics.phase(Phase.WORKER_WAIT)
+                        text = (await asyncio.wait_for(transcriber.transcribe(pcm, audio_format), timeout=AUDIO_TRANSCRIPTION_TIMEOUT_SECONDS)).strip()
+                        diagnostics.phase(Phase.RESULT)
+                        if not text:
+                            reason = FailureReason.EMPTY
+                            raise TranscriptionError("No speech was recognized")
+                    except (AudioSessionError, TranscriptionError, TimeoutError) as error:
+                        if isinstance(error, TimeoutError):
+                            reason = FailureReason.TIMEOUT
+                        elif isinstance(error, TranscriptionError) and isinstance(error.reason, FailureReason):
+                            reason = error.reason
+                        log_failure(logging.getLogger("uvicorn.error"), diagnostics, reason)
+                        await send_error(websocket, "transcription_failed", "Speech transcription timed out" if isinstance(error, TimeoutError) else str(error))
+                        await hub.broadcast(device_id, {"type": "state", "state": "idle"})
+                        continue
                 await hub.broadcast(
                     device_id,
                     {"type": "transcript", "text": text, "provider": transcriber.name},
