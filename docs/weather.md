@@ -137,8 +137,8 @@ not a claim that precipitation is certain or both areas are known. Otherwise,
 any unknown/unavailable area gives **Forecast incomplete.** With all selected
 areas known, a maximum >=30% gives **Wet weather possible.**; below 30% gives
 **Low rain / snow chance.** All areas unavailable gives **Weather unavailable.**
-No additional reasoning-provider call, weather condition/icon or background poll
-is introduced. Existing city/temperature text for spoken requests is retained.
+No additional reasoning-provider call, probability-derived condition/icon or
+background poll is introduced. Existing city/temperature text for spoken requests is retained.
 
 On admitted `get_weather` working activity, the existing Friday ribbon expands
 and uses its thinking motion beside **Checking the forecast**. Completion returns
@@ -148,3 +148,31 @@ weather activity cue/state. The protected ownership and bounded send paths remai
 unchanged. This is task feedback; neither static pixels nor this motion establish
 sentience or awareness. Native playback uses synthetic responses and the actual
 production UI/presence code. Physical touch/voice verification remains deferred.
+
+## Native city artwork revision
+
+The art revision supersedes the text-only mock. Two 224×148 procedural native
+illustrations sit beside the readings: Jersey City has a waterfront clock and
+modern tower; New York has stepped/spired Manhattan towers. Both use the existing
+muted blue/teal, warm light, rounded cards and Friday ribbon direction. These are
+stylized city illustrations, not photoreal maps or live views.
+
+The current-variable request now includes `weather_code` and `is_day`. Their
+[official definitions](https://open-meteo.com/en/docs) supply current WMO
+conditions and daylight/night. Missing or invalid values are independently
+normalized to unknown without discarding valid temperature/humidity/wind.
+Supported WMO descriptions include 97 (heavy thunderstorm) in the current docs.
+The illustration reads only these current fields: clear/partly cloudy,
+clouds/rain/snow/fog/lightning and reported day/night select restrained marks.
+Thunderstorm alone does not imply rain. Unknown current conditions use neutral
+art with no sun/moon/rain marks. The screen labels conditions **Now**; its separate
+rain/snow probability retains the explicitly dated next-full-hour interval.
+
+There are no raster downloads, canvas buffers, new graphics dependencies or
+continuous artwork animation. Two supporting text labels and two draw callbacks
+are added; native peak LVGL heap is 88,464 bytes (816 bytes above the preceding
+87,648-byte harness peak). This is host-native evidence, not device RAM/FPS QA.
+`preview_weather_art.py` compares actual artwork pixels across future high/low/
+unknown chance, current rain, and day/night, and verifies distinct city scenes.
+Existing navigation/recovery/protected text audits remain enabled. All supplied
+art mock readings and conditions are explicitly synthetic.

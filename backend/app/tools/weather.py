@@ -14,6 +14,21 @@ def weather_display_name(label: str) -> str:
     return {"07306": "Jersey City, NJ", "10010": "New York, NY"}.get(label, label)
 
 
+WEATHER_CONDITIONS = {
+    0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Freezing fog", 51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle",
+    56: "Freezing drizzle", 57: "Freezing drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
+    66: "Freezing rain", 67: "Freezing rain", 71: "Light snow", 73: "Snow", 75: "Heavy snow",
+    77: "Snow grains", 80: "Rain showers", 81: "Rain showers", 82: "Heavy showers",
+    85: "Snow showers", 86: "Snow showers", 95: "Thunderstorm", 96: "Storm with hail",
+    97: "Heavy thunderstorm", 99: "Storm with hail",
+}
+
+
+def weather_condition(code):
+    return WEATHER_CONDITIONS.get(code, "Conditions unknown")
+
+
 def weather_now():
     return datetime.now(timezone.utc)
 
@@ -83,6 +98,8 @@ def weather_rain_summary(readings):
 
 
 class CurrentWeather(BaseModel):
+    weather_code: int | None = None
+    is_day: int | None = None
     time: str = Field(max_length=32)
     temperature_2m: float = Field(ge=-100, le=100)
     relative_humidity_2m: int = Field(ge=0, le=100)
@@ -125,7 +142,7 @@ class WeatherService:
             async with httpx.AsyncClient(timeout=8, transport=self.transport, follow_redirects=False) as client:
                 async with client.stream('GET', 'https://api.open-meteo.com/v1/forecast', params={
                     'latitude': self.latitude, 'longitude': self.longitude,
-                    'current': 'temperature_2m,relative_humidity_2m,wind_speed_10m',
+                    'current': 'temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code,is_day',
                     'hourly': 'precipitation_probability', 'forecast_hours': 6,
                     'timezone': 'UTC', 'temperature_unit': 'celsius', 'wind_speed_unit': 'kmh',
                 }) as response:
@@ -141,7 +158,11 @@ class WeatherService:
                 raise ValueError('Invalid weather units')
             if units.get('temperature_2m') != '°C' or units.get('wind_speed_10m') != 'km/h' or units.get('relative_humidity_2m') != '%':
                 raise ValueError('Unexpected weather units')
-            current = CurrentWeather.model_validate(data['current'])
+            current_values = dict(data['current'])
+            code, day = current_values.get('weather_code'), current_values.get('is_day')
+            current_values['weather_code'] = code if type(code) is int and code in WEATHER_CONDITIONS else None
+            current_values['is_day'] = day if type(day) is int and day in (0, 1) else None
+            current = CurrentWeather.model_validate(current_values)
             observed = datetime.fromisoformat(current.time)
             observed = observed.replace(tzinfo=timezone.utc) if observed.tzinfo is None else observed.astimezone(timezone.utc)
             age = (weather_now() - observed).total_seconds()

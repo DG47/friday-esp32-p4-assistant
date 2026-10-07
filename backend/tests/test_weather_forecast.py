@@ -114,3 +114,22 @@ class ForecastTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('3 pm–4 pm EDT',outcome.surface.subtitle)
             self.assertEqual(outcome.surface.items[1]['label'],'Rain / snow chance unknown')
             self.assertIn('Forecast incomplete',outcome.surface.subtitle)
+
+    async def test_current_conditions_are_independent_of_future_probability(self):
+        from app.tools.weather import weather_condition
+        data=response_data();data['current'].update(weather_code=0,is_day=1)
+        with patch('app.tools.weather.weather_now',return_value=NOW):
+            service=WeatherService(1,2,httpx.MockTransport(lambda req:httpx.Response(200,json=data)))
+            reading=await service.current()
+        self.assertEqual(reading['rain_forecast']['probability'],70)
+        self.assertEqual(weather_condition(reading['weather_code']),'Clear')
+        self.assertEqual(reading['is_day'],1)
+    async def test_invalid_or_missing_current_conditions_remain_neutral_without_losing_temperature(self):
+        from app.tools.weather import weather_condition
+        for code,day in [(None,None),(999,1),(4,2),(True,False),('rain','day')]:
+            data=response_data();data['current'].update(weather_code=code,is_day=day)
+            with patch('app.tools.weather.weather_now',return_value=NOW):
+                reading=await WeatherService(1,2,httpx.MockTransport(lambda req:httpx.Response(200,json=data))).current()
+            self.assertEqual(reading['temperature_2m'],21.5)
+            self.assertEqual(weather_condition(reading['weather_code']),'Conditions unknown')
+            if type(day) is not int or day not in (0,1):self.assertIsNone(reading['is_day'])
