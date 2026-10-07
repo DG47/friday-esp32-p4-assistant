@@ -9,7 +9,7 @@ from PIL import Image, ImageChops
 root = Path(__file__).resolve().parents[2]
 source = root / 'outputs/native-ui/after'
 def image(name):return Image.open(source / (name + '.ppm')).convert('RGB')
-def art(name, city):return image(name).crop((60, 248 + city*180, 284, 396 + city*180))
+def art(name, city):return image(name).crop((530, 242 + city*200, 680, 396 + city*200))
 def same(a, b):return ImageChops.difference(a, b).getbbox() is None
 for city in (0, 1):
     assert same(art('weather-both',city),art('weather-low',city)), 'future probability changed current artwork'

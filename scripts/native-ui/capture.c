@@ -7,6 +7,7 @@
 #include "lvgl.h"
 #include "friday_ui.h"
 #include "friday_presence.h"
+#include "friday_weather_art.h"
 static uint32_t pixels[720*720];
 static uint32_t tick;
 static int actions;
@@ -482,7 +483,25 @@ static void weather_touch_audit(const char *directory)
 #endif
 
 int main(int argc,char **argv) {
-    assert(argc==2);lv_init();lv_display_t *d=lv_display_create(720,720);
+    assert(argc==2);
+    for(int city=1;city<=2;city++) {
+        const lv_image_dsc_t *neutral=friday_weather_art(city,-1,-1);
+        assert(neutral && neutral->data_size==680*190*2 && neutral->header.stride==1360);
+        for(int code=-3;code<=110;code++) {
+            const lv_image_dsc_t *image=friday_weather_art(city,code,1);
+            assert(image && image->header.w==680 && image->header.h==190);
+            assert(image->data_size==258400 && image->header.cf==LV_COLOR_FORMAT_RGB565);
+            if(!friday_weather_code_known(code)) assert(image==neutral);
+            assert(friday_weather_art(city,code,-1)==neutral);
+            assert(friday_weather_art(city,code,2)==neutral);
+        }
+        assert(friday_weather_art(city,63,1)!=friday_weather_art(city,0,1));
+        assert(friday_weather_art(city,73,1)!=friday_weather_art(city,63,1));
+        assert(friday_weather_art(city,0,0)!=friday_weather_art(city,0,1));
+    }
+    assert(!friday_weather_art(0,0,1) && !friday_weather_art(3,0,1));
+    puts("WEATHER_ASSET_AUDIT bounded-descriptors/all-codes/invalid-day/unknown/rain/snow/night PASS");
+    lv_init();lv_display_t *d=lv_display_create(720,720);
     lv_display_set_color_format(d,LV_COLOR_FORMAT_RGB565);
     static uint16_t buffer[720*720];lv_display_set_buffers(d,buffer,NULL,sizeof(buffer),LV_DISPLAY_RENDER_MODE_FULL);lv_display_set_flush_cb(d,flush);
     friday_ui_create();

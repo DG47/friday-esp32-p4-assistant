@@ -16,6 +16,7 @@
 #include "friday_display_text.h"
 #include "friday_presence.h"
 #include "friday_artwork.h"
+#include "friday_weather_art.h"
 #include "friday_media_overlay.h"
 
 static const char *TAG = "friday_ui";
@@ -450,6 +451,7 @@ static void scene_layout(bool active)
     }
     for(int i=0;i<4;i++) {
 
+        lv_obj_set_style_bg_image_src(ui.cards[i],NULL,0);
         lv_obj_set_style_bg_color(ui.cards[i],color_hex(UI_CARD),0);
         lv_obj_set_style_radius(ui.cards[i],20,0);
         lv_obj_set_style_border_width(ui.cards[i],0,0);
@@ -531,70 +533,16 @@ static void launcher_icon(lv_event_t *event)
 /* Two small procedural illustrations: no raster downloads, canvas buffers or
  * animation. Current WMO conditions alone select weather marks; future chance
  * never enters this renderer. */
-static void weather_fill(lv_layer_t *layer,int x,int y,int w,int h,int radius,uint32_t color,int opacity)
-{
-    lv_draw_rect_dsc_t d;lv_draw_rect_dsc_init(&d);d.radius=radius;
-    d.bg_color=color_hex(color);d.bg_opa=opacity;d.border_width=0;
-    lv_area_t area={x,y,x+w-1,y+h-1};lv_draw_rect(layer,&d,&area);
-}
 static void weather_city_art(lv_event_t *event)
 {
     if(!ui.weather_view)return;
-    int location=(int)(intptr_t)lv_event_get_user_data(event);
     lv_area_t area;lv_obj_get_coords(lv_event_get_target(event),&area);
-    lv_layer_t *layer=lv_event_get_layer(event);
-    int x=area.x1+12,y=area.y1+12,code=ui.weather_code[location],day=ui.weather_day[location];
-    bool known=code>=0,night=known&&day==0;
-    uint32_t sky=known&&day==1?0x26344B:night?0x16213A:0x1D2932;
-    weather_fill(layer,x,y,224,148,14,sky,255);
-    weather_fill(layer,x+8,y+56,208,76,0,known&&day==1?0x36495D:0x253548,150);
-    bool rain=(code>=51&&code<=67)||(code>=80&&code<=82);
-    bool snow=(code>=71&&code<=77)||(code>=85&&code<=86);
-    if(known&&code<=2&&day>=0) {
-        weather_fill(layer,x+166,y+16,30,30,15,night?0xB2C9D6:0xDEB58C,255);
-        if(night)weather_fill(layer,x+173,y+11,26,26,13,sky,255);
-        if(night)for(int n=0;n<4;n++)weather_fill(layer,x+20+n*31,y+19+(n%2)*13,2,2,1,0xB4C3D6,180);
-    }
-    if(known&&code>=2) {
-        uint32_t cloud=rain||snow?0x718898:0x9CAFC0;
-        weather_fill(layer,x+136,y+22,44,18,9,cloud,200);
-        weather_fill(layer,x+151,y+14,25,25,12,cloud,200);
-        weather_fill(layer,x+171,y+22,29,18,9,cloud,200);
-        if(code==3)weather_fill(layer,x+31,y+28,66,13,7,cloud,150);
-    }
-    /* Atmospheric layers, then city-specific silhouettes and quiet window light. */
-    const int back[][3]={{12,24,30},{40,19,46},{64,23,35},{147,18,42},{169,25,31},{199,14,51}};
-    for(unsigned n=0;n<sizeof(back)/sizeof(back[0]);n++)weather_fill(layer,x+back[n][0],y+128-back[n][2],back[n][1],back[n][2],2,0x445669,255);
-    if(ui.weather_city[location]==1) {
-        /* Jersey City's modern waterfront tower and iconic waterfront clock. */
-        weather_fill(layer,x+95,y+56,32,74,2,0x79929D,255);
-        weather_fill(layer,x+98,y+48,26,9,1,0x8AA4AA,255);
-        icon_line(layer,x,y,98,48,114,38,0xB8C6D8);icon_line(layer,x,y,114,38,124,48,0xB8C6D8);
-        for(int n=0;n<6;n++)icon_line(layer,x,y,100,65+n*10,122,65+n*10,0x506B7D);
-        weather_fill(layer,x+134,y+86,34,45,2,0x597582,255);
-        weather_fill(layer,x+178,y+100,28,31,2,0x58737E,255);
-        weather_fill(layer,x+49,y+103,5,28,0,0x97ABA5,255);
-        weather_fill(layer,x+36,y+88,31,31,15,0xCEB793,255);
-        weather_fill(layer,x+40,y+92,23,23,11,0x203443,255);
-        icon_line(layer,x,y,51,103,51,96,0xCEB793);icon_line(layer,x,y,51,103,58,107,0xCEB793);
-    } else if(ui.weather_city[location]==2) {
-        /* Manhattan: stepped Empire State silhouette and a distinct crown/spire. */
-        weather_fill(layer,x+91,y+76,36,54,1,0x8C9FAD,255);
-        weather_fill(layer,x+97,y+58,24,19,1,0xA7B1B7,255);
-        weather_fill(layer,x+103,y+47,12,12,1,0xBFC0B8,255);
-        icon_line(layer,x,y,109,29,109,48,0xDCC8A9);
-        weather_fill(layer,x+152,y+83,26,48,1,0x6C8694,255);
-        icon_line(layer,x,y,152,82,165,67,0xB8C6D8);icon_line(layer,x,y,165,67,178,82,0xB8C6D8);
-        icon_line(layer,x,y,165,58,165,68,0xB8C6D8);
-        weather_fill(layer,x+37,y+91,32,40,1,0x657F8D,255);
-        for(int n=0;n<5;n++){weather_fill(layer,x+98,y+83+n*8,4,3,0,0xC6B28F,150);weather_fill(layer,x+114,y+83+n*8,4,3,0,0xC6B28F,150);}
-    }
-    weather_fill(layer,x+8,y+128,208,12,0,0x213E4B,255);
-    icon_line(layer,x,y,20,134,86,134,0x668E96);icon_line(layer,x,y,104,138,202,138,0x78939C);
-    if(rain)for(int n=0;n<5;n++)icon_line(layer,x,y,140+n*12,49+(n%2)*6,134+n*12,63+(n%2)*6,0x9AC6D5);
-    if(snow)for(int n=0;n<4;n++){int xx=144+n*15,yy=54+(n%2)*10;icon_line(layer,x,y,xx-3,yy,xx+3,yy,0xD5E4E4);icon_line(layer,x,y,xx,yy-3,xx,yy+3,0xD5E4E4);}
-    if(code>=95){icon_line(layer,x,y,185,44,178,56,0xDBC29A);icon_line(layer,x,y,178,56,188,56,0xDBC29A);icon_line(layer,x,y,188,56,181,69,0xDBC29A);}
-    if(code==45||code==48)for(int n=0;n<3;n++)weather_fill(layer,x+15,y+69+n*17,194,8,4,0xA6B7BD,90);
+    lv_draw_rect_dsc_t d;lv_draw_rect_dsc_init(&d);
+    d.radius=16;d.bg_color=color_hex(0x0C1420);d.bg_opa=LV_OPA_COVER;
+    d.bg_grad.dir=LV_GRAD_DIR_HOR;d.bg_grad.stops_count=2;
+    d.bg_grad.stops[0].color=color_hex(0x0C1420);d.bg_grad.stops[0].opa=210;d.bg_grad.stops[0].frac=0;
+    d.bg_grad.stops[1].color=color_hex(0x0C1420);d.bg_grad.stops[1].opa=18;d.bg_grad.stops[1].frac=255;
+    lv_draw_rect(lv_event_get_layer(event),&d,&area);
 }
 
 static void agenda_empty_mark(lv_event_t *event)
@@ -780,32 +728,34 @@ static void weather_layout(const cJSON *surface)
     lv_obj_set_style_text_letter_space(ui.message,0,0);
     lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_LEFT,0);
     lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_WRAP);
-    lv_obj_set_size(ui.message,624,84);lv_obj_align(ui.message,LV_ALIGN_TOP_LEFT,48,158);
+    lv_obj_set_size(ui.message,624,64);lv_obj_align(ui.message,LV_ALIGN_TOP_LEFT,48,158);
     lv_obj_remove_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     ui.weather_view=true;
     const cJSON *items=cJSON_GetObjectItemCaseSensitive(surface,"items");
     for(int location=0;location<2;location++) {
-        int i=location*2, y=236+location*180;
+        int i=location*2, y=226+location*200;
         const cJSON *primary=cJSON_GetArrayItem(items,i),*detail=cJSON_GetArrayItem(items,i+1);
         const cJSON *code=cJSON_GetObjectItemCaseSensitive(primary,"weather_code"),*day=cJSON_GetObjectItemCaseSensitive(primary,"is_day");
-        ui.weather_code[location]=cJSON_IsNumber(code)?code->valueint:-1;
-        ui.weather_day[location]=cJSON_IsNumber(day)?day->valueint:-1;
+        ui.weather_code[location]=cJSON_IsNumber(code)&&code->valuedouble==code->valueint?code->valueint:-1;
+        ui.weather_day[location]=cJSON_IsNumber(day)&&day->valuedouble==day->valueint?day->valueint:-1;
         const char *city=scene_string(primary,"time");
         ui.weather_city[location]=!strcmp(city,"Jersey City, NJ")?1:!strcmp(city,"New York, NY")?2:0;
-        lv_obj_set_size(ui.cards[i],624,172);lv_obj_align(ui.cards[i],LV_ALIGN_TOP_LEFT,48,y);
+        lv_obj_set_size(ui.cards[i],680,190);lv_obj_align(ui.cards[i],LV_ALIGN_TOP_LEFT,20,y);
+        lv_obj_set_style_radius(ui.cards[i],16,0);
+        lv_obj_set_style_bg_image_src(ui.cards[i],friday_weather_art(ui.weather_city[location],ui.weather_code[location],ui.weather_day[location]),0);
         lv_obj_set_style_bg_opa(ui.cards[i],LV_OPA_COVER,0);
-        lv_obj_set_size(ui.card_times[i],214,38);lv_obj_align(ui.card_times[i],LV_ALIGN_TOP_LEFT,248,18);
+        lv_obj_set_size(ui.card_times[i],240,38);lv_obj_align(ui.card_times[i],LV_ALIGN_TOP_LEFT,28,16);
         lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_24,0);
         lv_obj_set_style_text_color(ui.card_times[i],color_hex(UI_TEXT),0);
-        lv_obj_set_size(ui.card_labels[i],142,42);lv_obj_align(ui.card_labels[i],LV_ALIGN_TOP_RIGHT,-12,14);
+        lv_obj_set_size(ui.card_labels[i],220,42);lv_obj_align(ui.card_labels[i],LV_ALIGN_TOP_LEFT,268,12);
         lv_obj_set_style_text_font(ui.card_labels[i],&lv_font_montserrat_32,0);
-        lv_obj_set_style_text_align(ui.card_labels[i],LV_TEXT_ALIGN_RIGHT,0);
+        lv_obj_set_style_text_align(ui.card_labels[i],LV_TEXT_ALIGN_LEFT,0);
         bool unavailable=!strcmp(scene_string(primary,"label"),"Weather unavailable");
         if(unavailable)display_label(ui.card_labels[i],"—");
-        lv_obj_set_size(ui.cards[i+1],356,96);lv_obj_align(ui.cards[i+1],LV_ALIGN_TOP_LEFT,296,y+54);
+        lv_obj_set_size(ui.cards[i+1],624,96);lv_obj_align(ui.cards[i+1],LV_ALIGN_TOP_LEFT,48,y+58);
         lv_obj_set_style_bg_opa(ui.cards[i+1],LV_OPA_TRANSP,0);
-        lv_obj_set_size(ui.card_times[i+1],356,32);lv_obj_align(ui.card_times[i+1],LV_ALIGN_TOP_LEFT,0,0);
+        lv_obj_set_size(ui.card_times[i+1],624,32);lv_obj_align(ui.card_times[i+1],LV_ALIGN_TOP_LEFT,0,0);
         lv_obj_set_style_text_font(ui.card_times[i+1],&lv_font_montserrat_24,0);
         lv_obj_set_style_text_color(ui.card_times[i+1],color_hex(0xB8C6D8),0);
         char current[96];const char *condition=scene_string(primary,"condition");
@@ -816,18 +766,19 @@ static void weather_layout(const cJSON *surface)
         if(!strncmp(chance,prefix,strlen(prefix)))lv_snprintf(forecast,sizeof(forecast),"Rain / snow: %s",chance+strlen(prefix));
         else lv_snprintf(forecast,sizeof(forecast),"%s",chance);
         display_label(ui.card_labels[i+1],forecast);
-        lv_obj_set_size(ui.card_labels[i+1],356,38);lv_obj_align(ui.card_labels[i+1],LV_ALIGN_TOP_LEFT,0,40);
+        lv_obj_set_size(ui.card_labels[i+1],624,38);lv_obj_align(ui.card_labels[i+1],LV_ALIGN_TOP_LEFT,0,40);
         lv_obj_set_style_text_font(ui.card_labels[i+1],&lv_font_montserrat_24,0);
         lv_obj_set_style_text_color(ui.card_labels[i+1],color_hex(UI_TEXT),0);
         lv_obj_set_style_text_align(ui.card_labels[i+1],LV_TEXT_ALIGN_LEFT,0);
         display_label(ui.weather_details[location],scene_string(detail,"detail"));
-        lv_obj_set_size(ui.weather_details[location],356,28);lv_obj_align(ui.weather_details[location],LV_ALIGN_TOP_LEFT,296,y+132);
+        lv_obj_set_size(ui.weather_details[location],624,28);lv_obj_align(ui.weather_details[location],LV_ALIGN_TOP_LEFT,48,y+140);
+        lv_obj_set_style_text_color(ui.weather_details[location],color_hex(0xCCD5DF),0);
         if(cJSON_IsObject(primary))lv_obj_remove_flag(ui.weather_details[location],LV_OBJ_FLAG_HIDDEN);
     }
-    lv_obj_set_size(ui.buttons[0],300,64);lv_obj_align(ui.buttons[0],LV_ALIGN_TOP_LEFT,48,606);
+    lv_obj_set_size(ui.buttons[0],300,56);lv_obj_align(ui.buttons[0],LV_ALIGN_TOP_LEFT,48,626);
     lv_obj_set_style_border_width(ui.buttons[0],0,0);
     display_label(ui.attribution,"Weather: Open-Meteo");
-    lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,682);
+    lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,694);
     lv_obj_remove_flag(ui.attribution,LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -915,7 +866,7 @@ bool friday_ui_set_scene(const cJSON *surface)
         else if(strstr(source,"synthetic")||strstr(source,"Synthetic"))lv_obj_add_flag(ui.attribution,LV_OBJ_FLAG_HIDDEN);
         else if(!source[0]||strstr(source,"Spotify"))display_label(ui.attribution,"Spotify");
         else {char credit[320];lv_snprintf(credit,sizeof(credit),"Spotify / %s",source);display_label(ui.attribution,credit);}
-        lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,682);
+        lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,694);
         lv_obj_add_flag(ui.progress,LV_OBJ_FLAG_HIDDEN);
         int em,es,dm,ds;
         if(sscanf(stamp,"%4d:%2d / %4d:%2d",&em,&es,&dm,&ds)==4&&em>=0&&em<=1440&&es>=0&&es<60&&dm>=0&&dm<=1440&&ds>=0&&ds<60&&(dm*60+ds)>0) {
@@ -1027,6 +978,7 @@ void friday_ui_create(void)
     lv_obj_move_to_index(ui.fact_panel,0);
     for(int i=0;i<4;i++) {
         ui.cards[i]=lv_obj_create(screen);lv_obj_remove_style_all(ui.cards[i]);
+        lv_obj_set_style_bg_image_src(ui.cards[i],NULL,0);
         lv_obj_set_style_bg_color(ui.cards[i],color_hex(UI_CARD),0);lv_obj_set_style_bg_opa(ui.cards[i],LV_OPA_COVER,0);
         lv_obj_set_style_radius(ui.cards[i],20,0);lv_obj_remove_flag(ui.cards[i],LV_OBJ_FLAG_SCROLLABLE);
         ui.card_times[i]=make_label(ui.cards[i],"",&lv_font_montserrat_18,0x9399A5);
@@ -1066,7 +1018,7 @@ void friday_ui_create(void)
     lv_obj_set_style_bg_color(ui.progress,color_hex(UI_EDGE),LV_PART_MAIN);lv_obj_set_style_bg_color(ui.progress,color_hex(0xC9C6C1),LV_PART_INDICATOR);lv_obj_remove_flag(ui.progress,LV_OBJ_FLAG_CLICKABLE);
     ui.media_time=make_label(screen,"",&lv_font_montserrat_18,0x8D939E);lv_obj_set_size(ui.media_time,624,28);lv_obj_align(ui.media_time,LV_ALIGN_TOP_LEFT,48,548);lv_label_set_long_mode(ui.media_time,LV_LABEL_LONG_MODE_DOTS);
     for(int i=0;i<2;i++){ui.weather_details[i]=make_label(screen,"",&lv_font_montserrat_18,0x98A4B2);lv_obj_add_flag(ui.weather_details[i],LV_OBJ_FLAG_HIDDEN);}
-    ui.attribution=make_label(screen,"",&lv_font_montserrat_18,0x757B86);lv_obj_set_size(ui.attribution,624,26);lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,682);lv_label_set_long_mode(ui.attribution,LV_LABEL_LONG_MODE_DOTS);
+    ui.attribution=make_label(screen,"",&lv_font_montserrat_18,0x757B86);lv_obj_set_size(ui.attribution,624,26);lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,694);lv_label_set_long_mode(ui.attribution,LV_LABEL_LONG_MODE_DOTS);
     ui.browse_date=make_label(screen,"",&lv_font_montserrat_24,0xC8CED9);
     lv_obj_set_size(ui.browse_date,624,32);lv_obj_align(ui.browse_date,LV_ALIGN_TOP_LEFT,48,154);
     ui.browse_meta=make_label(screen,"",&lv_font_montserrat_18,0x7F8B98);
