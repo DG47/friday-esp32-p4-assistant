@@ -84,6 +84,14 @@ static bool visible_text(lv_obj_t *object,const char *needle)
     for(uint32_t i=0;i<lv_obj_get_child_count(object);i++)if(visible_text(lv_obj_get_child(object,i),needle))return true;
     return false;
 }
+static void weather_text_fits(lv_obj_t *object) {
+    if(lv_obj_has_flag(object,LV_OBJ_FLAG_HIDDEN))return;
+    if(lv_obj_check_type(object,&lv_label_class)) {
+        const char *text=lv_label_get_text(object);
+        if(text[0]) {lv_point_t size;lv_text_get_size(&size,text,lv_obj_get_style_text_font(object,0),0,0,LV_COORD_MAX,LV_TEXT_FLAG_NONE);assert(size.x<=lv_obj_get_width(object));}
+    }
+    for(unsigned i=0;i<lv_obj_get_child_count(object);i++)weather_text_fits(lv_obj_get_child(object,i));
+}
 static void shown(const char *text){if(!visible_text(lv_screen_active(),text))fprintf(stderr,"MISSING_TEXT %s\n",text);assert(visible_text(lv_screen_active(),text));}
 static void hidden_text(const char *text){assert(!visible_text(lv_screen_active(),text));}
 static void metadata_audit(const char *directory)
@@ -114,15 +122,19 @@ static void metadata_audit(const char *directory)
     shown("Synthetic artist");shown("A complete synthetic lyric line");shown("1:24 / 3:42");shown("LRCLIB");shown("rights unverified");hidden_text("record 999");hidden_text("metadata matched");hidden_text("controls hidden");hidden_text("CURRENT LINE");capture(directory,"audit-music-credit");
     scene("{\"kind\":\"metric\",\"title\":\"22 C\",\"subtitle\":\"A warm afternoon\",\"items\":[{\"time\":\"50%\",\"label\":\"Humidity\"},{\"time\":\"12 km/h\",\"label\":\"Wind\"},{\"time\":\"2026-10-01T12:00:00\",\"label\":\"Open-Meteo · UTC\"}],\"actions\":[{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}");
     shown("Humidity");shown("Wind");shown("Weather: Open-Meteo");hidden_text("UTC");hidden_text("2026-10-01T12:00:00");capture(directory,"audit-weather");
-    const char *weather_names[]={"weather-both","weather-07306","weather-10010","weather-partial","weather-unavailable"};
-    for(unsigned i=0;i<5;i++) {
+    const char *weather_names[]={"weather-both","weather-07306","weather-10010","weather-partial","weather-unavailable","weather-extremes"};
+    for(unsigned i=0;i<6;i++) {
         char path[1024],data[8192]={0};snprintf(path,sizeof(path),"%s/../%s.json",directory,weather_names[i]);
         FILE *file=fopen(path,"rb");assert(file);assert(fread(data,1,sizeof(data)-1,file)>0);fclose(file);
-        scene(data);hidden_text("UTC");hidden_text("Open-Meteo");hidden_text("latitude");hidden_text("longitude");
-        if(i!=2)shown("07306");if(i!=1)shown("10010");
+        scene(data);hidden_text("UTC");shown("Weather: Open-Meteo");hidden_text("latitude");hidden_text("longitude");
+        if(i!=2)shown("Jersey City, NJ");if(i!=1)shown("New York, NY");
         if(i==3||i==4)shown("Weather unavailable");
-        if(i<4)shown("Humidity 65%");capture(directory,weather_names[i]);
+        if(i<4)shown("Humidity 65%");
+        hidden_text("07306");hidden_text("10010");shown("Current weather");
+        if(i==5){shown("-100 °C");shown("100 °C");shown("Wind 500 km/h");shown("Humidity 100%");}
+        lv_obj_update_layout(lv_screen_active());weather_text_fits(lv_screen_active());capture(directory,weather_names[i]);
     }
+    puts("WEATHER_PRESENTATION_AUDIT cases=6 city-state/ZIP-hidden/source-credit/full-text-fit/both/either/partial/unavailable/extremes PASS");
     const char *kinds[]={"comparison","person","email","map","progress","graph","camera","artifact","timer"};
     for(unsigned i=0;i<sizeof(kinds)/sizeof(kinds[0]);i++){friday_ui_set_surface(kinds[i],"User content","My note about provider codes and metadata is user content.");shown("My note about provider codes and metadata is user content.");hidden_text(kinds[i]);}
     friday_ui_set_surface("ERROR","Friday","Expected a JSON object; request_id=TRACE_SENTINEL");hidden_text("JSON");hidden_text("request_id");hidden_text("TRACE_SENTINEL");shown("Please try again.");capture(directory,"audit-error");
@@ -424,7 +436,7 @@ static void weather_touch_audit(const char *directory)
         for(int i=0;i<5;i++)for(int j=i+1;j<5;j++)assert(targets[i].x2<targets[j].x1||targets[j].x2<targets[i].x1||targets[i].y2<targets[j].y1||targets[j].y2<targets[i].y1);
         int calls=native_sender_calls;tap_caption("Weather");tap_caption("Weather");
         assert(native_sender_calls==calls+2&&!strcmp(native_sender_action,"weather"));checks+=2;
-        assert(friday_ui_set_scene(weather));shown("07306");shown("10010");hidden_text("Open-Meteo");hidden_text("UTC");
+        assert(friday_ui_set_scene(weather));shown("Jersey City, NJ");shown("New York, NY");shown("Weather: Open-Meteo");hidden_text("UTC");
         if(cycle==0)capture(directory,"weather-touch-result");
         tap_caption("Dismiss");assert(!strcmp(native_sender_action,"dismiss"));hidden_text("Weather");checks++;
     }
@@ -442,8 +454,8 @@ static void weather_touch_audit(const char *directory)
         cJSON *surface=cJSON_GetObjectItem(packet,"surface");
         if(cJSON_IsObject(surface)) {
             assert(friday_ui_set_scene(surface));
-            if(!strcmp(field(surface,"title"),"Confirmation required")) {shown("Cancel request");shown("Complete the synthetic reminder?");hidden_text("07306");capture(directory,"weather-touch-confirmation");}
-            else {shown("07306");shown("10010");}
+            if(!strcmp(field(surface,"title"),"Confirmation required")) {shown("Cancel request");shown("Complete the synthetic reminder?");hidden_text("Jersey City, NJ");capture(directory,"weather-touch-confirmation");}
+            else {shown("Jersey City, NJ");shown("New York, NY");}
         } else {
             scene("{\"kind\":\"message\",\"title\":\"Review request\",\"subtitle\":\"Keep the pending facts intact.\",\"actions\":[{\"id\":\"confirm\",\"label\":\"Confirm\"}]}");
             display_hold_ms=211;assert(friday_ui_handle_notice(packet));display_hold_ms=0;deferred_notice_tick();

@@ -23,14 +23,15 @@ async def main():
     out.mkdir(parents=True, exist_ok=True)
     for name, location, failures in [('weather-both','both',set()), ('weather-07306','07306',set()),
                                      ('weather-10010','10010',set()), ('weather-partial','both',{'10010'}),
-                                     ('weather-unavailable','both',{'07306','10010'})]:
+                                     ('weather-unavailable','both',{'07306','10010'}), ('weather-extremes','both',set())]:
         def response(req):
             zip = '07306' if req.url.params['latitude']=='40.736294' else '10010'
             if zip in failures:
                 return httpx.Response(503)
             return httpx.Response(200,json={'current_units':{'temperature_2m':'°C','relative_humidity_2m':'%','wind_speed_10m':'km/h'},
                 'current':{'time':datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec='minutes'),
-                           'temperature_2m':21.5 if zip=='07306' else 22,'relative_humidity_2m':65,'wind_speed_10m':8.5}})
+                           'temperature_2m':(-100 if zip=='07306' else 100) if name=='weather-extremes' else (21.5 if zip=='07306' else 22),
+                           'relative_humidity_2m':100 if name=='weather-extremes' else 65,'wind_speed_10m':500 if name=='weather-extremes' else 8.5}})
         with tempfile.TemporaryDirectory() as directory:
             settings=Settings(_env_file=None,assistant_provider='mock',weather_provider='open-meteo',weather_locations=LOCATIONS)
             agent=FridayAgent(settings,ReminderStore(Path(directory)/'test.db'))

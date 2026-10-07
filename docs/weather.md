@@ -43,7 +43,8 @@ For direct backend startup, `WEATHER_PROVIDER=open-meteo` may be set in `.env`.
 
 Configuration accepts at most two unique named locations and rejects a mixture
 with legacy coordinates. Existing single-coordinate configurations still work.
-Do not silently replace a ZIP label with a city or infer home/work.
+Keep ZIP labels as routing identities. The approved display labels are Jersey City, NJ
+for 07306 and New York, NY for 10010; no home/work role is inferred.
 
 ## Requests and failure behavior
 
@@ -64,8 +65,9 @@ beside the other's unavailable state. No background polling is added.
 `weather 07306 and 10010` route locally without reasoning-provider inference.
 Other natural-language weather requests can use the model tool. Its response
 includes selected ZIP labels, observations, source and units; it does not include
-coordinates. The screen includes only ZIPs and useful measurements/failure text,
-without provider names, timestamps or operational diagnostics. Weather data:
+coordinates. The screen shows city/state names, useful measurements/failure text, and a discreet
+Open-Meteo credit. It does not show ZIP routing codes, timestamps or operational
+diagnostics. Weather data:
 [Open-Meteo](https://open-meteo.com/), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 ## Review and rollout
@@ -83,3 +85,21 @@ without provider names, timestamps or operational diagnostics. Weather data:
    neither credential changes nor database migration are needed.
 
 Candidate touch-only hold-menu access and firmware rollout gate: [weather-touch.md](weather-touch.md).
+
+## City-label and native presentation refinement
+
+The display-only mapping uses Jersey City, NJ (07306) and New York, NY (10010).
+The Census representative points above remain unchanged. Their postal city/state
+association is corroborated by the primary location pages of
+[RWJBarnabas Health](https://www.rwjbh.org/our-locations/specialty-centers/the-jersey-city-family-health-center/)
+and [Baruch College, CUNY](https://www.baruch.cuny.edu/about-baruch/). These are
+public institutional examples, not personal addresses; no runtime geocoding or
+location request is added. The raw ZIP remains in model tool payloads and caches.
+
+The named-location screen has the agenda's 48px left margin, 48px headline,
+compact ribbon and open spacing. Each location has its name and large Celsius
+reading on one line, followed by quieter wind in km/h and humidity in percent.
+The redundant summary panel is hidden; partial/total failures retain each city
+name and a clear unavailable/retry message. Dismiss and 30-second expiry remain.
+A small bottom credit uses the existing attribution component. No conditions
+icons, forecast, extra controls or provider change are added.

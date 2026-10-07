@@ -686,6 +686,45 @@ static void countdown_tick(lv_timer_t *timer)
     }
 }
 
+/* Weather uses the same open editorial hierarchy as the agenda. Each pair of
+ * rows is one location, with a primary reading and quieter supporting facts. */
+static void weather_layout(const cJSON *surface)
+{
+    display_label(ui.eyebrow,"Weather");
+    lv_obj_set_style_text_letter_space(ui.eyebrow,0,0);
+    display_label(ui.title,"Current weather");
+    lv_obj_set_style_text_font(ui.title,&lv_font_montserrat_48,0);
+    lv_obj_set_size(ui.title,624,60);lv_obj_align(ui.title,LV_ALIGN_TOP_LEFT,48,88);
+    ui.hide_scene_summary=true;
+    lv_obj_add_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
+    for(int i=0;i<4;i++) {
+        bool primary=(i%2)==0;
+        lv_obj_set_style_bg_opa(ui.cards[i],LV_OPA_TRANSP,0);
+        lv_obj_set_size(ui.cards[i],624,primary?88:52);
+        lv_obj_align(ui.cards[i],LV_ALIGN_TOP_LEFT,48,212+(i/2)*194+(primary?0:88));
+        lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_24,0);
+        lv_obj_set_style_text_color(ui.card_times[i],color_hex(UI_TEXT),0);
+        lv_obj_set_size(ui.card_times[i],340,38);
+        lv_obj_align(ui.card_times[i],LV_ALIGN_LEFT_MID,0,0);
+        lv_obj_set_style_text_font(ui.card_labels[i],primary?&lv_font_montserrat_48:&lv_font_montserrat_24,0);
+        lv_obj_set_style_text_color(ui.card_labels[i],color_hex(primary?UI_TEXT:0x98A4B2),0);
+        lv_obj_set_style_text_align(ui.card_labels[i],primary?LV_TEXT_ALIGN_RIGHT:LV_TEXT_ALIGN_LEFT,0);
+        lv_obj_set_size(ui.card_labels[i],primary?260:624,primary?60:38);
+        lv_obj_align(ui.card_labels[i],primary?LV_ALIGN_RIGHT_MID:LV_ALIGN_LEFT_MID,0,0);
+        const cJSON *item=cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(surface,"items"),i);
+        if(primary&&!strcmp(scene_string(item,"label"),"Weather unavailable")) {
+            lv_obj_set_style_text_font(ui.card_labels[i],&lv_font_montserrat_24,0);
+            lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_WRAP);
+        }
+    }
+    lv_obj_set_size(ui.buttons[0],300,64);lv_obj_align(ui.buttons[0],LV_ALIGN_TOP_LEFT,48,606);
+    lv_obj_set_style_border_width(ui.buttons[0],0,0);
+    display_label(ui.attribution,"Weather: Open-Meteo");
+    lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,682);
+    lv_obj_remove_flag(ui.attribution,LV_OBJ_FLAG_HIDDEN);
+}
+
 bool friday_ui_set_scene(const cJSON *surface)
 {
     if(!bsp_display_lock(1000))return false;
@@ -844,6 +883,7 @@ bool friday_ui_set_scene(const cJSON *surface)
         if(!strncmp(id,"calendar",8)||!strncmp(id,"event:",6))browse=true;
     }
     if(browse)browse_layout(surface);
+    if(!strcmp(ui.scene_kind,"metric")&&!strcmp(scene_string(surface,"title"),"Weather"))weather_layout(surface);
     recovery_notice_update();
     log_ui_snapshot("scene");
     bsp_display_unlock();

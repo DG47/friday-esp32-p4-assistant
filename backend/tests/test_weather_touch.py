@@ -51,7 +51,7 @@ class WeatherTouchTests(unittest.TestCase):
                     socket.send_json({'type':'scene.action','action':'weather','request_id':f'weather-{cycle}'})
                     surface=receive_surface(socket)['surface']
                     self.assertEqual(surface['title'],'Weather')
-                    self.assertEqual([item['time'] for item in surface['items'] if item['time']],['07306','10010'])
+                    self.assertEqual([item['time'] for item in surface['items'] if item['time']],['Jersey City, NJ','New York, NY'])
                     self.assertNotIn('Open-Meteo',json.dumps(surface));self.assertNotIn('UTC',json.dumps(surface))
                     socket.send_json({'type':'scene.action','action':'dismiss','request_id':f'dismiss-{cycle}'})
                     self.assertEqual(receive_surface(socket)['surface']['kind'],'ambient')

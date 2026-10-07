@@ -8,6 +8,11 @@ import httpx
 from pydantic import BaseModel, Field
 
 
+def weather_display_name(label: str) -> str:
+    """Display-only names for the approved areas; routing retains the exact ZIP."""
+    return {"07306": "Jersey City, NJ", "10010": "New York, NY"}.get(label, label)
+
+
 class CurrentWeather(BaseModel):
     time: str = Field(max_length=32)
     temperature_2m: float = Field(ge=-100, le=100)
