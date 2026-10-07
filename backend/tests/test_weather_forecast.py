@@ -113,7 +113,7 @@ class ForecastTests(unittest.IsolatedAsyncioTestCase):
                 outcome=await agent._execute_read_tool('get_weather',{},'test','req',0)
             self.assertIn('3 pm–4 pm EDT',outcome.surface.subtitle)
             self.assertEqual(outcome.surface.items[1]['label'],'Rain / snow chance unknown')
-            self.assertIn('Forecast incomplete',outcome.surface.subtitle)
+            self.assertIn('Conditions unknown',outcome.surface.subtitle)
 
     async def test_current_conditions_are_independent_of_future_probability(self):
         from app.tools.weather import weather_condition

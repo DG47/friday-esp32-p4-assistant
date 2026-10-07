@@ -131,7 +131,7 @@ static void metadata_audit(const char *directory)
         if(i!=2)shown("Jersey City, NJ");if(i!=1)shown("New York, NY");
         if(i==3||i==4)shown("Weather unavailable");
         if(i<4||i>5)shown("Humidity 65%");
-        if(i==6)shown("Rain / snow: unknown");if(i==7){shown("1 am EDT");shown("1 am EST");}if(i==8)shown("Low rain / snow chance");
+        if(i==6)shown("Rain / snow: unknown");if(i==7){shown("1 am EDT");shown("1 am EST");}if(i==8)shown("Conditions vary");
         hidden_text("07306");hidden_text("10010");shown("Next full hour");shown("Rain / snow:");
         if(i==5){shown("-148 °F");shown("212 °F");shown("Wind 500 km/h");shown("Humidity 100%");}
         lv_obj_update_layout(lv_screen_active());weather_text_fits(lv_screen_active());capture(directory,weather_names[i]);
@@ -445,7 +445,7 @@ static void weather_touch_audit(const char *directory)
             assert(friday_ui_set_scene(menu));capture(directory,"weather-motion-00-opening");
             friday_ui_set_tool("get_weather","working");shown("Checking the forecast");hidden_text("An umbrella");
             for(int n=1;n<=5;n++){char name[80];snprintf(name,sizeof(name),"weather-motion-%02d-loading",n);capture(directory,name);}
-            friday_ui_set_tool("get_weather","complete");assert(friday_ui_set_scene(weather));shown("An umbrella may help");
+            friday_ui_set_tool("get_weather","complete");assert(friday_ui_set_scene(weather));shown("Conditions vary");
             for(int n=6;n<=10;n++){char name[80];snprintf(name,sizeof(name),"weather-motion-%02d-result",n);capture(directory,name);}
             friday_ui_set_tool("get_weather","working");assert(friday_ui_set_scene(menu));
             for(int n=0;n<5;n++){char name[80];snprintf(name,sizeof(name),"weather-cancel-%02d-menu",n);capture(directory,name);}
@@ -479,6 +479,50 @@ static void weather_touch_audit(const char *directory)
     cJSON_Delete(packets);cJSON_Delete(weather);cJSON_Delete(browse);
     native_sender_result=-1;friday_ui_set_action_callback(action);scene("{\"kind\":\"ambient\"}");
     printf("WEATHER_TOUCH_AUDIT checks=%d fifth-targets/no-overlap/native-sender/repeated/dismiss/offline/recovery/protected/backend-packets PASS\n",checks);
+}
+
+static void advance_weather_time(uint32_t milliseconds)
+{
+    tick+=milliseconds;lv_tick_inc(milliseconds);lv_timer_handler();
+}
+static void weather_persistence_audit(const char *directory)
+{
+    cJSON *weather=weather_fixture(directory,"weather-both.json");
+    cJSON_DeleteItemFromObject(weather,"weather_valid_ms");cJSON_AddNumberToObject(weather,"weather_valid_ms",100000);
+    cJSON_DeleteItemFromObject(weather,"expires_ms");cJSON_AddNumberToObject(weather,"expires_ms",30000);
+    friday_ui_media_clear();friday_ui_set_state(FRIDAY_STATE_IDLE);
+    friday_ui_set_action_callback(action);assert(friday_ui_set_scene(weather));
+    advance_weather_time(35000);shown("Conditions vary");shown("70.7 °F");shown("71.6 °F");shown("Dismiss");
+    hidden_text("Conditions expired");capture(directory,"weather-persistent-after-30s");
+    friday_ui_set_backend("DISCONNECTED"); /* no server push can clear this view */
+    advance_weather_time(66000);shown("Conditions expired");shown("Last forecast window");
+    shown("Forecast expired");shown("Reopen Weather");shown("Jersey City, NJ");shown("New York, NY");shown("Dismiss");
+    hidden_text("70.7 °F");hidden_text("71.6 °F");hidden_text("70%");hidden_text("Humidity");
+    weather_text_fits(lv_screen_active());capture(directory,"weather-persistent-expired-offline");
+    int before=actions;tap_caption("Dismiss");assert(actions==before+1&&!strcmp(last_action,"dismiss"));
+    hidden_text("Forecast expired");
+    /* Replacement view cancels the old data deadline, including protected UI. */
+    const char *replacements[]={
+      "{\"kind\":\"message\",\"title\":\"Confirmation required\",\"subtitle\":\"Keep this protected request.\",\"actions\":[{\"id\":\"confirm\",\"label\":\"Confirm\"}]}",
+      "{\"kind\":\"reminder\",\"title\":\"Reminder\",\"subtitle\":\"Keep this reminder.\",\"actions\":[{\"id\":\"snooze:1\",\"label\":\"Snooze\"}]}",
+      "{\"kind\":\"message\",\"title\":\"New navigation\",\"subtitle\":\"Keep this new view.\"}"
+    };
+    for(unsigned i=0;i<3;i++){
+        assert(friday_ui_set_scene(weather));scene(replacements[i]);advance_weather_time(101000);
+        hidden_text("Conditions expired");hidden_text("Forecast expired");
+        shown(i==0?"Keep this protected request":i==1?"Keep this reminder":"Keep this new view");
+    }
+    /* A newer Weather result owns a new deadline and a failed refresh clears
+     * previous measurements instead of keeping stale successful values. */
+    assert(friday_ui_set_scene(weather));advance_weather_time(90000);
+    assert(friday_ui_set_scene(weather));advance_weather_time(20000);shown("70.7 °F");hidden_text("Conditions expired");
+    cJSON *failed=weather_fixture(directory,"weather-unavailable.json");assert(friday_ui_set_scene(failed));
+    advance_weather_time(310000);shown("Weather unavailable");shown("Dismiss");hidden_text("70.7 °F");hidden_text("Conditions expired");
+    /* Malformed or missing lease fails closed while the view remains open. */
+    cJSON_DeleteItemFromObject(weather,"weather_valid_ms");assert(friday_ui_set_scene(weather));advance_weather_time(10);
+    shown("Conditions expired");shown("Dismiss");hidden_text("70.7 °F");
+    cJSON_Delete(failed);cJSON_Delete(weather);
+    puts("WEATHER_PERSISTENCE_AUDIT after30s/offline-data-expiry/dismiss/new-navigation/protected-priority/new-deadline/failed-refresh/invalid-lease PASS");
 }
 #endif
 
@@ -634,6 +678,7 @@ int main(int argc,char **argv) {
 #ifdef FRIDAY_NATIVE_SENDER
     sender_failure_audit(argv[1]);
     weather_touch_audit(argv[1]);
+    weather_persistence_audit(argv[1]);
 #endif
     activity_copy_audit(argv[1]);
 #endif

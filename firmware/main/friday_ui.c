@@ -62,6 +62,9 @@ typedef struct {
     lv_obj_t *weather_details[2];
     bool weather_view;
     int weather_code[2],weather_day[2],weather_city[2];
+    lv_timer_t *weather_data_expiry;
+    unsigned long weather_data_generation;
+    char weather_window[128];
     lv_image_dsc_t cover_dsc;
     friday_artwork_t artwork;
     lv_obj_t *cards[4];
@@ -411,6 +414,7 @@ static void scene_layout(bool active)
     lv_obj_remove_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
     ui.browse_mode=0;
     ui.weather_view=false;
+    if(ui.weather_data_expiry){lv_timer_delete(ui.weather_data_expiry);ui.weather_data_expiry=NULL;}
     for(int i=0;i<2;i++)if(ui.weather_details[i])lv_obj_add_flag(ui.weather_details[i],LV_OBJ_FLAG_HIDDEN);
     ui.hide_scene_summary=false;
     lv_obj_add_flag(ui.browse_date,LV_OBJ_FLAG_HIDDEN);
@@ -530,9 +534,7 @@ static void launcher_icon(lv_event_t *event)
         icon_line(layer,x,y,11,23,24,23,color);icon_line(layer,x,y,11,30,20,30,color);
     }
 }
-/* Two small procedural illustrations: no raster downloads, canvas buffers or
- * animation. Current WMO conditions alone select weather marks; future chance
- * never enters this renderer. */
+/* Readable overlay on immutable current-condition city illustrations. */
 static void weather_city_art(lv_event_t *event)
 {
     if(!ui.weather_view)return;
@@ -543,6 +545,26 @@ static void weather_city_art(lv_event_t *event)
     d.bg_grad.stops[0].color=color_hex(0x0C1420);d.bg_grad.stops[0].opa=210;d.bg_grad.stops[0].frac=0;
     d.bg_grad.stops[1].color=color_hex(0x0C1420);d.bg_grad.stops[1].opa=18;d.bg_grad.stops[1].frac=255;
     lv_draw_rect(lv_event_get_layer(event),&d,&area);
+}
+
+static void weather_data_expired(lv_timer_t *timer)
+{
+    if(ui.weather_data_expiry!=timer)return;
+    ui.weather_data_expiry=NULL; /* one-shot timer auto-deletes after callback */
+    if(!ui.weather_view||ui.scene_generation!=ui.weather_data_generation||
+       (overlay.active&&overlay.protected))return;
+    display_label(ui.title,"Conditions expired.");
+    char message[160];lv_snprintf(message,sizeof(message),"Last forecast window\n%s",ui.weather_window);
+    display_label(ui.message,message);
+    for(int location=0;location<2;location++) {
+        int i=location*2;ui.weather_code[location]=-1;ui.weather_day[location]=-1;
+        lv_obj_set_style_bg_image_src(ui.cards[i],friday_weather_art(ui.weather_city[location],-1,-1),0);
+        display_label(ui.card_labels[i],"—");
+        display_label(ui.card_times[i+1],"Now · Conditions expired");
+        display_label(ui.card_labels[i+1],"Forecast expired");
+        display_label(ui.weather_details[location],"Reopen Weather for an updated forecast.");
+    }
+    log_ui_snapshot("weather-data-expired");
 }
 
 static void agenda_empty_mark(lv_event_t *event)
@@ -725,6 +747,8 @@ static void weather_layout(const cJSON *surface)
     lv_obj_set_size(ui.title,624,60);lv_obj_align(ui.title,LV_ALIGN_TOP_LEFT,48,88);
     ui.hide_scene_summary=true;
     display_label(ui.message,split?split+1:"");
+    const char *window=split?strchr(split+1,'\n'):NULL;
+    lv_snprintf(ui.weather_window,sizeof(ui.weather_window),"%s",window?window+1:"");
     lv_obj_set_style_text_letter_space(ui.message,0,0);
     lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_LEFT,0);
     lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_WRAP);
@@ -733,6 +757,7 @@ static void weather_layout(const cJSON *surface)
     lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     ui.weather_view=true;
     const cJSON *items=cJSON_GetObjectItemCaseSensitive(surface,"items");
+    bool measurements=false;
     for(int location=0;location<2;location++) {
         int i=location*2, y=226+location*200;
         const cJSON *primary=cJSON_GetArrayItem(items,i),*detail=cJSON_GetArrayItem(items,i+1);
@@ -752,12 +777,13 @@ static void weather_layout(const cJSON *surface)
         lv_obj_set_style_text_font(ui.card_labels[i],&lv_font_montserrat_32,0);
         lv_obj_set_style_text_align(ui.card_labels[i],LV_TEXT_ALIGN_LEFT,0);
         bool unavailable=!strcmp(scene_string(primary,"label"),"Weather unavailable");
+        if(cJSON_IsObject(primary)&&scene_string(primary,"label")[0]&&!unavailable)measurements=true;
         if(unavailable)display_label(ui.card_labels[i],"—");
         lv_obj_set_size(ui.cards[i+1],624,96);lv_obj_align(ui.cards[i+1],LV_ALIGN_TOP_LEFT,48,y+58);
         lv_obj_set_style_bg_opa(ui.cards[i+1],LV_OPA_TRANSP,0);
-        lv_obj_set_size(ui.card_times[i+1],624,32);lv_obj_align(ui.card_times[i+1],LV_ALIGN_TOP_LEFT,0,0);
-        lv_obj_set_style_text_font(ui.card_times[i+1],&lv_font_montserrat_24,0);
-        lv_obj_set_style_text_color(ui.card_times[i+1],color_hex(0xB8C6D8),0);
+        lv_obj_set_size(ui.card_times[i+1],624,42);lv_obj_align(ui.card_times[i+1],LV_ALIGN_TOP_LEFT,0,0);
+        lv_obj_set_style_text_font(ui.card_times[i+1],&lv_font_montserrat_32,0);
+        lv_obj_set_style_text_color(ui.card_times[i+1],color_hex(UI_TEXT),0);
         char current[96];const char *condition=scene_string(primary,"condition");
         lv_snprintf(current,sizeof(current),"Now · %s",condition[0]?condition:"Conditions unknown");
         display_label(ui.card_times[i+1],unavailable?"Weather unavailable":current);
@@ -766,12 +792,12 @@ static void weather_layout(const cJSON *surface)
         if(!strncmp(chance,prefix,strlen(prefix)))lv_snprintf(forecast,sizeof(forecast),"Rain / snow: %s",chance+strlen(prefix));
         else lv_snprintf(forecast,sizeof(forecast),"%s",chance);
         display_label(ui.card_labels[i+1],forecast);
-        lv_obj_set_size(ui.card_labels[i+1],624,38);lv_obj_align(ui.card_labels[i+1],LV_ALIGN_TOP_LEFT,0,40);
+        lv_obj_set_size(ui.card_labels[i+1],624,34);lv_obj_align(ui.card_labels[i+1],LV_ALIGN_TOP_LEFT,0,45);
         lv_obj_set_style_text_font(ui.card_labels[i+1],&lv_font_montserrat_24,0);
         lv_obj_set_style_text_color(ui.card_labels[i+1],color_hex(UI_TEXT),0);
         lv_obj_set_style_text_align(ui.card_labels[i+1],LV_TEXT_ALIGN_LEFT,0);
         display_label(ui.weather_details[location],scene_string(detail,"detail"));
-        lv_obj_set_size(ui.weather_details[location],624,28);lv_obj_align(ui.weather_details[location],LV_ALIGN_TOP_LEFT,48,y+140);
+        lv_obj_set_size(ui.weather_details[location],624,28);lv_obj_align(ui.weather_details[location],LV_ALIGN_TOP_LEFT,48,y+146);
         lv_obj_set_style_text_color(ui.weather_details[location],color_hex(0xCCD5DF),0);
         if(cJSON_IsObject(primary))lv_obj_remove_flag(ui.weather_details[location],LV_OBJ_FLAG_HIDDEN);
     }
@@ -780,6 +806,17 @@ static void weather_layout(const cJSON *surface)
     display_label(ui.attribution,"Weather: Open-Meteo");
     lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,694);
     lv_obj_remove_flag(ui.attribution,LV_OBJ_FLAG_HIDDEN);
+    if(measurements) {
+        const cJSON *valid=cJSON_GetObjectItemCaseSensitive(surface,"weather_valid_ms");
+        /* Missing/malformed freshness must never leave a current reading
+         * unbounded, including a disconnected display or an older backend. */
+        uint32_t ms=cJSON_IsNumber(valid)&&valid->valuedouble==valid->valueint&&
+            valid->valueint>=1&&valid->valueint<=300000?(uint32_t)valid->valueint:1;
+        ui.weather_data_generation=ui.scene_generation;
+        ui.weather_data_expiry=lv_timer_create(weather_data_expired,ms,NULL);
+        if(ui.weather_data_expiry)lv_timer_set_repeat_count(ui.weather_data_expiry,1);
+        else weather_data_expired(NULL); /* allocation failure clears data safely */
+    }
 }
 
 bool friday_ui_set_scene(const cJSON *surface)
@@ -912,7 +949,9 @@ bool friday_ui_set_scene(const cJSON *surface)
     // Reminder alerts have their own acknowledgement-aware backend timer.
     if (cJSON_IsNumber(expires) && expires->valueint >= 1000 && expires->valueint <= 300000
         && strcmp(scene_string(surface, "kind"), "reminder") != 0
-        && strcmp(scene_string(surface, "kind"), "media") != 0) {
+        && strcmp(scene_string(surface, "kind"), "media") != 0
+        && !(strcmp(scene_string(surface,"kind"),"metric")==0 &&
+             strcmp(scene_string(surface,"title"),"Weather")==0)) {
         ui.expiry = lv_timer_create(scene_expire, (uint32_t)expires->valueint, NULL);
         lv_timer_set_repeat_count(ui.expiry, 1);
         lv_timer_set_auto_delete(ui.expiry, false);

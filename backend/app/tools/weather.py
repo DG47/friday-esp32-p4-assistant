@@ -29,6 +29,20 @@ def weather_condition(code):
     return WEATHER_CONDITIONS.get(code, "Conditions unknown")
 
 
+def weather_current_summary(readings):
+    """A current-condition headline; future probabilities never enter it."""
+    available = [reading for reading in readings if reading.get('ok')]
+    if not available:
+        return 'Weather unavailable.'
+    known = [weather_condition(reading.get('weather_code')) for reading in available
+             if type(reading.get('weather_code')) is int and reading['weather_code'] in WEATHER_CONDITIONS]
+    if not known:
+        return 'Conditions unknown.'
+    if len(known) != len(readings):
+        return 'Conditions incomplete.'
+    return known[0] + '.' if len(set(known)) == 1 else 'Conditions vary.'
+
+
 def weather_now():
     return datetime.now(timezone.utc)
 
@@ -138,8 +152,18 @@ class WeatherService:
         # mutate cached measurements or reconvert a cache hit.
         reading['temperature_2m'] = round(result['temperature_2m'] * 9 / 5 + 32, 1)
         reading['units'] = {**result['units'], 'temperature': '°F'}
+        now = weather_now()
+        observed = datetime.fromisoformat(result['time'])
+        observed = observed.replace(tzinfo=timezone.utc) if observed.tzinfo is None else observed.astimezone(timezone.utc)
+        start, _ = next_forecast_window(now)
+        # A long-lived view must clear data by cache expiry, observation expiry,
+        # or the next-full-hour label changing, whichever happens first.
+        remaining = min(300 - (time.monotonic() - self._cached_at),
+                        7200 - (now - observed).total_seconds(),
+                        (start - now).total_seconds())
+        reading['_fresh_for_ms'] = max(1, min(300000, int(remaining * 1000)))
         forecast = reading.pop("forecast_hourly", {})
-        reading["rain_forecast"] = precipitation_window(forecast.get("hourly", {}), forecast.get("units", {}), weather_now(), self.forecast_zone)
+        reading["rain_forecast"] = precipitation_window(forecast.get("hourly", {}), forecast.get("units", {}), now, self.forecast_zone)
         return reading
 
     async def _fetch(self):

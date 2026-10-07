@@ -47,6 +47,7 @@ class Surface(BaseModel):
     subtitle: str = ""
     items: list[dict[str, Any]] = Field(default_factory=list)
     expires_ms: int | None = None
+    weather_valid_ms: int | None = Field(default=None, ge=1, le=300000)
     countdown_ms: int | None = Field(default=None, ge=1000, le=86400000)
     deadline_at: datetime | None = None
     actions: list[SurfaceAction] = Field(default_factory=list, max_length=5)
