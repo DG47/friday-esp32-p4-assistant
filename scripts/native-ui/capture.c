@@ -111,6 +111,15 @@ static void metadata_audit(const char *directory)
     shown("Synthetic artist");shown("A complete synthetic lyric line");shown("1:24 / 3:42");shown("LRCLIB");shown("rights unverified");hidden_text("record 999");hidden_text("metadata matched");hidden_text("controls hidden");hidden_text("CURRENT LINE");capture(directory,"audit-music-credit");
     scene("{\"kind\":\"metric\",\"title\":\"22 C\",\"subtitle\":\"A warm afternoon\",\"items\":[{\"time\":\"50%\",\"label\":\"Humidity\"},{\"time\":\"12 km/h\",\"label\":\"Wind\"},{\"time\":\"2026-10-01T12:00:00\",\"label\":\"Open-Meteo · UTC\"}],\"actions\":[{\"id\":\"dismiss\",\"label\":\"Dismiss\"}]}");
     shown("Humidity");shown("Wind");shown("Weather: Open-Meteo");hidden_text("UTC");hidden_text("2026-10-01T12:00:00");capture(directory,"audit-weather");
+    const char *weather_names[]={"weather-both","weather-07306","weather-10010","weather-partial","weather-unavailable"};
+    for(unsigned i=0;i<5;i++) {
+        char path[1024],data[8192]={0};snprintf(path,sizeof(path),"%s/../%s.json",directory,weather_names[i]);
+        FILE *file=fopen(path,"rb");assert(file);assert(fread(data,1,sizeof(data)-1,file)>0);fclose(file);
+        scene(data);hidden_text("UTC");hidden_text("Open-Meteo");hidden_text("latitude");hidden_text("longitude");
+        if(i!=2)shown("07306");if(i!=1)shown("10010");
+        if(i==3||i==4)shown("Weather unavailable");
+        if(i<4)shown("Humidity 65%");capture(directory,weather_names[i]);
+    }
     const char *kinds[]={"comparison","person","email","map","progress","graph","camera","artifact","timer"};
     for(unsigned i=0;i<sizeof(kinds)/sizeof(kinds[0]);i++){friday_ui_set_surface(kinds[i],"User content","My note about provider codes and metadata is user content.");shown("My note about provider codes and metadata is user content.");hidden_text(kinds[i]);}
     friday_ui_set_surface("ERROR","Friday","Expected a JSON object; request_id=TRACE_SENTINEL");hidden_text("JSON");hidden_text("request_id");hidden_text("TRACE_SENTINEL");shown("Please try again.");capture(directory,"audit-error");

@@ -29,7 +29,8 @@ def main() -> None:
     sys.path.insert(0, str(root / 'backend'))
     # These optional providers require a separate explicit setup/activation.
     os.environ['TTS_PROVIDER'] = 'macos' if os.environ.get('TTS_PROVIDER') == 'macos' else 'none'
-    os.environ['WEATHER_PROVIDER'] = 'none'
+    # Preserve explicit weather setup; Settings keeps the default disabled.
+    os.environ.setdefault('WEATHER_PROVIDER', 'none')
     configure_logging(root)
     try:
         import uvicorn

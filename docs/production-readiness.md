@@ -232,10 +232,12 @@ no guessed echo-cancellation implementation was added.
 A read-only Open-Meteo adapter now backs `show weather` and the model's
 `get_weather` tool. It uses a fixed HTTPS endpoint, an eight-second timeout,
 64 KiB response bound, explicit units, validated ranges and stale-data rejection.
-Its real scene shows temperature, humidity, wind, source and UTC observation
-time. `WEATHER_PROVIDER=none` remains the default. Opt-in requires explicit
-latitude/longitude and permission to send that location to the provider; no
-location was inferred and no live request occurred. Review the provider's
+The legacy single-location scene shows temperature, humidity, wind and provider
+credit. The named ZIP scene shows either or both ZIPs with separate failures and
+no technical metadata. `WEATHER_PROVIDER=none` remains the default. Opt-in requires
+explicit coordinates and permission to send them to the provider. The approved
+two-ZIP candidate has bounded live validation; activation/restart is still gated.
+See [weather configuration and provenance](weather.md). Review the provider's
 [usage terms](https://open-meteo.com/en/terms) before commercial release.
 
 | Gate | Exact remaining blocker |

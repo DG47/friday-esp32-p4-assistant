@@ -2,9 +2,15 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 from zoneinfo import ZoneInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class WeatherLocation(BaseModel):
+    label: str = Field(min_length=5, max_length=5, pattern=r"^[0-9]{5}$")
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
 
 
 class Settings(BaseSettings):
@@ -60,6 +66,7 @@ class Settings(BaseSettings):
     calendar_google_credentials_path: Path = Path("data/google-calendar/credentials.json")
 
     weather_provider: Literal["none", "open-meteo"] = "none"
+    weather_locations: list[WeatherLocation] = Field(default_factory=list, max_length=2)
     weather_latitude: float | None = Field(default=None, ge=-90, le=90)
     weather_longitude: float | None = Field(default=None, ge=-180, le=180)
 
@@ -88,7 +95,11 @@ class Settings(BaseSettings):
             or not self.lyrics_client_identifier or len(self.lyrics_client_identifier)>200 or not self.lyrics_client_identifier.isascii()
             or any(ord(c)<32 or ord(c)==127 for c in self.lyrics_client_identifier)):
             raise ValueError('Timed lyrics require Spotify and approved metadata sharing with a truthful client identifier')
-        if self.weather_provider != "none" and (self.weather_latitude is None or self.weather_longitude is None):
+        if len({location.label for location in self.weather_locations}) != len(self.weather_locations):
+            raise ValueError("Weather location labels must be unique")
+        if self.weather_locations and (self.weather_latitude is not None or self.weather_longitude is not None):
+            raise ValueError("Choose named weather locations or legacy coordinates, not both")
+        if self.weather_provider != "none" and not self.weather_locations and (self.weather_latitude is None or self.weather_longitude is None):
             raise ValueError("Opt-in weather requires explicit location coordinates")
         if self.tts_provider == "openai" and not self.openai_api_key:
             raise ValueError("Opt-in speech provider requires a locally configured key")

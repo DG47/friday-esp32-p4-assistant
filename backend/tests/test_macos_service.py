@@ -29,6 +29,9 @@ class MacServiceTests(unittest.TestCase):
             self.assertEqual(value['EnvironmentVariables']['WEATHER_PROVIDER'], 'none')
             self.assertNotIn('--reload', value['ProgramArguments'])
             self.assertEqual(service.service_definition(root, 'macos')['EnvironmentVariables']['TTS_PROVIDER'], 'macos')
+            self.assertEqual(service.service_definition(root, 'macos', 'open-meteo')['EnvironmentVariables']['WEATHER_PROVIDER'], 'open-meteo')
+            with self.assertRaises(ValueError):
+                service.service_definition(root, 'macos', 'unknown')
             with self.assertRaises(ValueError):
                 service.service_definition(root, 'openai')
             self.assertEqual(destination.stat().st_mode & 0o777, 0o600)

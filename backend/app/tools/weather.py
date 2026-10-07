@@ -1,5 +1,7 @@
 """Read-only, opt-in weather adapter with a fixed endpoint and bounded response."""
+import asyncio
 import json
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -20,8 +22,24 @@ class WeatherUnavailable(Exception):
 class WeatherService:
     def __init__(self, latitude, longitude, transport=None):
         self.latitude, self.longitude, self.transport = latitude, longitude, transport
+        self._cache = None
+        self._cached_at = 0.0
+        self._lock = asyncio.Lock()
 
     async def current(self):
+        async with self._lock:
+            if self._cache is not None and time.monotonic() - self._cached_at < 300:
+                observed = datetime.fromisoformat(self._cache['time'])
+                observed = observed.replace(tzinfo=timezone.utc) if observed.tzinfo is None else observed.astimezone(timezone.utc)
+                if -3600 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 7200:
+                    return dict(self._cache)
+            # Expired data is never returned as current if a refresh fails.
+            self._cache = None
+            result = await self._fetch()
+            self._cache, self._cached_at = result, time.monotonic()
+            return dict(result)
+
+    async def _fetch(self):
         try:
             async with httpx.AsyncClient(timeout=8, transport=self.transport, follow_redirects=False) as client:
                 async with client.stream('GET', 'https://api.open-meteo.com/v1/forecast', params={
@@ -50,3 +68,21 @@ class WeatherService:
             return {'source': 'Open-Meteo', 'units': {'temperature': '°C', 'wind': 'km/h'}, **current.model_dump()}
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
             raise WeatherUnavailable('Weather is unavailable; try again later.') from error
+
+
+class WeatherLocations:
+    """Independent bounded caches and failures; no runtime geocoding."""
+    def __init__(self, locations, transport=None):
+        self.services = {location.label: WeatherService(location.latitude, location.longitude, transport)
+                         for location in locations}
+
+    async def current(self, location="both"):
+        if not isinstance(location, str) or location not in {"both", *self.services}:
+            raise WeatherUnavailable("Choose a configured ZIP location or both.")
+        selected = list(self.services) if location == "both" else [location]
+        async def read(label):
+            try:
+                return {"location": label, "ok": True, **await self.services[label].current()}
+            except WeatherUnavailable:
+                return {"location": label, "ok": False, "error": "Weather unavailable. Try again shortly."}
+        return await asyncio.gather(*(read(label) for label in selected))
