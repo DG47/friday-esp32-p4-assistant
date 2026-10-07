@@ -216,10 +216,11 @@ async def publish_current_weather(device_id, navigation, packet, peer=None):
         if not weather_navigation_current(device_id, navigation):
             return False
         if peer is None:
-            await hub.broadcast(device_id, packet)
-        else:
-            await peer.send_json(packet)
-        return True
+            return bool(await hub.broadcast(device_id, packet))
+        # Reuse the hub's bounded peer lock + send path. A blocked or disconnected
+        # peer must release this navigation lock and allow the next owner through.
+        return bool(await hub.send_media(device_id, peer, packet,
+            lambda: weather_navigation_current(device_id, navigation)))
 
 
 def require_weather_navigation(device_id: str) -> None:

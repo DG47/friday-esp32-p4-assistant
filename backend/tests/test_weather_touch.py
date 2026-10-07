@@ -188,3 +188,54 @@ class WeatherTouchTests(unittest.TestCase):
                         late=observed[boundary:]
                         self.assertFalse(any(packet.get('type')=='tool.activity' and packet.get('name')=='get_weather' for packet in late))
                         self.assertFalse(any(packet.get('surface',{}).get('title')=='Weather' for packet in late))
+
+    def test_blocked_notice_timeout_or_disconnect_releases_newer_navigation(self):
+        import asyncio
+        import threading
+        from fastapi import WebSocketDisconnect
+        for mode in ('timeout','disconnect','send-lock'):
+            with self.subTest(mode=mode):
+                device='weather-blocked-'+mode
+                agent=weather_agent(self.reminder_store,lambda req:self.fail('Protected Weather must not fetch'))
+                runtime=LocalMusicRuntime(main.hub,enabled=True)
+                runtime.busy.add(device)
+                entered,release,delivered,guard_entered= (threading.Event() for _ in range(4))
+                original_guard=main.require_weather_navigation
+                def guard(target):
+                    if target==device:guard_entered.set()
+                    return original_guard(target)
+                original_broadcast=main.hub.broadcast
+                async def observe(target,packet,*args,**kwargs):
+                    result=await original_broadcast(target,packet,*args,**kwargs)
+                    if target==device and packet.get('surface',{}).get('kind')=='ambient':delivered.set()
+                    return result
+                with patch('app.main.agent',agent),patch('app.main.local_music',runtime),patch.object(main.hub,'send_timeout',.1),patch.object(main.hub,'broadcast',side_effect=observe),patch('app.main.require_weather_navigation',side_effect=guard):
+                    with TestClient(main.app) as client,client.websocket_connect('/ws/device/'+device) as first,client.websocket_connect('/ws/device/'+device) as second:
+                        self.authenticate(first,device);self.authenticate(second,device)
+                        self.assertEqual(first.receive_json()['type'],'state')
+                        runtime.busy.add(device)
+                        peer=main.hub.connections[device][0]
+                        original_send=peer.websocket.send_json
+                        async def blocked(packet):
+                            if packet.get('code')=='interaction_pending':
+                                entered.set()
+                                if mode=='send-lock':return await original_send(packet)
+                                await asyncio.to_thread(release.wait,3)
+                                if mode=='disconnect':raise WebSocketDisconnect(1006)
+                            return await original_send(packet)
+                        if mode=='send-lock':client.portal.call(peer.send_lock.acquire)
+                        try:
+                            with patch.object(peer.websocket,'send_json',side_effect=blocked):
+                                first.send_json({'type':'scene.action','action':'weather','request_id':'blocked-notice'})
+                                self.assertTrue(guard_entered.wait(2))
+                                if mode!='send-lock':self.assertTrue(entered.wait(2))
+                                second.send_json({'type':'scene.action','action':'dismiss','request_id':'new-dismiss'})
+                                if mode=='disconnect':release.set()
+                                self.assertTrue(delivered.wait(1.5),'Newer navigation stalled behind blocked peer')
+                                self.assertEqual(receive_surface(second)['surface']['kind'],'ambient')
+                                self.assertNotIn(peer,main.hub.connections.get(device,[]))
+                                self.assertFalse(main.scene_navigation[device]['lock'].locked())
+                                if mode=='send-lock':self.assertFalse(entered.is_set(),'Notice bypassed serialized send lock')
+                        finally:
+                            release.set()
+                            if mode=='send-lock' and peer.send_lock.locked():client.portal.call(peer.send_lock.release)

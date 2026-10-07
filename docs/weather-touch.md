@@ -26,7 +26,11 @@ A per-device ownership token is shared by authenticated peers. New scene actions
 media resume, activation and utterances supersede an older touch Weather request.
 Weather progress, result and protected-state notices publish only while their
 owner remains current. A per-device lock serializes ownership claims with
-publication, closing the check-to-send race. State is retired when the last peer
+publication, closing the check-to-send race. Directed notices use the hub's
+bounded serialized peer-send path, including timeout while acquiring the peer
+send lock; timeout/disconnect removes the failed peer and releases the navigation
+lock so newer actions can claim ownership. The blocked-peer regression checks a stalled send,
+a disconnect, and blocked send-lock acquisition. State is retired when the last peer
 disconnects. The authenticated two-peer regression holds the old fetch, completes
 a newer Dismiss/menu/Reminders/Calendar/Music/Memory/Weather action, then releases
 the old fetch and verifies that neither late Weather progress nor result appears.
