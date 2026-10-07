@@ -12,7 +12,9 @@ class AudioFormat:
 
 
 class TranscriptionError(RuntimeError):
-    pass
+    def __init__(self, *args, reason=None):
+        super().__init__(*args)
+        self.reason = reason
 
 
 class SpeechTranscriber(Protocol):

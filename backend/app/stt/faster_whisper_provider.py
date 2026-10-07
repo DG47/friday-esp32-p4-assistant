@@ -6,6 +6,7 @@ import wave
 from pathlib import Path
 
 from .base import AudioFormat, TranscriptionError
+from .diagnostics import FailureReason, Phase, measure, phase
 
 
 class FasterWhisperTranscriber:
@@ -25,13 +26,19 @@ class FasterWhisperTranscriber:
         if audio_format.channels != 1:
             raise TranscriptionError("Local transcription currently requires mono PCM")
 
+        failure_reason = FailureReason.MODEL_LOAD
         try:
-            model = await self._get_model()
+            with measure(Phase.MODEL_LOAD):
+                model = await self._get_model()
+            failure_reason = FailureReason.STT_ERROR
+            phase(Phase.WORKER_WAIT)
             return await asyncio.to_thread(self._transcribe_sync, model, pcm, audio_format)
-        except TranscriptionError:
+        except TranscriptionError as error:
+            if error.reason is None:
+                error.reason = failure_reason
             raise
         except Exception as error:
-            raise TranscriptionError(f"Could not load the local Whisper model: {error}") from error
+            raise TranscriptionError(f"Could not load the local Whisper model: {error}", reason=failure_reason) from error
 
     async def transcribe_wake(self, pcm: bytes, audio_format: AudioFormat) -> str:
         if audio_format.encoding != "pcm_s16le" or audio_format.channels != 1:
@@ -85,29 +92,35 @@ class FasterWhisperTranscriber:
         beam_size: int = 5,
     ) -> str:
         path: Path | None = None
+        failure_reason = FailureReason.INPUT_PREPARE
         try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as audio_file:
-                path = Path(audio_file.name)
-            with wave.open(str(path), "wb") as wav_file:
-                wav_file.setnchannels(audio_format.channels)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(audio_format.sample_rate)
-                wav_file.writeframes(pcm)
+            with measure(Phase.INPUT_PREPARE):
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as audio_file:
+                    path = Path(audio_file.name)
+                with wave.open(str(path), "wb") as wav_file:
+                    wav_file.setnchannels(audio_format.channels)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(audio_format.sample_rate)
+                    wav_file.writeframes(pcm)
 
-            segments, _ = model.transcribe(
-                str(path),
-                language=self.language,
-                beam_size=beam_size,
-                condition_on_previous_text=False,
-                vad_filter=vad_filter,
-                hotwords=hotwords,
-                initial_prompt=initial_prompt,
-            )
-            return " ".join(segment.text.strip() for segment in segments).strip()
-        except TranscriptionError:
+            failure_reason = FailureReason.DECODE
+            with measure(Phase.DECODE):
+                segments, _ = model.transcribe(
+                    str(path),
+                    language=self.language,
+                    beam_size=beam_size,
+                    condition_on_previous_text=False,
+                    vad_filter=vad_filter,
+                    hotwords=hotwords,
+                    initial_prompt=initial_prompt,
+                )
+                return " ".join(segment.text.strip() for segment in segments).strip()
+        except TranscriptionError as error:
+            if error.reason is None:
+                error.reason = failure_reason
             raise
         except Exception as error:
-            raise TranscriptionError(f"Local transcription failed: {error}") from error
+            raise TranscriptionError(f"Local transcription failed: {error}", reason=failure_reason) from error
         finally:
             if path is not None:
                 path.unlink(missing_ok=True)
