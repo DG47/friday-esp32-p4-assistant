@@ -162,6 +162,7 @@ class WeatherService:
                         7200 - (now - observed).total_seconds(),
                         (start - now).total_seconds())
         reading['_fresh_for_ms'] = max(1, min(300000, int(remaining * 1000)))
+        reading['_fresh_until'] = (now + timedelta(milliseconds=reading['_fresh_for_ms'])).isoformat()
         forecast = reading.pop("forecast_hourly", {})
         reading["rain_forecast"] = precipitation_window(forecast.get("hourly", {}), forecast.get("units", {}), now, self.forecast_zone)
         return reading

@@ -10,12 +10,26 @@ import httpx
 from app.agent import FridayAgent
 from app.config import Settings
 from app.db import ReminderStore
+from app.device_hub import weather_packet
 from app.tools.weather import WeatherLocations, WeatherService, weather_current_summary
 from tests.test_weather_locations import LOCATIONS
 from tests.test_weather_forecast import NOW, response_data
 
 
 class WeatherPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    def test_delayed_and_replayed_weather_cannot_regain_freshness(self):
+        packet = {'type': 'agent.result', 'surface': {'kind': 'metric', 'title': 'Weather',
+                  'weather_valid_ms': 300000, 'deadline_at': (NOW + timedelta(seconds=60)).isoformat()}}
+        self.assertEqual(weather_packet(packet, NOW)['surface']['weather_valid_ms'], 60000)
+        self.assertEqual(weather_packet(packet, NOW + timedelta(seconds=59))['surface']['weather_valid_ms'], 1000)
+        self.assertEqual(weather_packet(packet, NOW + timedelta(hours=1))['surface']['weather_valid_ms'], 1)
+        self.assertEqual(packet['surface']['weather_valid_ms'], 300000)
+        for value in (None, 'bad timestamp', NOW.replace(tzinfo=None).isoformat()):
+            invalid = {**packet, 'surface': {**packet['surface'], 'deadline_at': value}}
+            self.assertEqual(weather_packet(invalid, NOW)['surface']['weather_valid_ms'], 1)
+        other = {'type': 'surface', 'surface': {'kind': 'message', 'title': 'Confirmation required'}}
+        self.assertIs(weather_packet(other, NOW), other)
+
     def test_current_summary_never_uses_future_probability(self):
         for probability in (0, 10, 70, 100, None):
             def reading(code):
@@ -81,6 +95,8 @@ class WeatherPersistenceTests(unittest.IsolatedAsyncioTestCase):
                     self.assertLessEqual(outcome.surface.weather_valid_ms, 300000)
                     self.assertEqual([a.id for a in outcome.surface.actions], ['dismiss'])
                     self.assertNotIn('_fresh_for_ms', outcome.content)
+                    self.assertNotIn('_fresh_until', outcome.content)
+                    self.assertIsNotNone(outcome.surface.deadline_at)
                     self.assertNotIn('No precipitation', outcome.surface.subtitle)
                     readings = json.loads(outcome.content)['locations']
                     self.assertEqual([x['temperature_2m'] for x in readings], [70.7, 70.7])

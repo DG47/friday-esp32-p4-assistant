@@ -49,5 +49,11 @@ Missing/invalid freshness metadata fails closed. Allocation failure clears data
 instead of leaving current values unbounded. All-unavailable views contain no
 current measurements and remain honest without a data timer.
 
+The absolute data deadline is retained with the surface, and its remaining lease
+is recomputed inside each peer's send lock. Queued delivery or a stored-result
+replay cannot regain the original five-minute lifetime; malformed/past deadlines
+clear data immediately. Internal cache freshness fields are removed from tool
+payloads.
+
 This combined persistence/freshness change requires reviewed backend deployment
 and an app-only firmware flash; the Fahrenheit conversion alone does not.
