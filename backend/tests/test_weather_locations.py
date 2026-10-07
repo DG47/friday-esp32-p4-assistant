@@ -32,9 +32,11 @@ class WeatherLocationTests(unittest.IsolatedAsyncioTestCase):
             with TemporaryDirectory() as directory:
                 agent=self.agent(directory, lambda req: (seen.append(req),httpx.Response(200,json=payload()))[1])
                 result=await agent.handle('test',query)
-                self.assertEqual([item['time'] for item in result.surface.items if item['time']],labels)
+                self.assertEqual([item['time'] for item in result.surface.items if item['time']],[{'07306':'Jersey City, NJ','10010':'New York, NY'}[label] for label in labels])
                 self.assertEqual(len(seen),len(labels))
                 self.assertEqual(result.provider,'local')
+                self.assertIn('21.5 °C',result.text)
+                self.assertIn('Rain / snow chance unknown',result.text)
                 self.assertIn('["07306", "10010"]',agent._instructions())
                 self.assertNotIn('UTC',result.surface.model_dump_json())
                 self.assertNotIn('Open-Meteo',result.surface.model_dump_json())
@@ -66,9 +68,11 @@ class WeatherLocationTests(unittest.IsolatedAsyncioTestCase):
                 outcome=await agent._execute_read_tool('get_weather',{},'test','req',0,for_model=True)
                 self.assertEqual(outcome.success,not fail_all)
                 self.assertEqual([r['ok'] for r in json.loads(outcome.content)['locations']],[not fail_all,False])
+                self.assertEqual([r['location'] for r in json.loads(outcome.content)['locations']],['07306','10010'])
                 self.assertNotIn('latitude',outcome.content)
                 self.assertNotIn('longitude',outcome.content)
-                self.assertIn('10010: weather unavailable.',outcome.surface.subtitle)
+                self.assertEqual(outcome.surface.items[2], {'time':'New York, NY','label':'Weather unavailable'})
+                self.assertIn('chance unknown',outcome.surface.items[3]['label'])
 
     async def test_concurrent_reads_share_each_location_cache(self):
         import asyncio

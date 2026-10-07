@@ -16,6 +16,7 @@
 #include "friday_display_text.h"
 #include "friday_presence.h"
 #include "friday_artwork.h"
+#include "friday_weather_art.h"
 #include "friday_media_overlay.h"
 
 static const char *TAG = "friday_ui";
@@ -32,6 +33,7 @@ static atomic_bool microphone_unavailable;
 static atomic_uint interaction_notice_until;
 static atomic_bool interaction_notice_memory;
 static atomic_bool music_send_notice;
+static atomic_bool interaction_notice_weather;
 
 #define FRIDAY_STATUS_BOTTOM_OFFSET -166
 #define FRIDAY_MESSAGE_TOP 570
@@ -57,24 +59,28 @@ typedef struct {
     lv_obj_t *lyric_caption;
     lv_obj_t *fact_panel;
     lv_obj_t *card_times[4];
+    lv_obj_t *weather_details[2];
+    bool weather_view;
+    int weather_code[2],weather_day[2],weather_city[2];
     lv_image_dsc_t cover_dsc;
     friday_artwork_t artwork;
     lv_obj_t *cards[4];
     lv_obj_t *card_labels[4];
-    lv_obj_t *buttons[4];
-    lv_obj_t *button_labels[4];
-    lv_obj_t *browse_icons[4];
-    lv_obj_t *browse_hints[4];
+    lv_obj_t *buttons[5];
+    lv_obj_t *button_labels[5];
+    lv_obj_t *browse_icons[5];
+    lv_obj_t *browse_hints[5];
     lv_obj_t *browse_date;
     lv_obj_t *browse_meta;
     int browse_message_y,browse_message_height;
     int browse_mode; /* 0 standard/protected, 1 launcher, 2 agenda */
     char card_actions[4][64];
-    char button_actions[4][64];
+    char button_actions[5][64];
     bool voice_notice;
 
     int recovery_notice_mask;
     bool hide_scene_summary;
+    bool weather_completion_pending;
     bool scene_active;
     char scene_kind[24];
     unsigned long scene_generation;
@@ -216,7 +222,8 @@ static void recovery_notice_update(void)
     int mask=(atomic_load_explicit(&microphone_unavailable,memory_order_relaxed)?1:0)|(ui.voice_notice?2:0);
     if(atomic_load(&interaction_notice_until) && (int32_t)(atomic_load(&interaction_notice_until)-lv_tick_get())>0)mask|=atomic_load(&interaction_notice_memory)?12:4;
     if((mask&4)&&atomic_load(&music_send_notice))mask|=16;
-    if((mask&4)&&!(mask&16)&&overlay.active&&overlay.protected&&strcmp(media_guard.request,overlay.request)) {
+    if((mask&4)&&atomic_load(&interaction_notice_weather))mask|=32;
+    if((mask&4)&&!(mask&48)&&overlay.active&&overlay.protected&&strcmp(media_guard.request,overlay.request)) {
         /* A denied Music request restores the suspended owner's frame guard. */
         lv_snprintf(media_guard.request,sizeof(media_guard.request),"%s",overlay.request);
         lv_snprintf(media_guard.session,sizeof(media_guard.session),"%s",overlay.session);
@@ -225,7 +232,7 @@ static void recovery_notice_update(void)
     if(mask==ui.recovery_notice_mask)return;
     ui.recovery_notice_mask=mask;
     if(!mask){lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);return;}
-    const char *text=(mask&16)?"Could not open Music. Check the connection and retry.":(mask&4)?((mask&3)?"Voice unavailable. Finish or cancel this request first.":
+    const char *text=(mask&32)?((mask&16)?"Could not open Weather. Check the connection and retry.":"Finish or cancel this request to open Weather."):(mask&16)?"Could not open Music. Check the connection and retry.":(mask&4)?((mask&3)?"Voice unavailable. Finish or cancel this request first.":
         atomic_load(&interaction_notice_memory)?"Finish or cancel this review to open Music.":"Finish or cancel this request to open Music."):mask==3?"Microphone and voice unavailable. Use touch controls.":
         mask==1?"Microphone unavailable. Use touch controls.":
         "Voice isn't available. You can read the response.";
@@ -235,9 +242,9 @@ static void recovery_notice_update(void)
     lv_obj_remove_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(ui.status);
 }
-static void queue_interaction_notice(bool memory,bool send_failed)
+static void queue_interaction_notice(bool memory,bool send_failed,bool weather)
 {
-    atomic_store(&interaction_notice_memory,memory);atomic_store(&music_send_notice,send_failed);
+    atomic_store(&interaction_notice_memory,memory);atomic_store(&music_send_notice,send_failed);atomic_store(&interaction_notice_weather,weather);
     atomic_store(&interaction_notice_until,lv_tick_get()+5000);
     if(bsp_display_lock(0)){ui.recovery_notice_mask=-1;recovery_notice_update();bsp_display_unlock();}
 }
@@ -249,7 +256,8 @@ bool friday_ui_handle_notice(const cJSON *packet)
     if(!cJSON_IsString(type)||strcmp(type->valuestring,"error")||
        !cJSON_IsString(code)||strcmp(code->valuestring,"interaction_pending"))return false;
     const cJSON *message=cJSON_GetObjectItemCaseSensitive(packet,"message");
-    queue_interaction_notice(cJSON_IsString(message)&&strstr(message->valuestring,"memory review")!=NULL,false);
+    queue_interaction_notice(cJSON_IsString(message)&&strstr(message->valuestring,"memory review")!=NULL,false,
+        cJSON_IsString(message)&&strstr(message->valuestring,"Weather")!=NULL);
     return true;
 }
 
@@ -267,7 +275,8 @@ static void apply_state(friday_state_t state)
     if(state==FRIDAY_STATE_SPEAKING)ui.voice_notice=false;
     if(overlay.active&&ui.scene_active&&!strcmp(ui.scene_kind,"media")&&
        (state==FRIDAY_STATE_LISTENING||state==FRIDAY_STATE_THINKING||state==FRIDAY_STATE_SPEAKING)) {
-        for(int i=0;i<4;i++){lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);}
+        for(int i=0;i<4;i++)lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<5;i++)lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
         scene_layout(false);lv_snprintf(ui.scene_kind,sizeof(ui.scene_kind),"ambient");display_label(ui.eyebrow,"FRIDAY");
     }
     friday_presence_set_state(ui.presence, state);
@@ -290,8 +299,8 @@ static void log_ui_snapshot(const char *reason)
 {
     lv_obj_update_layout(lv_screen_active());
     int cards = 0, buttons = 0, bounds_errors = 0, routed = 0;
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *objects[] = {ui.cards[i], ui.buttons[i]};
+    for (int i = 0; i < 5; i++) {
+        lv_obj_t *objects[] = {i<4?ui.cards[i]:NULL, ui.buttons[i]};
         for (int j = 0; j < 2; j++) {
             if (objects[j] != NULL) {
                 lv_area_t diagnostic_area; lv_obj_get_coords(objects[j], &diagnostic_area);
@@ -377,7 +386,7 @@ static void scene_action_event(lv_event_t *event)
     size_t length = strcspn(action, ":");
     if (length >= sizeof(category)) length = sizeof(category) - 1;
     memcpy(category, action, length); category[length] = '\0';
-    const char *allowed[] = {"status", "reminders", "calendar", "dismiss", "confirm", "decline", "reminder", "snooze", "complete", "cancel"};
+    const char *allowed[] = {"status", "weather", "reminders", "calendar", "dismiss", "confirm", "decline", "reminder", "snooze", "complete", "cancel"};
     const char *safe_category = "invalid";
     for (unsigned int i = 0; i < sizeof(allowed)/sizeof(allowed[0]); i++) if (strcmp(category, allowed[i]) == 0) safe_category = allowed[i];
     ESP_LOGI(TAG, "UI_ACTION action=%s", safe_category);
@@ -390,7 +399,8 @@ static void scene_action_event(lv_event_t *event)
         log_ui_snapshot("dismiss");
         if (action_callback != NULL) action_callback("dismiss");
     } else if (action_callback == NULL || !action_callback(action)) {
-        if(!strcmp(action,"music")||!strncmp(action,"musicctl:",9))queue_interaction_notice(false,true);
+        if(!strcmp(action,"music")||!strncmp(action,"musicctl:",9))queue_interaction_notice(false,true,false);
+        else if(!strcmp(action,"weather"))queue_interaction_notice(false,true,true);
         else set_message_text("Friday is offline. This action was not sent.");
     }
 }
@@ -400,6 +410,8 @@ static void scene_layout(bool active)
     ui.scene_active=active;
     lv_obj_remove_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
     ui.browse_mode=0;
+    ui.weather_view=false;
+    for(int i=0;i<2;i++)if(ui.weather_details[i])lv_obj_add_flag(ui.weather_details[i],LV_OBJ_FLAG_HIDDEN);
     ui.hide_scene_summary=false;
     lv_obj_add_flag(ui.browse_date,LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.browse_meta,LV_OBJ_FLAG_HIDDEN);
@@ -425,6 +437,7 @@ static void scene_layout(bool active)
     lv_obj_set_size(ui.presence,active?96:648,active?48:232);
     lv_obj_align(ui.presence,LV_ALIGN_TOP_LEFT,active?576:36,active?28:300);
     friday_presence_set_compact(ui.presence,active);
+    friday_presence_set_state(ui.presence,friday_state_get());
     lv_obj_set_style_text_letter_space(ui.eyebrow,active?1:3,0);
     lv_obj_align(ui.eyebrow,LV_ALIGN_TOP_LEFT,48,active?38:40);
     if(active) {
@@ -437,8 +450,8 @@ static void scene_layout(bool active)
         lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     }
     for(int i=0;i<4;i++) {
-        lv_obj_add_flag(ui.browse_icons[i],LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui.browse_hints[i],LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_set_style_bg_image_src(ui.cards[i],NULL,0);
         lv_obj_set_style_bg_color(ui.cards[i],color_hex(UI_CARD),0);
         lv_obj_set_style_radius(ui.cards[i],20,0);
         lv_obj_set_style_border_width(ui.cards[i],0,0);
@@ -457,6 +470,10 @@ static void scene_layout(bool active)
         lv_obj_set_style_text_font(ui.card_labels[i],&lv_font_montserrat_24,0);
         lv_obj_set_style_text_color(ui.card_labels[i],color_hex(UI_TEXT),0);
         lv_obj_set_style_text_align(ui.card_labels[i],LV_TEXT_ALIGN_LEFT,0);
+    }
+    for(int i=0;i<5;i++) {
+        lv_obj_add_flag(ui.browse_icons[i],LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.browse_hints[i],LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_radius(ui.buttons[i],20,0);
         lv_obj_set_style_border_width(ui.buttons[i],1,0);
         lv_obj_set_style_border_color(ui.buttons[i],color_hex(UI_EDGE),0);
@@ -499,6 +516,11 @@ static void launcher_icon(lv_event_t *event)
     } else if(!strcmp(action,"music")) {
         icon_line(layer,x,y,17,33,17,8,color);icon_line(layer,x,y,17,8,34,4,color);
         icon_line(layer,x,y,34,4,34,29,color);icon_box(layer,x+6,y+30,12,8,4,color,false);icon_box(layer,x+23,y+26,12,8,4,color,false);
+    } else if(!strcmp(action,"weather")) {
+        icon_box(layer,x+14,y+14,16,16,8,color,false);
+        const int rays[][4]={{22,2,22,8},{22,36,22,42},{2,22,8,22},{36,22,42,22},
+            {8,8,12,12},{32,32,36,36},{8,36,12,32},{32,12,36,8}};
+        for(unsigned i=0;i<8;i++)icon_line(layer,x,y,rays[i][0],rays[i][1],rays[i][2],rays[i][3],color);
     } else if(!strcmp(action,"reminders")) {
         const int points[][2]={{9,29},{11,25},{12,15},{14,11},{18,8},{24,8},{28,11},{30,15},{31,25},{33,29}};
         for(unsigned i=1;i<sizeof(points)/sizeof(points[0]);i++)icon_line(layer,x,y,points[i-1][0],points[i-1][1],points[i][0],points[i][1],color);
@@ -508,6 +530,21 @@ static void launcher_icon(lv_event_t *event)
         icon_line(layer,x,y,11,23,24,23,color);icon_line(layer,x,y,11,30,20,30,color);
     }
 }
+/* Two small procedural illustrations: no raster downloads, canvas buffers or
+ * animation. Current WMO conditions alone select weather marks; future chance
+ * never enters this renderer. */
+static void weather_city_art(lv_event_t *event)
+{
+    if(!ui.weather_view)return;
+    lv_area_t area;lv_obj_get_coords(lv_event_get_target(event),&area);
+    lv_draw_rect_dsc_t d;lv_draw_rect_dsc_init(&d);
+    d.radius=16;d.bg_color=color_hex(0x0C1420);d.bg_opa=LV_OPA_COVER;
+    d.bg_grad.dir=LV_GRAD_DIR_HOR;d.bg_grad.stops_count=2;
+    d.bg_grad.stops[0].color=color_hex(0x0C1420);d.bg_grad.stops[0].opa=210;d.bg_grad.stops[0].frac=0;
+    d.bg_grad.stops[1].color=color_hex(0x0C1420);d.bg_grad.stops[1].opa=18;d.bg_grad.stops[1].frac=255;
+    lv_draw_rect(lv_event_get_layer(event),&d,&area);
+}
+
 static void agenda_empty_mark(lv_event_t *event)
 {
     if(ui.browse_mode!=2)return;
@@ -547,14 +584,16 @@ static void browse_layout(const cJSON *surface)
         lv_obj_add_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
         ui.hide_scene_summary=true;
         ui.browse_message_y=158;ui.browse_message_height=48;position_message();
-        const char *hints[]={"Saved with care","Small things, remembered","Your day at a glance","Pick up the rhythm"};
-        const uint32_t backgrounds[]={UI_CARD,UI_CARD,UI_CARD,UI_CARD};
-        for(int i=0;i<4;i++) {
-            lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_size(ui.buttons[i],300,172);lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+(i%2)*324,236+(i/2)*196);
+        const char *hints[]={"Saved with care","Small things, remembered","Your day at a glance","Pick up the rhythm","Current conditions"};
+        bool five=!strcmp(ui.button_actions[4],"weather");
+        for(int i=0;i<4;i++)lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<(five?5:4);i++) {
+            lv_obj_set_size(ui.buttons[i],i==4?624:300,i==4?104:five?144:172);
+            lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,i==4?48:48+(i%2)*324,i==4?524:(five?188:236)+(i/2)*(five?168:196));
             lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
-            lv_obj_set_style_bg_color(ui.buttons[i],color_hex(backgrounds[i]),0);
-            lv_obj_set_size(ui.button_labels[i],252,42);lv_obj_align(ui.button_labels[i],LV_ALIGN_TOP_LEFT,24,112);
+            lv_obj_set_style_bg_color(ui.buttons[i],color_hex(UI_CARD),0);
+            lv_obj_set_size(ui.button_labels[i],i==4?500:252,42);lv_obj_align(ui.button_labels[i],LV_ALIGN_TOP_LEFT,i==4?88:24,i==4?34:five?88:112);
+            lv_obj_align(ui.browse_icons[i],LV_ALIGN_TOP_LEFT,24,i==4?30:24);
             lv_obj_set_style_text_align(ui.button_labels[i],LV_TEXT_ALIGN_LEFT,0);
             lv_obj_set_style_text_font(ui.button_labels[i],&lv_font_montserrat_32,0);
             lv_obj_set_style_text_color(ui.button_labels[i],color_hex(UI_TEXT),0);
@@ -575,7 +614,8 @@ static void browse_layout(const cJSON *surface)
     }
     bool detail=!strcmp(scene_string(surface,"kind"),"artifact");
     int rows=0,buttons=0;
-    for(int i=0;i<4;i++){if(!lv_obj_has_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN))rows++;if(!lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))buttons++;}
+    for(int i=0;i<4;i++)if(!lv_obj_has_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN))rows++;
+    for(int i=0;i<5;i++)if(!lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))buttons++;
     bool stale=strstr(subtitle,"Cached calendar")||strstr(subtitle,"Cached event");
     const char *heading=scene_string(surface,"title");
     if(!strcmp(heading,"Calendar access revoked")||!strcmp(heading,"Calendar not connected"))display_label(ui.message,"Connect Calendar on the Mac to continue.");
@@ -611,7 +651,7 @@ static void browse_layout(const cJSON *surface)
         lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     }
     int visible=0,width=buttons?(624-(buttons-1)*16)/buttons:624;
-    for(int i=0;i<4;i++) {
+    for(int i=0;i<5;i++) {
         if(lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))continue;
         lv_obj_set_size(ui.buttons[i],width,64);lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+visible*(width+16),626);visible++;
         lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
@@ -634,10 +674,8 @@ static void scene_expire(lv_timer_t *timer)
         lv_timer_delete(ui.countdown);
         ui.countdown = NULL;
     }
-    for (int i = 0; i < 4; i++) {
-        lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
-    }
+    for(int i=0;i<4;i++)lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+    for(int i=0;i<5;i++)lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
     scene_layout(false);
     lv_snprintf(ui.scene_kind, sizeof(ui.scene_kind), "%s", "ambient");
     ui.scene_generation++;
@@ -672,6 +710,78 @@ static void countdown_tick(lv_timer_t *timer)
     }
 }
 
+/* Weather uses the same open editorial hierarchy as the agenda. Each pair of
+ * rows is one location, with a primary reading and quieter supporting facts. */
+static void weather_layout(const cJSON *surface)
+{
+    display_label(ui.eyebrow,"Weather");
+    lv_obj_set_style_text_letter_space(ui.eyebrow,0,0);
+    const char *subtitle=scene_string(surface,"subtitle"), *split=strchr(subtitle,'\n');
+    char summary[160];size_t length=split?(size_t)(split-subtitle):strlen(subtitle);
+    if(length>=sizeof(summary))length=sizeof(summary)-1;
+    memcpy(summary,subtitle,length);summary[length]=0;
+    display_label(ui.title,summary[0]?summary:"Weather");
+    lv_obj_set_style_text_font(ui.title,&lv_font_montserrat_48,0);
+    lv_obj_set_size(ui.title,624,60);lv_obj_align(ui.title,LV_ALIGN_TOP_LEFT,48,88);
+    ui.hide_scene_summary=true;
+    display_label(ui.message,split?split+1:"");
+    lv_obj_set_style_text_letter_space(ui.message,0,0);
+    lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_LEFT,0);
+    lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_set_size(ui.message,624,64);lv_obj_align(ui.message,LV_ALIGN_TOP_LEFT,48,158);
+    lv_obj_remove_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
+    ui.weather_view=true;
+    const cJSON *items=cJSON_GetObjectItemCaseSensitive(surface,"items");
+    for(int location=0;location<2;location++) {
+        int i=location*2, y=226+location*200;
+        const cJSON *primary=cJSON_GetArrayItem(items,i),*detail=cJSON_GetArrayItem(items,i+1);
+        const cJSON *code=cJSON_GetObjectItemCaseSensitive(primary,"weather_code"),*day=cJSON_GetObjectItemCaseSensitive(primary,"is_day");
+        ui.weather_code[location]=cJSON_IsNumber(code)&&code->valuedouble==code->valueint?code->valueint:-1;
+        ui.weather_day[location]=cJSON_IsNumber(day)&&day->valuedouble==day->valueint?day->valueint:-1;
+        const char *city=scene_string(primary,"time");
+        ui.weather_city[location]=!strcmp(city,"Jersey City, NJ")?1:!strcmp(city,"New York, NY")?2:0;
+        lv_obj_set_size(ui.cards[i],680,190);lv_obj_align(ui.cards[i],LV_ALIGN_TOP_LEFT,20,y);
+        lv_obj_set_style_radius(ui.cards[i],16,0);
+        lv_obj_set_style_bg_image_src(ui.cards[i],friday_weather_art(ui.weather_city[location],ui.weather_code[location],ui.weather_day[location]),0);
+        lv_obj_set_style_bg_opa(ui.cards[i],LV_OPA_COVER,0);
+        lv_obj_set_size(ui.card_times[i],240,38);lv_obj_align(ui.card_times[i],LV_ALIGN_TOP_LEFT,28,16);
+        lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_24,0);
+        lv_obj_set_style_text_color(ui.card_times[i],color_hex(UI_TEXT),0);
+        lv_obj_set_size(ui.card_labels[i],220,42);lv_obj_align(ui.card_labels[i],LV_ALIGN_TOP_LEFT,268,12);
+        lv_obj_set_style_text_font(ui.card_labels[i],&lv_font_montserrat_32,0);
+        lv_obj_set_style_text_align(ui.card_labels[i],LV_TEXT_ALIGN_LEFT,0);
+        bool unavailable=!strcmp(scene_string(primary,"label"),"Weather unavailable");
+        if(unavailable)display_label(ui.card_labels[i],"—");
+        lv_obj_set_size(ui.cards[i+1],624,96);lv_obj_align(ui.cards[i+1],LV_ALIGN_TOP_LEFT,48,y+58);
+        lv_obj_set_style_bg_opa(ui.cards[i+1],LV_OPA_TRANSP,0);
+        lv_obj_set_size(ui.card_times[i+1],624,32);lv_obj_align(ui.card_times[i+1],LV_ALIGN_TOP_LEFT,0,0);
+        lv_obj_set_style_text_font(ui.card_times[i+1],&lv_font_montserrat_24,0);
+        lv_obj_set_style_text_color(ui.card_times[i+1],color_hex(0xB8C6D8),0);
+        char current[96];const char *condition=scene_string(primary,"condition");
+        lv_snprintf(current,sizeof(current),"Now · %s",condition[0]?condition:"Conditions unknown");
+        display_label(ui.card_times[i+1],unavailable?"Weather unavailable":current);
+        const char *chance=scene_string(detail,"label"),*prefix="Rain / snow chance ";
+        char forecast[96];
+        if(!strncmp(chance,prefix,strlen(prefix)))lv_snprintf(forecast,sizeof(forecast),"Rain / snow: %s",chance+strlen(prefix));
+        else lv_snprintf(forecast,sizeof(forecast),"%s",chance);
+        display_label(ui.card_labels[i+1],forecast);
+        lv_obj_set_size(ui.card_labels[i+1],624,38);lv_obj_align(ui.card_labels[i+1],LV_ALIGN_TOP_LEFT,0,40);
+        lv_obj_set_style_text_font(ui.card_labels[i+1],&lv_font_montserrat_24,0);
+        lv_obj_set_style_text_color(ui.card_labels[i+1],color_hex(UI_TEXT),0);
+        lv_obj_set_style_text_align(ui.card_labels[i+1],LV_TEXT_ALIGN_LEFT,0);
+        display_label(ui.weather_details[location],scene_string(detail,"detail"));
+        lv_obj_set_size(ui.weather_details[location],624,28);lv_obj_align(ui.weather_details[location],LV_ALIGN_TOP_LEFT,48,y+140);
+        lv_obj_set_style_text_color(ui.weather_details[location],color_hex(0xCCD5DF),0);
+        if(cJSON_IsObject(primary))lv_obj_remove_flag(ui.weather_details[location],LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_set_size(ui.buttons[0],300,56);lv_obj_align(ui.buttons[0],LV_ALIGN_TOP_LEFT,48,626);
+    lv_obj_set_style_border_width(ui.buttons[0],0,0);
+    display_label(ui.attribution,"Weather: Open-Meteo");
+    lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,694);
+    lv_obj_remove_flag(ui.attribution,LV_OBJ_FLAG_HIDDEN);
+}
+
 bool friday_ui_set_scene(const cJSON *surface)
 {
     if(!bsp_display_lock(1000))return false;
@@ -682,9 +792,7 @@ bool friday_ui_set_scene(const cJSON *surface)
     const cJSON *actions = cJSON_GetObjectItemCaseSensitive(surface, "actions");
     for (int i = 0; i < 4; i++) {
         const cJSON *item = cJSON_GetArrayItem(items, i);
-        const cJSON *action = cJSON_GetArrayItem(actions, i);
         ui.card_actions[i][0] = '\0';
-        ui.button_actions[i][0] = '\0';
         if (cJSON_IsObject(item)) {
             char time[64], label[240], text[308];
             friday_display_text(time, sizeof(time), scene_string(item, "time"), supports_glyph, (void *)&lv_font_montserrat_24);
@@ -709,6 +817,10 @@ bool friday_ui_set_scene(const cJSON *surface)
         } else {
             lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
         }
+    }
+    for(int i=0;i<5;i++) {
+        const cJSON *action=cJSON_GetArrayItem(actions,i);
+        ui.button_actions[i][0]='\0';
         if (cJSON_IsObject(action)) {
             const char *button_text = scene_string(action, "label");
             if (strcmp(scene_string(surface, "kind"), "media") == 0) {
@@ -754,7 +866,7 @@ bool friday_ui_set_scene(const cJSON *surface)
         else if(strstr(source,"synthetic")||strstr(source,"Synthetic"))lv_obj_add_flag(ui.attribution,LV_OBJ_FLAG_HIDDEN);
         else if(!source[0]||strstr(source,"Spotify"))display_label(ui.attribution,"Spotify");
         else {char credit[320];lv_snprintf(credit,sizeof(credit),"Spotify / %s",source);display_label(ui.attribution,credit);}
-        lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,682);
+        lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,694);
         lv_obj_add_flag(ui.progress,LV_OBJ_FLAG_HIDDEN);
         int em,es,dm,ds;
         if(sscanf(stamp,"%4d:%2d / %4d:%2d",&em,&es,&dm,&ds)==4&&em>=0&&em<=1440&&es>=0&&es<60&&dm>=0&&dm<=1440&&ds>=0&&ds<60&&(dm*60+ds)>0) {
@@ -823,11 +935,15 @@ bool friday_ui_set_scene(const cJSON *surface)
     }
     bool browse=!strcmp(ui.scene_kind,"timeline")||(!strcmp(ui.scene_kind,"metric")&&
         !strcmp(ui.button_actions[0],"memories")&&!strcmp(ui.button_actions[3],"music"));
-    for(int i=0;i<4;i++) {
+    for(int i=0;i<5;i++) {
         const char *id=ui.button_actions[i];
         if(!strncmp(id,"calendar",8)||!strncmp(id,"event:",6))browse=true;
     }
     if(browse)browse_layout(surface);
+    if(!strcmp(ui.scene_kind,"metric")&&!strcmp(scene_string(surface,"title"),"Weather")) {
+        weather_layout(surface);
+        if(ui.weather_completion_pending){friday_presence_complete(ui.presence);ui.weather_completion_pending=false;}
+    }
     recovery_notice_update();
     log_ui_snapshot("scene");
     bsp_display_unlock();
@@ -862,6 +978,7 @@ void friday_ui_create(void)
     lv_obj_move_to_index(ui.fact_panel,0);
     for(int i=0;i<4;i++) {
         ui.cards[i]=lv_obj_create(screen);lv_obj_remove_style_all(ui.cards[i]);
+        lv_obj_set_style_bg_image_src(ui.cards[i],NULL,0);
         lv_obj_set_style_bg_color(ui.cards[i],color_hex(UI_CARD),0);lv_obj_set_style_bg_opa(ui.cards[i],LV_OPA_COVER,0);
         lv_obj_set_style_radius(ui.cards[i],20,0);lv_obj_remove_flag(ui.cards[i],LV_OBJ_FLAG_SCROLLABLE);
         ui.card_times[i]=make_label(ui.cards[i],"",&lv_font_montserrat_18,0x9399A5);
@@ -870,7 +987,10 @@ void friday_ui_create(void)
         lv_obj_set_style_bg_color(ui.cards[i],color_hex(0x263B50),LV_STATE_PRESSED);
         lv_obj_set_style_border_color(ui.cards[i],color_hex(0x8FE2C7),LV_STATE_PRESSED);
         lv_obj_add_event_cb(ui.cards[i],agenda_mark,LV_EVENT_DRAW_MAIN,NULL);
+        if(!(i%2))lv_obj_add_event_cb(ui.cards[i],weather_city_art,LV_EVENT_DRAW_MAIN,(void *)(intptr_t)(i/2));
         lv_obj_add_event_cb(ui.cards[i],scene_action_event,LV_EVENT_CLICKED,ui.card_actions[i]);lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+    }
+    for(int i=0;i<5;i++) {
         ui.buttons[i]=lv_button_create(screen);lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_shadow_width(ui.buttons[i],0,0);
         lv_obj_set_style_border_width(ui.buttons[i],1,0);lv_obj_set_style_border_color(ui.buttons[i],color_hex(UI_EDGE),0);
         lv_obj_set_style_pad_all(ui.buttons[i],0,0);ui.button_labels[i]=make_label(ui.buttons[i],"",&lv_font_montserrat_24,0xEEECE7);
@@ -897,7 +1017,8 @@ void friday_ui_create(void)
     ui.progress=lv_bar_create(screen);lv_obj_set_size(ui.progress,624,4);lv_obj_align(ui.progress,LV_ALIGN_TOP_LEFT,48,534);
     lv_obj_set_style_bg_color(ui.progress,color_hex(UI_EDGE),LV_PART_MAIN);lv_obj_set_style_bg_color(ui.progress,color_hex(0xC9C6C1),LV_PART_INDICATOR);lv_obj_remove_flag(ui.progress,LV_OBJ_FLAG_CLICKABLE);
     ui.media_time=make_label(screen,"",&lv_font_montserrat_18,0x8D939E);lv_obj_set_size(ui.media_time,624,28);lv_obj_align(ui.media_time,LV_ALIGN_TOP_LEFT,48,548);lv_label_set_long_mode(ui.media_time,LV_LABEL_LONG_MODE_DOTS);
-    ui.attribution=make_label(screen,"",&lv_font_montserrat_18,0x757B86);lv_obj_set_size(ui.attribution,624,26);lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,682);lv_label_set_long_mode(ui.attribution,LV_LABEL_LONG_MODE_DOTS);
+    for(int i=0;i<2;i++){ui.weather_details[i]=make_label(screen,"",&lv_font_montserrat_18,0x98A4B2);lv_obj_add_flag(ui.weather_details[i],LV_OBJ_FLAG_HIDDEN);}
+    ui.attribution=make_label(screen,"",&lv_font_montserrat_18,0x757B86);lv_obj_set_size(ui.attribution,624,26);lv_obj_align(ui.attribution,LV_ALIGN_TOP_LEFT,48,694);lv_label_set_long_mode(ui.attribution,LV_LABEL_LONG_MODE_DOTS);
     ui.browse_date=make_label(screen,"",&lv_font_montserrat_24,0xC8CED9);
     lv_obj_set_size(ui.browse_date,624,32);lv_obj_align(ui.browse_date,LV_ALIGN_TOP_LEFT,48,154);
     ui.browse_meta=make_label(screen,"",&lv_font_montserrat_18,0x7F8B98);
@@ -926,6 +1047,7 @@ bool friday_ui_set_surface(const char *kind, const char *title, const char *subt
     if (ui.title == NULL || !bsp_display_lock(1000)) {
         return false;
     }
+    if(!kind||strcmp(kind,"metric")||!title||strcmp(title,"Weather"))ui.weather_completion_pending=false;
     if (!owned_media_render) {
         if(!overlay.active)friday_ui_media_clear();
         lv_label_set_long_mode(ui.message, LV_LABEL_LONG_MODE_DOTS);
@@ -938,10 +1060,8 @@ bool friday_ui_set_surface(const char *kind, const char *title, const char *subt
         lv_timer_delete(ui.expiry);
         ui.expiry = NULL;
     }
-    for (int i = 0; i < 4; i++) {
-        lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
-    }
+    for(int i=0;i<4;i++)lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+    for(int i=0;i<5;i++)lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
     const char *known[] = {"ambient", "AMBIENT", "timeline", "message", "metric", "list", "reminder", "timer", "media", "ERROR", "PAIRING", "TOOL"};
     const char *safe_kind = "other";
     for (unsigned int i = 0; i < sizeof(known)/sizeof(known[0]); i++) if (kind != NULL && strcmp(kind, known[i]) == 0) safe_kind = known[i];
@@ -994,7 +1114,28 @@ bool friday_ui_set_response(const char *text)
 
 void friday_ui_set_tool(const char *name,const char *status)
 {
-    (void)name;
+    bool weather=name&&!strcmp(name,"get_weather");
+    if(weather&&status&&!strcmp(status,"working")) {
+        if(!friday_ui_set_surface("TOOL","Checking the forecast","Temperature and rain / snow outlook."))return;
+        if(!bsp_display_lock(1000))return;
+        display_label(ui.eyebrow,"Friday");lv_obj_set_style_text_letter_space(ui.eyebrow,0,0);
+        lv_obj_set_style_text_font(ui.title,&lv_font_montserrat_48,0);
+        lv_obj_set_size(ui.title,624,120);lv_obj_align(ui.title,LV_ALIGN_TOP_LEFT,48,88);
+        lv_label_set_long_mode(ui.title,LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_text_letter_space(ui.message,0,0);
+        lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_LEFT,0);
+        lv_obj_set_size(ui.message,624,76);lv_obj_align(ui.message,LV_ALIGN_TOP_LEFT,48,220);
+        lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_WRAP);
+        friday_presence_set_compact(ui.presence,false);
+        lv_obj_set_size(ui.presence,624,160);lv_obj_align(ui.presence,LV_ALIGN_TOP_LEFT,48,320);
+        friday_presence_set_state(ui.presence,FRIDAY_STATE_THINKING);
+        bsp_display_unlock();return;
+    }
+    if(weather&&status&&(!strcmp(status,"complete")||!strcmp(status,"failed"))) {
+        if(bsp_display_lock(0)){friday_presence_set_state(ui.presence,friday_state_get());bsp_display_unlock();}
+    }
+    if(weather&&status&&!strcmp(status,"complete")){ui.weather_completion_pending=true;return;}
     if(status&&!strcmp(status,"complete")) {
         if(ui.presence&&bsp_display_lock(0)) {
             friday_presence_complete(ui.presence);bsp_display_unlock();
@@ -1088,7 +1229,7 @@ void friday_ui_media_clear(void)
         display_label(ui.title,"Music");display_label(ui.cover_label,"No cover available");display_label(ui.artist,"");display_label(ui.media_state,"Waiting for a fresh playback update");
         display_label(ui.message,"Playback is unavailable right now.");display_label(ui.media_time,"");
         lv_obj_add_flag(ui.progress,LV_OBJ_FLAG_HIDDEN);
-        for(int i=0;i<4;i++)if(!strncmp(ui.button_actions[i],"musicctl:",9))lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<5;i++)if(!strncmp(ui.button_actions[i],"musicctl:",9))lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
         lv_snprintf(ui.button_actions[0],sizeof(ui.button_actions[0]),"music");display_label(ui.button_labels[0],LV_SYMBOL_REFRESH);
         lv_obj_set_size(ui.buttons[0],208,72);lv_obj_align(ui.buttons[0],LV_ALIGN_TOP_LEFT,180,588);
         lv_obj_set_size(ui.button_labels[0],184,38);lv_obj_center(ui.button_labels[0]);lv_obj_set_style_text_font(ui.button_labels[0],&lv_font_montserrat_32,0);
@@ -1103,7 +1244,7 @@ bool friday_ui_media_overlay_needs_resume(void){if(!bsp_display_lock(-1))return 
 static bool protected_surface(const cJSON *surface)
 {
     const cJSON *actions=cJSON_GetObjectItemCaseSensitive(surface,"actions");
-    for(int i=0;i<4;i++) {
+    for(int i=0;i<5;i++) {
         const char *a=scene_string(cJSON_GetArrayItem(actions,i),"id");
         if(!strncmp(a,"reqcancel:",10)||!strncmp(a,"memyes:",7)||!strncmp(a,"memno:",6)||!strncmp(a,"memreview:",10)||!strncmp(a,"confirm",7)||!strncmp(a,"decline",7))return true;
     }
@@ -1119,7 +1260,7 @@ bool friday_ui_media_prepare_overlay(const cJSON *root)
         lv_obj_add_flag(ui.cover_image,LV_OBJ_FLAG_HIDDEN);lv_image_cache_drop(&ui.cover_dsc);friday_artwork_clear(&ui.artwork);
         if(ui.scene_active&&!strcmp(ui.scene_kind,"media")) {
             display_label(ui.message,"Music is paused while we take care of this.");display_label(ui.media_state,"Interaction in progress");lv_obj_add_flag(ui.progress,LV_OBJ_FLAG_HIDDEN);
-            for(int i=0;i<4;i++)if(!strncmp(ui.button_actions[i],"musicctl:",9))lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
+            for(int i=0;i<5;i++)if(!strncmp(ui.button_actions[i],"musicctl:",9))lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
         }
     }
     bsp_display_unlock();return accepted;

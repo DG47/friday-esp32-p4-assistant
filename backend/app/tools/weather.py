@@ -2,13 +2,104 @@
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel, Field
 
 
+def weather_display_name(label: str) -> str:
+    """Display-only names for the approved areas; routing retains the exact ZIP."""
+    return {"07306": "Jersey City, NJ", "10010": "New York, NY"}.get(label, label)
+
+
+WEATHER_CONDITIONS = {
+    0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Freezing fog", 51: "Light drizzle", 53: "Drizzle", 55: "Heavy drizzle",
+    56: "Freezing drizzle", 57: "Freezing drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
+    66: "Freezing rain", 67: "Freezing rain", 71: "Light snow", 73: "Snow", 75: "Heavy snow",
+    77: "Snow grains", 80: "Rain showers", 81: "Rain showers", 82: "Heavy showers",
+    85: "Snow showers", 86: "Snow showers", 95: "Thunderstorm", 96: "Storm with hail",
+    97: "Heavy thunderstorm", 99: "Storm with hail",
+}
+
+
+def weather_condition(code):
+    return WEATHER_CONDITIONS.get(code, "Conditions unknown")
+
+
+def weather_now():
+    return datetime.now(timezone.utc)
+
+
+def next_forecast_window(now):
+    now = now.astimezone(timezone.utc)
+    start = now.replace(minute=0, second=0, microsecond=0)
+    if start < now:
+        start += timedelta(hours=1)
+    return start, start + timedelta(hours=1)
+
+
+def weather_window_label(now, zone="America/New_York"):
+    start, end = next_forecast_window(now)
+    start, end = start.astimezone(ZoneInfo(zone)), end.astimezone(ZoneInfo(zone))
+    def clock(value):
+        return value.strftime("%I %p").lstrip("0").lower()
+    # Both abbreviations are retained across a DST transition/repeated hour.
+    a = clock(start) + (" " + start.tzname() if start.tzname() != end.tzname() else "")
+    b = (end.strftime("%a, %b") + f" {end.day} " if start.date() != end.date() else "") + clock(end)
+    return f"{start.strftime('%a, %b')} {start.day} · {a}–{b} {end.tzname()}"
+
+
+def precipitation_window(hourly, units, now, zone="America/New_York"):
+    """Hourly probabilities describe (timestamp-1h, timestamp], not the next hour.
+
+    Select the next COMPLETE future UTC hour and convert its endpoints for display.
+    Never extrapolate a missing hour or interpret missing/null data as zero.
+    """
+    try:
+        if units.get("precipitation_probability") != "%":
+            return None
+        times, probabilities = hourly["time"], hourly["precipitation_probability"]
+        if not isinstance(times, list) or not isinstance(probabilities, list) or not 1 <= len(times) <= 24 or len(times) != len(probabilities):
+            return None
+        parsed = []
+        for value in times:
+            stamp = datetime.fromisoformat(value)
+            stamp = stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp.astimezone(timezone.utc)
+            if stamp.minute or stamp.second or stamp.microsecond:
+                return None
+            parsed.append(stamp)
+        if any(b-a != timedelta(hours=1) for a,b in zip(parsed,parsed[1:])):
+            return None
+        start, end = next_forecast_window(now)
+        probability = probabilities[parsed.index(end)]
+        if isinstance(probability, bool) or not isinstance(probability, (int,float)) or not 0 <= probability <= 100:
+            return None
+        return {"probability": probability, "starts_at": start.isoformat(), "ends_at": end.isoformat(),
+                "local_window": weather_window_label(now,zone)}
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def weather_rain_summary(readings):
+    forecasts = [reading.get("rain_forecast") for reading in readings if reading.get("ok")]
+    known = [forecast["probability"] for forecast in forecasts if forecast is not None]
+    if not any(reading.get("ok") for reading in readings):
+        return "Weather unavailable."
+    if known and max(known) >= 60:
+        return "An umbrella may help."
+    if len(known) != len(readings):
+        return "Forecast incomplete."
+    if max(known) >= 30:
+        return "Wet weather possible."
+    return "Low rain / snow chance."
+
+
 class CurrentWeather(BaseModel):
+    weather_code: int | None = None
+    is_day: int | None = None
     time: str = Field(max_length=32)
     temperature_2m: float = Field(ge=-100, le=100)
     relative_humidity_2m: int = Field(ge=0, le=100)
@@ -20,7 +111,8 @@ class WeatherUnavailable(Exception):
 
 
 class WeatherService:
-    def __init__(self, latitude, longitude, transport=None):
+    def __init__(self, latitude, longitude, transport=None, forecast_zone="UTC"):
+        self.forecast_zone = forecast_zone
         self.latitude, self.longitude, self.transport = latitude, longitude, transport
         self._cache = None
         self._cached_at = 0.0
@@ -31,20 +123,27 @@ class WeatherService:
             if self._cache is not None and time.monotonic() - self._cached_at < 300:
                 observed = datetime.fromisoformat(self._cache['time'])
                 observed = observed.replace(tzinfo=timezone.utc) if observed.tzinfo is None else observed.astimezone(timezone.utc)
-                if -3600 <= (datetime.now(timezone.utc) - observed).total_seconds() <= 7200:
-                    return dict(self._cache)
+                if -3600 <= (weather_now() - observed).total_seconds() <= 7200:
+                    return self._reading(self._cache)
             # Expired data is never returned as current if a refresh fails.
             self._cache = None
             result = await self._fetch()
             self._cache, self._cached_at = result, time.monotonic()
-            return dict(result)
+            return self._reading(result)
+
+    def _reading(self, result):
+        reading = dict(result)
+        forecast = reading.pop("forecast_hourly", {})
+        reading["rain_forecast"] = precipitation_window(forecast.get("hourly", {}), forecast.get("units", {}), weather_now(), self.forecast_zone)
+        return reading
 
     async def _fetch(self):
         try:
             async with httpx.AsyncClient(timeout=8, transport=self.transport, follow_redirects=False) as client:
                 async with client.stream('GET', 'https://api.open-meteo.com/v1/forecast', params={
                     'latitude': self.latitude, 'longitude': self.longitude,
-                    'current': 'temperature_2m,relative_humidity_2m,wind_speed_10m',
+                    'current': 'temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code,is_day',
+                    'hourly': 'precipitation_probability', 'forecast_hours': 6,
                     'timezone': 'UTC', 'temperature_unit': 'celsius', 'wind_speed_unit': 'kmh',
                 }) as response:
                     response.raise_for_status()
@@ -59,13 +158,18 @@ class WeatherService:
                 raise ValueError('Invalid weather units')
             if units.get('temperature_2m') != '°C' or units.get('wind_speed_10m') != 'km/h' or units.get('relative_humidity_2m') != '%':
                 raise ValueError('Unexpected weather units')
-            current = CurrentWeather.model_validate(data['current'])
+            current_values = dict(data['current'])
+            code, day = current_values.get('weather_code'), current_values.get('is_day')
+            current_values['weather_code'] = code if type(code) is int and code in WEATHER_CONDITIONS else None
+            current_values['is_day'] = day if type(day) is int and day in (0, 1) else None
+            current = CurrentWeather.model_validate(current_values)
             observed = datetime.fromisoformat(current.time)
             observed = observed.replace(tzinfo=timezone.utc) if observed.tzinfo is None else observed.astimezone(timezone.utc)
-            age = (datetime.now(timezone.utc) - observed).total_seconds()
+            age = (weather_now() - observed).total_seconds()
             if age < -3600 or age > 7200:
                 raise ValueError('Weather observation is stale')
-            return {'source': 'Open-Meteo', 'units': {'temperature': '°C', 'wind': 'km/h'}, **current.model_dump()}
+            return {'forecast_hourly': {'hourly': data.get('hourly', {}), 'units': data.get('hourly_units', {})},
+                    'source': 'Open-Meteo', 'units': {'temperature': '°C', 'wind': 'km/h'}, **current.model_dump()}
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
             raise WeatherUnavailable('Weather is unavailable; try again later.') from error
 
@@ -73,7 +177,8 @@ class WeatherService:
 class WeatherLocations:
     """Independent bounded caches and failures; no runtime geocoding."""
     def __init__(self, locations, transport=None):
-        self.services = {location.label: WeatherService(location.latitude, location.longitude, transport)
+        self.services = {location.label: WeatherService(location.latitude, location.longitude, transport,
+                              "America/New_York" if location.label in {"07306", "10010"} else "UTC")
                          for location in locations}
 
     async def current(self, location="both"):

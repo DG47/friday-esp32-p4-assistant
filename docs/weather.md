@@ -43,7 +43,8 @@ For direct backend startup, `WEATHER_PROVIDER=open-meteo` may be set in `.env`.
 
 Configuration accepts at most two unique named locations and rejects a mixture
 with legacy coordinates. Existing single-coordinate configurations still work.
-Do not silently replace a ZIP label with a city or infer home/work.
+Keep ZIP labels as routing identities. The approved display labels are Jersey City, NJ
+for 07306 and New York, NY for 10010; no home/work role is inferred.
 
 ## Requests and failure behavior
 
@@ -64,8 +65,9 @@ beside the other's unavailable state. No background polling is added.
 `weather 07306 and 10010` route locally without reasoning-provider inference.
 Other natural-language weather requests can use the model tool. Its response
 includes selected ZIP labels, observations, source and units; it does not include
-coordinates. The screen includes only ZIPs and useful measurements/failure text,
-without provider names, timestamps or operational diagnostics. Weather data:
+coordinates. The screen shows city/state names, useful measurements/failure text, and a discreet
+Open-Meteo credit. It does not show ZIP routing codes, timestamps or operational
+diagnostics. Weather data:
 [Open-Meteo](https://open-meteo.com/), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 ## Review and rollout
@@ -81,3 +83,96 @@ without provider names, timestamps or operational diagnostics. Weather data:
    testing remains deferred unless requested.
 5. Rollback by restoring `WEATHER_PROVIDER=none` and restarting after approval;
    neither credential changes nor database migration are needed.
+
+Candidate touch-only hold-menu access and firmware rollout gate: [weather-touch.md](weather-touch.md).
+
+## City-label and native presentation refinement
+
+The display-only mapping uses Jersey City, NJ (07306) and New York, NY (10010).
+The Census representative points above remain unchanged. Their postal city/state
+association is corroborated by the primary location pages of
+[RWJBarnabas Health](https://www.rwjbh.org/our-locations/specialty-centers/the-jersey-city-family-health-center/)
+and [Baruch College, CUNY](https://www.baruch.cuny.edu/about-baruch/). These are
+public institutional examples, not personal addresses; no runtime geocoding or
+location request is added. The raw ZIP remains in model tool payloads and caches.
+
+The named-location screen has the agenda's 48px left margin, 48px headline,
+compact ribbon and open spacing. Each location has its name and large Celsius
+reading on one line, followed by quieter wind in km/h and humidity in percent.
+The redundant summary panel is hidden; partial/total failures retain each city
+name and a clear unavailable/retry message. Dismiss and 30-second expiry remain.
+A small bottom credit uses the existing attribution component. No conditions
+icons, forecast, extra controls or provider change are added.
+
+## Precipitation probability and grounded presence
+
+The [official hourly definitions](https://open-meteo.com/en/docs) describe
+`precipitation_probability` as probability of more than 0.1 mm precipitation in
+the preceding hour, including rain/showers/snow. It is an ensemble estimate at
+roughly 27 km resolution, not a rain-only probability or exact personal-location
+forecast. The approved endpoint and approximate area points remain the same.
+The request additionally asks for this hourly field and six forecast hours;
+current observations, Celsius/km/h preferences and UTC request timezone remain.
+
+At 13:23 local time the selected complete interval is 14:00–15:00, using the
+provider's 15:00 endpoint. At exactly 14:00, 14:00–15:00 is selected. The UI says
+**Next full hour**, then its date and local endpoints. UTC interval selection and
+`America/New_York` conversion avoid ambiguous provider local timestamps. Both
+EDT/EST labels are retained when a repeated/skipped DST hour changes offset;
+midnight includes the next endpoint's date. Both approved cities share the same
+interval. If gathering/publishing crosses the hourly boundary, any reading for
+the old interval becomes unknown rather than being mislabeled.
+
+Each five-minute area cache retains hourly data and selects the interval again
+on every read. A missing/null/out-of-bounds probability, invalid units, mismatched
+arrays, nonhourly/unsorted/gapped timestamps or missing selected endpoint yields
+**Rain / snow chance unknown**; current observations can still be shown. An
+expired cache whose refresh fails remains unavailable. No interpolation, daily
+aggregation, probability summation, invented next-hour value or default-zero
+fallback is used.
+
+Summary rules are deterministic: any known selected probability >=60% gives
+**An umbrella may help.** This is cautious advice for at least one known area,
+not a claim that precipitation is certain or both areas are known. Otherwise,
+any unknown/unavailable area gives **Forecast incomplete.** With all selected
+areas known, a maximum >=30% gives **Wet weather possible.**; below 30% gives
+**Low rain / snow chance.** All areas unavailable gives **Weather unavailable.**
+No additional reasoning-provider call, probability-derived condition/icon or
+background poll is introduced. Existing city/temperature text for spoken requests is retained.
+
+On admitted `get_weather` working activity, the existing Friday ribbon expands
+and uses its thinking motion beside **Checking the forecast**. Completion returns
+it to the actual assistant state and gives its existing 320 ms cue after the
+result geometry is installed. Idle results settle; other navigation cancels the
+weather activity cue/state. The protected ownership and bounded send paths remain
+unchanged. This is task feedback; neither static pixels nor this motion establish
+sentience or awareness. Native playback uses synthetic responses and the actual
+production UI/presence code. Physical touch/voice verification remains deferred.
+
+## Native city artwork revision
+
+The art revision supersedes the text-only mock. Two 224×148 procedural native
+illustrations sit beside the readings: Jersey City has a waterfront clock and
+modern tower; New York has stepped/spired Manhattan towers. Both use the existing
+muted blue/teal, warm light, rounded cards and Friday ribbon direction. These are
+stylized city illustrations, not photoreal maps or live views.
+
+The current-variable request now includes `weather_code` and `is_day`. Their
+[official definitions](https://open-meteo.com/en/docs) supply current WMO
+conditions and daylight/night. Missing or invalid values are independently
+normalized to unknown without discarding valid temperature/humidity/wind.
+Supported WMO descriptions include 97 (heavy thunderstorm) in the current docs.
+The illustration reads only these current fields: clear/partly cloudy,
+clouds/rain/snow/fog/lightning and reported day/night select restrained marks.
+Thunderstorm alone does not imply rain. Unknown current conditions use neutral
+art with no sun/moon/rain marks. The screen labels conditions **Now**; its separate
+rain/snow probability retains the explicitly dated next-full-hour interval.
+
+There are no raster downloads, canvas buffers, new graphics dependencies or
+continuous artwork animation. Two supporting text labels and two draw callbacks
+are added; native peak LVGL heap is 88,464 bytes (816 bytes above the preceding
+87,648-byte harness peak). This is host-native evidence, not device RAM/FPS QA.
+`preview_weather_art.py` compares actual artwork pixels across future high/low/
+unknown chance, current rain, and day/night, and verifies distinct city scenes.
+Existing navigation/recovery/protected text audits remain enabled. All supplied
+art mock readings and conditions are explicitly synthetic.

@@ -1,0 +1,58 @@
+{
+  "format": "RGB565 little-endian",
+  "width": 680,
+  "height": 190,
+  "provenance": "Built-in ImageGen city illustrations, inspected; not live photographs or verified architecture. Mechanical atlas split/resize and RGB565 conversion only.",
+  "assets": [
+    {
+      "name": "jersey_day.rgb565",
+      "bytes": 258400,
+      "sha256": "e4d1f3a0669de332c066f9da4d6d9bf6d09410658db2245b992b2a258d7b49b8"
+    },
+    {
+      "name": "jersey_neutral.rgb565",
+      "bytes": 258400,
+      "sha256": "cf1e3649ab6ea10756da9d3aba320d3be1c6c4af7b6e818188854a10f4e6de9e"
+    },
+    {
+      "name": "jersey_night.rgb565",
+      "bytes": 258400,
+      "sha256": "adecf893c592e2c380411f5d9bc3a54604037e1a1d4434569dffb72cee631b1e"
+    },
+    {
+      "name": "jersey_rain.rgb565",
+      "bytes": 258400,
+      "sha256": "bd646b3fed8832aaf363e5184f9c1333d2f82fdc01f4f47d7c7d98fc0901e322"
+    },
+    {
+      "name": "jersey_snow.rgb565",
+      "bytes": 258400,
+      "sha256": "f5f34b04e1c15302afd583f691dcd02a68863dc89471558eaeeb117ec5110233"
+    },
+    {
+      "name": "manhattan_day.rgb565",
+      "bytes": 258400,
+      "sha256": "3c96d9aef72ae6437b997c79ae3aba2900f8f3934f10231a913f5ad9abdef3ee"
+    },
+    {
+      "name": "manhattan_neutral.rgb565",
+      "bytes": 258400,
+      "sha256": "957fb4281e1c7b6600694156aa28ad67a9557ddac9c2355a1698241c187dc250"
+    },
+    {
+      "name": "manhattan_night.rgb565",
+      "bytes": 258400,
+      "sha256": "116c4acf0d64a6700f276016f0f0fb910398871b79ff7c3db4217a5eba7e6144"
+    },
+    {
+      "name": "manhattan_rain.rgb565",
+      "bytes": 258400,
+      "sha256": "76ae8ddd391175bfd7928911cb349edbfe8e6a02b3690978f1f4822e0ad04a78"
+    },
+    {
+      "name": "manhattan_snow.rgb565",
+      "bytes": 258400,
+      "sha256": "8992432856b86930a82cdfcc36da1cee8075df74fa4d1425d18845bd859a3b75"
+    }
+  ]
+}

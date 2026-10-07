@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 
 logger = logging.getLogger("uvicorn.error")
-ACTIONS = {"music", "musicctl", "memories", "memory", "memforget", "memyes", "memno", "memreview", "status", "reminders", "calendar", "calendar_refresh", "calendar_next", "event", "dismiss", "confirm", "decline", "reminder", "snooze", "complete", "cancel"}
+ACTIONS = {"weather", "music", "musicctl", "memories", "memory", "memforget", "memyes", "memno", "memreview", "status", "reminders", "calendar", "calendar_refresh", "calendar_next", "event", "dismiss", "confirm", "decline", "reminder", "snooze", "complete", "cancel"}
 
 
 def log_scene_action(device_id, action, surface):
@@ -14,4 +14,4 @@ def log_scene_action(device_id, action, surface):
     logger.info("scene_event utc=%s device=%s action=%s kind=%s cards=%d buttons=%d",
         datetime.now(timezone.utc).isoformat(), device_id, category, kind,
         min(4, len(surface.items)) if surface else 0,
-        min(4, len(surface.actions)) if surface else 0)
+        min(5, len(surface.actions)) if surface else 0)
