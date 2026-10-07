@@ -7,52 +7,52 @@
     {
       "name": "jersey_day.rgb565",
       "bytes": 258400,
-      "sha256": "1e49878ee39811eea7a576629ee9898ef731bf315a0b7b203b9a108478baf615"
+      "sha256": "e4d1f3a0669de332c066f9da4d6d9bf6d09410658db2245b992b2a258d7b49b8"
     },
     {
       "name": "jersey_neutral.rgb565",
       "bytes": 258400,
-      "sha256": "b3fa36c0839128bbcf0bd3005a5b3335a811cf48f3950d6ce4468c654e990e88"
+      "sha256": "cf1e3649ab6ea10756da9d3aba320d3be1c6c4af7b6e818188854a10f4e6de9e"
     },
     {
       "name": "jersey_night.rgb565",
       "bytes": 258400,
-      "sha256": "04241e739bb8e868f2b4d3f693b3bd94d7d263d133b216d885a878b2d8a1433b"
+      "sha256": "adecf893c592e2c380411f5d9bc3a54604037e1a1d4434569dffb72cee631b1e"
     },
     {
       "name": "jersey_rain.rgb565",
       "bytes": 258400,
-      "sha256": "2bb6d258481050b62e4adeb82d8326b969a635a517f4aa4c53eea68e2e400720"
+      "sha256": "bd646b3fed8832aaf363e5184f9c1333d2f82fdc01f4f47d7c7d98fc0901e322"
     },
     {
       "name": "jersey_snow.rgb565",
       "bytes": 258400,
-      "sha256": "28cf21a714fa6c8e0a942039b9d5759fde945d50a68de47334c1b2f0366fb157"
+      "sha256": "f5f34b04e1c15302afd583f691dcd02a68863dc89471558eaeeb117ec5110233"
     },
     {
       "name": "manhattan_day.rgb565",
       "bytes": 258400,
-      "sha256": "42dd991527ce0865c800101a003b78e0ee7b3cbc74914c4e91100d6027f7f9af"
+      "sha256": "3c96d9aef72ae6437b997c79ae3aba2900f8f3934f10231a913f5ad9abdef3ee"
     },
     {
       "name": "manhattan_neutral.rgb565",
       "bytes": 258400,
-      "sha256": "a6b2cc9eba1dadb65eadc923ab72b4131b15004f48a1e751fd1c239df9a4b8e0"
+      "sha256": "957fb4281e1c7b6600694156aa28ad67a9557ddac9c2355a1698241c187dc250"
     },
     {
       "name": "manhattan_night.rgb565",
       "bytes": 258400,
-      "sha256": "70c89bf31b11dbe50e24149e2efe6c5501a4c83c4a79b9c46b44dfe702b096a8"
+      "sha256": "116c4acf0d64a6700f276016f0f0fb910398871b79ff7c3db4217a5eba7e6144"
     },
     {
       "name": "manhattan_rain.rgb565",
       "bytes": 258400,
-      "sha256": "84f04401fec931dc3b0c9b9c16562ccdfbf0b70fb092201d96e535b8b10c9c28"
+      "sha256": "76ae8ddd391175bfd7928911cb349edbfe8e6a02b3690978f1f4822e0ad04a78"
     },
     {
       "name": "manhattan_snow.rgb565",
       "bytes": 258400,
-      "sha256": "77d832fc8a4f54f254a6c4d504ef8f18d574cca6c9e261e567e651b56707170a"
+      "sha256": "8992432856b86930a82cdfcc36da1cee8075df74fa4d1425d18845bd859a3b75"
     }
   ]
 }
