@@ -32,6 +32,7 @@ static atomic_bool microphone_unavailable;
 static atomic_uint interaction_notice_until;
 static atomic_bool interaction_notice_memory;
 static atomic_bool music_send_notice;
+static atomic_bool interaction_notice_weather;
 
 #define FRIDAY_STATUS_BOTTOM_OFFSET -166
 #define FRIDAY_MESSAGE_TOP 570
@@ -61,16 +62,16 @@ typedef struct {
     friday_artwork_t artwork;
     lv_obj_t *cards[4];
     lv_obj_t *card_labels[4];
-    lv_obj_t *buttons[4];
-    lv_obj_t *button_labels[4];
-    lv_obj_t *browse_icons[4];
-    lv_obj_t *browse_hints[4];
+    lv_obj_t *buttons[5];
+    lv_obj_t *button_labels[5];
+    lv_obj_t *browse_icons[5];
+    lv_obj_t *browse_hints[5];
     lv_obj_t *browse_date;
     lv_obj_t *browse_meta;
     int browse_message_y,browse_message_height;
     int browse_mode; /* 0 standard/protected, 1 launcher, 2 agenda */
     char card_actions[4][64];
-    char button_actions[4][64];
+    char button_actions[5][64];
     bool voice_notice;
 
     int recovery_notice_mask;
@@ -216,7 +217,8 @@ static void recovery_notice_update(void)
     int mask=(atomic_load_explicit(&microphone_unavailable,memory_order_relaxed)?1:0)|(ui.voice_notice?2:0);
     if(atomic_load(&interaction_notice_until) && (int32_t)(atomic_load(&interaction_notice_until)-lv_tick_get())>0)mask|=atomic_load(&interaction_notice_memory)?12:4;
     if((mask&4)&&atomic_load(&music_send_notice))mask|=16;
-    if((mask&4)&&!(mask&16)&&overlay.active&&overlay.protected&&strcmp(media_guard.request,overlay.request)) {
+    if((mask&4)&&atomic_load(&interaction_notice_weather))mask|=32;
+    if((mask&4)&&!(mask&48)&&overlay.active&&overlay.protected&&strcmp(media_guard.request,overlay.request)) {
         /* A denied Music request restores the suspended owner's frame guard. */
         lv_snprintf(media_guard.request,sizeof(media_guard.request),"%s",overlay.request);
         lv_snprintf(media_guard.session,sizeof(media_guard.session),"%s",overlay.session);
@@ -225,7 +227,7 @@ static void recovery_notice_update(void)
     if(mask==ui.recovery_notice_mask)return;
     ui.recovery_notice_mask=mask;
     if(!mask){lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);return;}
-    const char *text=(mask&16)?"Could not open Music. Check the connection and retry.":(mask&4)?((mask&3)?"Voice unavailable. Finish or cancel this request first.":
+    const char *text=(mask&32)?((mask&16)?"Could not open Weather. Check the connection and retry.":"Finish or cancel this request to open Weather."):(mask&16)?"Could not open Music. Check the connection and retry.":(mask&4)?((mask&3)?"Voice unavailable. Finish or cancel this request first.":
         atomic_load(&interaction_notice_memory)?"Finish or cancel this review to open Music.":"Finish or cancel this request to open Music."):mask==3?"Microphone and voice unavailable. Use touch controls.":
         mask==1?"Microphone unavailable. Use touch controls.":
         "Voice isn't available. You can read the response.";
@@ -235,9 +237,9 @@ static void recovery_notice_update(void)
     lv_obj_remove_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(ui.status);
 }
-static void queue_interaction_notice(bool memory,bool send_failed)
+static void queue_interaction_notice(bool memory,bool send_failed,bool weather)
 {
-    atomic_store(&interaction_notice_memory,memory);atomic_store(&music_send_notice,send_failed);
+    atomic_store(&interaction_notice_memory,memory);atomic_store(&music_send_notice,send_failed);atomic_store(&interaction_notice_weather,weather);
     atomic_store(&interaction_notice_until,lv_tick_get()+5000);
     if(bsp_display_lock(0)){ui.recovery_notice_mask=-1;recovery_notice_update();bsp_display_unlock();}
 }
@@ -249,7 +251,8 @@ bool friday_ui_handle_notice(const cJSON *packet)
     if(!cJSON_IsString(type)||strcmp(type->valuestring,"error")||
        !cJSON_IsString(code)||strcmp(code->valuestring,"interaction_pending"))return false;
     const cJSON *message=cJSON_GetObjectItemCaseSensitive(packet,"message");
-    queue_interaction_notice(cJSON_IsString(message)&&strstr(message->valuestring,"memory review")!=NULL,false);
+    queue_interaction_notice(cJSON_IsString(message)&&strstr(message->valuestring,"memory review")!=NULL,false,
+        cJSON_IsString(message)&&strstr(message->valuestring,"Weather")!=NULL);
     return true;
 }
 
@@ -267,7 +270,8 @@ static void apply_state(friday_state_t state)
     if(state==FRIDAY_STATE_SPEAKING)ui.voice_notice=false;
     if(overlay.active&&ui.scene_active&&!strcmp(ui.scene_kind,"media")&&
        (state==FRIDAY_STATE_LISTENING||state==FRIDAY_STATE_THINKING||state==FRIDAY_STATE_SPEAKING)) {
-        for(int i=0;i<4;i++){lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);}
+        for(int i=0;i<4;i++)lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<5;i++)lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
         scene_layout(false);lv_snprintf(ui.scene_kind,sizeof(ui.scene_kind),"ambient");display_label(ui.eyebrow,"FRIDAY");
     }
     friday_presence_set_state(ui.presence, state);
@@ -290,8 +294,8 @@ static void log_ui_snapshot(const char *reason)
 {
     lv_obj_update_layout(lv_screen_active());
     int cards = 0, buttons = 0, bounds_errors = 0, routed = 0;
-    for (int i = 0; i < 4; i++) {
-        lv_obj_t *objects[] = {ui.cards[i], ui.buttons[i]};
+    for (int i = 0; i < 5; i++) {
+        lv_obj_t *objects[] = {i<4?ui.cards[i]:NULL, ui.buttons[i]};
         for (int j = 0; j < 2; j++) {
             if (objects[j] != NULL) {
                 lv_area_t diagnostic_area; lv_obj_get_coords(objects[j], &diagnostic_area);
@@ -377,7 +381,7 @@ static void scene_action_event(lv_event_t *event)
     size_t length = strcspn(action, ":");
     if (length >= sizeof(category)) length = sizeof(category) - 1;
     memcpy(category, action, length); category[length] = '\0';
-    const char *allowed[] = {"status", "reminders", "calendar", "dismiss", "confirm", "decline", "reminder", "snooze", "complete", "cancel"};
+    const char *allowed[] = {"status", "weather", "reminders", "calendar", "dismiss", "confirm", "decline", "reminder", "snooze", "complete", "cancel"};
     const char *safe_category = "invalid";
     for (unsigned int i = 0; i < sizeof(allowed)/sizeof(allowed[0]); i++) if (strcmp(category, allowed[i]) == 0) safe_category = allowed[i];
     ESP_LOGI(TAG, "UI_ACTION action=%s", safe_category);
@@ -390,7 +394,8 @@ static void scene_action_event(lv_event_t *event)
         log_ui_snapshot("dismiss");
         if (action_callback != NULL) action_callback("dismiss");
     } else if (action_callback == NULL || !action_callback(action)) {
-        if(!strcmp(action,"music")||!strncmp(action,"musicctl:",9))queue_interaction_notice(false,true);
+        if(!strcmp(action,"music")||!strncmp(action,"musicctl:",9))queue_interaction_notice(false,true,false);
+        else if(!strcmp(action,"weather"))queue_interaction_notice(false,true,true);
         else set_message_text("Friday is offline. This action was not sent.");
     }
 }
@@ -437,8 +442,7 @@ static void scene_layout(bool active)
         lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     }
     for(int i=0;i<4;i++) {
-        lv_obj_add_flag(ui.browse_icons[i],LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui.browse_hints[i],LV_OBJ_FLAG_HIDDEN);
+
         lv_obj_set_style_bg_color(ui.cards[i],color_hex(UI_CARD),0);
         lv_obj_set_style_radius(ui.cards[i],20,0);
         lv_obj_set_style_border_width(ui.cards[i],0,0);
@@ -457,6 +461,10 @@ static void scene_layout(bool active)
         lv_obj_set_style_text_font(ui.card_labels[i],&lv_font_montserrat_24,0);
         lv_obj_set_style_text_color(ui.card_labels[i],color_hex(UI_TEXT),0);
         lv_obj_set_style_text_align(ui.card_labels[i],LV_TEXT_ALIGN_LEFT,0);
+    }
+    for(int i=0;i<5;i++) {
+        lv_obj_add_flag(ui.browse_icons[i],LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(ui.browse_hints[i],LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_style_radius(ui.buttons[i],20,0);
         lv_obj_set_style_border_width(ui.buttons[i],1,0);
         lv_obj_set_style_border_color(ui.buttons[i],color_hex(UI_EDGE),0);
@@ -499,6 +507,11 @@ static void launcher_icon(lv_event_t *event)
     } else if(!strcmp(action,"music")) {
         icon_line(layer,x,y,17,33,17,8,color);icon_line(layer,x,y,17,8,34,4,color);
         icon_line(layer,x,y,34,4,34,29,color);icon_box(layer,x+6,y+30,12,8,4,color,false);icon_box(layer,x+23,y+26,12,8,4,color,false);
+    } else if(!strcmp(action,"weather")) {
+        icon_box(layer,x+14,y+14,16,16,8,color,false);
+        const int rays[][4]={{22,2,22,8},{22,36,22,42},{2,22,8,22},{36,22,42,22},
+            {8,8,12,12},{32,32,36,36},{8,36,12,32},{32,12,36,8}};
+        for(unsigned i=0;i<8;i++)icon_line(layer,x,y,rays[i][0],rays[i][1],rays[i][2],rays[i][3],color);
     } else if(!strcmp(action,"reminders")) {
         const int points[][2]={{9,29},{11,25},{12,15},{14,11},{18,8},{24,8},{28,11},{30,15},{31,25},{33,29}};
         for(unsigned i=1;i<sizeof(points)/sizeof(points[0]);i++)icon_line(layer,x,y,points[i-1][0],points[i-1][1],points[i][0],points[i][1],color);
@@ -547,14 +560,16 @@ static void browse_layout(const cJSON *surface)
         lv_obj_add_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
         ui.hide_scene_summary=true;
         ui.browse_message_y=158;ui.browse_message_height=48;position_message();
-        const char *hints[]={"Saved with care","Small things, remembered","Your day at a glance","Pick up the rhythm"};
-        const uint32_t backgrounds[]={UI_CARD,UI_CARD,UI_CARD,UI_CARD};
-        for(int i=0;i<4;i++) {
-            lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_size(ui.buttons[i],300,172);lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+(i%2)*324,236+(i/2)*196);
+        const char *hints[]={"Saved with care","Small things, remembered","Your day at a glance","Pick up the rhythm","Current conditions"};
+        bool five=!strcmp(ui.button_actions[4],"weather");
+        for(int i=0;i<4;i++)lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<(five?5:4);i++) {
+            lv_obj_set_size(ui.buttons[i],i==4?624:300,i==4?104:five?144:172);
+            lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,i==4?48:48+(i%2)*324,i==4?524:(five?188:236)+(i/2)*(five?168:196));
             lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
-            lv_obj_set_style_bg_color(ui.buttons[i],color_hex(backgrounds[i]),0);
-            lv_obj_set_size(ui.button_labels[i],252,42);lv_obj_align(ui.button_labels[i],LV_ALIGN_TOP_LEFT,24,112);
+            lv_obj_set_style_bg_color(ui.buttons[i],color_hex(UI_CARD),0);
+            lv_obj_set_size(ui.button_labels[i],i==4?500:252,42);lv_obj_align(ui.button_labels[i],LV_ALIGN_TOP_LEFT,i==4?88:24,i==4?34:five?88:112);
+            lv_obj_align(ui.browse_icons[i],LV_ALIGN_TOP_LEFT,24,i==4?30:24);
             lv_obj_set_style_text_align(ui.button_labels[i],LV_TEXT_ALIGN_LEFT,0);
             lv_obj_set_style_text_font(ui.button_labels[i],&lv_font_montserrat_32,0);
             lv_obj_set_style_text_color(ui.button_labels[i],color_hex(UI_TEXT),0);
@@ -575,7 +590,8 @@ static void browse_layout(const cJSON *surface)
     }
     bool detail=!strcmp(scene_string(surface,"kind"),"artifact");
     int rows=0,buttons=0;
-    for(int i=0;i<4;i++){if(!lv_obj_has_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN))rows++;if(!lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))buttons++;}
+    for(int i=0;i<4;i++)if(!lv_obj_has_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN))rows++;
+    for(int i=0;i<5;i++)if(!lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))buttons++;
     bool stale=strstr(subtitle,"Cached calendar")||strstr(subtitle,"Cached event");
     const char *heading=scene_string(surface,"title");
     if(!strcmp(heading,"Calendar access revoked")||!strcmp(heading,"Calendar not connected"))display_label(ui.message,"Connect Calendar on the Mac to continue.");
@@ -611,7 +627,7 @@ static void browse_layout(const cJSON *surface)
         lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
     }
     int visible=0,width=buttons?(624-(buttons-1)*16)/buttons:624;
-    for(int i=0;i<4;i++) {
+    for(int i=0;i<5;i++) {
         if(lv_obj_has_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN))continue;
         lv_obj_set_size(ui.buttons[i],width,64);lv_obj_align(ui.buttons[i],LV_ALIGN_TOP_LEFT,48+visible*(width+16),626);visible++;
         lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_border_width(ui.buttons[i],0,0);
@@ -634,10 +650,8 @@ static void scene_expire(lv_timer_t *timer)
         lv_timer_delete(ui.countdown);
         ui.countdown = NULL;
     }
-    for (int i = 0; i < 4; i++) {
-        lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
-    }
+    for(int i=0;i<4;i++)lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+    for(int i=0;i<5;i++)lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
     scene_layout(false);
     lv_snprintf(ui.scene_kind, sizeof(ui.scene_kind), "%s", "ambient");
     ui.scene_generation++;
@@ -682,9 +696,7 @@ bool friday_ui_set_scene(const cJSON *surface)
     const cJSON *actions = cJSON_GetObjectItemCaseSensitive(surface, "actions");
     for (int i = 0; i < 4; i++) {
         const cJSON *item = cJSON_GetArrayItem(items, i);
-        const cJSON *action = cJSON_GetArrayItem(actions, i);
         ui.card_actions[i][0] = '\0';
-        ui.button_actions[i][0] = '\0';
         if (cJSON_IsObject(item)) {
             char time[64], label[240], text[308];
             friday_display_text(time, sizeof(time), scene_string(item, "time"), supports_glyph, (void *)&lv_font_montserrat_24);
@@ -709,6 +721,10 @@ bool friday_ui_set_scene(const cJSON *surface)
         } else {
             lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
         }
+    }
+    for(int i=0;i<5;i++) {
+        const cJSON *action=cJSON_GetArrayItem(actions,i);
+        ui.button_actions[i][0]='\0';
         if (cJSON_IsObject(action)) {
             const char *button_text = scene_string(action, "label");
             if (strcmp(scene_string(surface, "kind"), "media") == 0) {
@@ -823,7 +839,7 @@ bool friday_ui_set_scene(const cJSON *surface)
     }
     bool browse=!strcmp(ui.scene_kind,"timeline")||(!strcmp(ui.scene_kind,"metric")&&
         !strcmp(ui.button_actions[0],"memories")&&!strcmp(ui.button_actions[3],"music"));
-    for(int i=0;i<4;i++) {
+    for(int i=0;i<5;i++) {
         const char *id=ui.button_actions[i];
         if(!strncmp(id,"calendar",8)||!strncmp(id,"event:",6))browse=true;
     }
@@ -871,6 +887,8 @@ void friday_ui_create(void)
         lv_obj_set_style_border_color(ui.cards[i],color_hex(0x8FE2C7),LV_STATE_PRESSED);
         lv_obj_add_event_cb(ui.cards[i],agenda_mark,LV_EVENT_DRAW_MAIN,NULL);
         lv_obj_add_event_cb(ui.cards[i],scene_action_event,LV_EVENT_CLICKED,ui.card_actions[i]);lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+    }
+    for(int i=0;i<5;i++) {
         ui.buttons[i]=lv_button_create(screen);lv_obj_set_style_radius(ui.buttons[i],20,0);lv_obj_set_style_shadow_width(ui.buttons[i],0,0);
         lv_obj_set_style_border_width(ui.buttons[i],1,0);lv_obj_set_style_border_color(ui.buttons[i],color_hex(UI_EDGE),0);
         lv_obj_set_style_pad_all(ui.buttons[i],0,0);ui.button_labels[i]=make_label(ui.buttons[i],"",&lv_font_montserrat_24,0xEEECE7);
@@ -938,10 +956,8 @@ bool friday_ui_set_surface(const char *kind, const char *title, const char *subt
         lv_timer_delete(ui.expiry);
         ui.expiry = NULL;
     }
-    for (int i = 0; i < 4; i++) {
-        lv_obj_add_flag(ui.cards[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(ui.buttons[i], LV_OBJ_FLAG_HIDDEN);
-    }
+    for(int i=0;i<4;i++)lv_obj_add_flag(ui.cards[i],LV_OBJ_FLAG_HIDDEN);
+    for(int i=0;i<5;i++)lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
     const char *known[] = {"ambient", "AMBIENT", "timeline", "message", "metric", "list", "reminder", "timer", "media", "ERROR", "PAIRING", "TOOL"};
     const char *safe_kind = "other";
     for (unsigned int i = 0; i < sizeof(known)/sizeof(known[0]); i++) if (kind != NULL && strcmp(kind, known[i]) == 0) safe_kind = known[i];
@@ -1088,7 +1104,7 @@ void friday_ui_media_clear(void)
         display_label(ui.title,"Music");display_label(ui.cover_label,"No cover available");display_label(ui.artist,"");display_label(ui.media_state,"Waiting for a fresh playback update");
         display_label(ui.message,"Playback is unavailable right now.");display_label(ui.media_time,"");
         lv_obj_add_flag(ui.progress,LV_OBJ_FLAG_HIDDEN);
-        for(int i=0;i<4;i++)if(!strncmp(ui.button_actions[i],"musicctl:",9))lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<5;i++)if(!strncmp(ui.button_actions[i],"musicctl:",9))lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
         lv_snprintf(ui.button_actions[0],sizeof(ui.button_actions[0]),"music");display_label(ui.button_labels[0],LV_SYMBOL_REFRESH);
         lv_obj_set_size(ui.buttons[0],208,72);lv_obj_align(ui.buttons[0],LV_ALIGN_TOP_LEFT,180,588);
         lv_obj_set_size(ui.button_labels[0],184,38);lv_obj_center(ui.button_labels[0]);lv_obj_set_style_text_font(ui.button_labels[0],&lv_font_montserrat_32,0);
@@ -1103,7 +1119,7 @@ bool friday_ui_media_overlay_needs_resume(void){if(!bsp_display_lock(-1))return 
 static bool protected_surface(const cJSON *surface)
 {
     const cJSON *actions=cJSON_GetObjectItemCaseSensitive(surface,"actions");
-    for(int i=0;i<4;i++) {
+    for(int i=0;i<5;i++) {
         const char *a=scene_string(cJSON_GetArrayItem(actions,i),"id");
         if(!strncmp(a,"reqcancel:",10)||!strncmp(a,"memyes:",7)||!strncmp(a,"memno:",6)||!strncmp(a,"memreview:",10)||!strncmp(a,"confirm",7)||!strncmp(a,"decline",7))return true;
     }
@@ -1119,7 +1135,7 @@ bool friday_ui_media_prepare_overlay(const cJSON *root)
         lv_obj_add_flag(ui.cover_image,LV_OBJ_FLAG_HIDDEN);lv_image_cache_drop(&ui.cover_dsc);friday_artwork_clear(&ui.artwork);
         if(ui.scene_active&&!strcmp(ui.scene_kind,"media")) {
             display_label(ui.message,"Music is paused while we take care of this.");display_label(ui.media_state,"Interaction in progress");lv_obj_add_flag(ui.progress,LV_OBJ_FLAG_HIDDEN);
-            for(int i=0;i<4;i++)if(!strncmp(ui.button_actions[i],"musicctl:",9))lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
+            for(int i=0;i<5;i++)if(!strncmp(ui.button_actions[i],"musicctl:",9))lv_obj_add_flag(ui.buttons[i],LV_OBJ_FLAG_HIDDEN);
         }
     }
     bsp_display_unlock();return accepted;

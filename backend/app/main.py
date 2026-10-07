@@ -193,6 +193,16 @@ def require_local_read_access(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Valid Friday read token required")
 
 
+def require_weather_navigation(device_id: str) -> None:
+    # Read-only navigation must not replace protected ownership or imply consent.
+    if (store.pending_confirmation(device_id)
+        or agent.memory.store is not None and agent.memory.store.pending_confirmation(device_id)
+        or device_id in local_music.busy
+        or device_id in local_music.reminder_devices
+        or device_id in local_music.protected):
+        raise MusicInteractionPending("Resolve the current interaction before opening Weather")
+
+
 async def handle_utterance(
     device_id: str, text: str, request_id: str | None = None
 ) -> str:
@@ -511,6 +521,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             subtitle="You can return to Music.", actions=[SurfaceAction(id="music", label="Music")])
                         await hub.broadcast(device_id, {"type": "surface", "status": "completed", "surface": surface.model_dump(mode="json")})
                         continue
+                    if action == 'weather':
+                        require_weather_navigation(device_id)
                     if action not in {'music'} and not action.startswith('musicctl:'):
                         if action == "dismiss":local_music.stop(device_id, websocket)
                         else:local_music.suspend(device_id, websocket)
@@ -534,6 +546,15 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                         surface = await music.scene(device_id, action)
                     elif action.startswith(("memories", "memory:", "memforget:", "memyes:", "memno:", "memreview:")):
                         surface = agent.memory.scene(device_id, action)
+                    elif action == "weather":
+                        await publish_tool_progress(device_id, "get_weather", "working")
+                        outcome = await agent._execute_read_tool("get_weather", {}, device_id,
+                            message.get("request_id") or "touch-weather", 0)
+                        # Another authenticated peer may create a protected request
+                        # while weather is loading. Recheck before publishing it.
+                        require_weather_navigation(device_id)
+                        surface = outcome.surface
+                        await publish_tool_progress(device_id, "get_weather", "complete" if outcome.success else "failed")
                     elif action.startswith(("calendar", "event:")):
                         await publish_tool_progress(device_id, "get_calendar", "working")
                         surface = await agent.calendar.scene(action, device_id)
@@ -571,10 +592,11 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                         )
                         await hub.broadcast(device_id, {"type": "surface", "surface": surface.model_dump(mode="json")})
                     else:
+                        destination = "opening Weather" if action == "weather" else "returning to Music"
                         message = (
-                            "Finish or cancel the pending memory review before returning to Music."
+                            f"Finish or cancel the pending memory review before {destination}."
                             if memory_pending else
-                            "Finish the current interaction before returning to Music."
+                            f"Finish the current interaction before {destination}."
                         )
                         await send_error(websocket, "interaction_pending", message)
                 except ValueError:

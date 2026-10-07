@@ -15,13 +15,16 @@ static char last_action[64];
 extern bool friday_backend_scene_action(const char *action);
 static int native_sender_result=-1,native_sender_calls;
 static bool native_sender_supersede;
-static char native_sender_request[129];
+static char native_sender_request[129],native_sender_action[64];
+extern void native_sender_set_ready(bool ready);
 int native_sender_send_text(const char *payload,int timeout)
 {
     assert(timeout==250);native_sender_calls++;
     cJSON *packet=cJSON_Parse(payload);assert(packet);
     cJSON *request=cJSON_GetObjectItem(packet,"request_id");assert(cJSON_IsString(request));
-    snprintf(native_sender_request,sizeof(native_sender_request),"%s",request->valuestring);cJSON_Delete(packet);
+    snprintf(native_sender_request,sizeof(native_sender_request),"%s",request->valuestring);
+    cJSON *action=cJSON_GetObjectItem(packet,"action");assert(cJSON_IsString(action));
+    snprintf(native_sender_action,sizeof(native_sender_action),"%s",action->valuestring);cJSON_Delete(packet);
     if(native_sender_supersede)friday_ui_media_begin("sender-newer-owner");
     return native_sender_result;
 }
@@ -160,7 +163,7 @@ static lv_obj_t *notice_label(void)
             if(!strcmp(text,"Microphone unavailable. Use touch controls.")||
                 !strcmp(text,"Voice isn't available. You can read the response.")||
                 !strcmp(text,"Microphone and voice unavailable. Use touch controls.")||
-                strstr(text,"Finish or cancel")||strstr(text,"finish or cancel")||strstr(text,"Could not open Music"))return object;
+                strstr(text,"Finish or cancel")||strstr(text,"finish or cancel")||(strstr(text,"Could not open Music")||strstr(text,"Could not open Weather")))return object;
         }
     }
     return NULL;
@@ -379,6 +382,81 @@ static void backend_replay(const char *directory)
     free(line);fclose(f);printf("ACTUAL_BACKEND_NATIVE_REPLAY operations=%d PASS\n",operations);
 }
 #endif
+#ifdef FRIDAY_NATIVE_SENDER
+static cJSON *weather_fixture(const char *directory,const char *name)
+{
+    char path[1024],data[32768]={0};snprintf(path,sizeof(path),"%s/../%s",directory,name);
+    FILE *file=fopen(path,"rb");assert(file);assert(fread(data,1,sizeof(data)-1,file)>0);fclose(file);
+    cJSON *json=cJSON_Parse(data);assert(json);return json;
+}
+static void tap_caption(const char *caption)
+{
+    lv_obj_t *screen=lv_screen_active();int targets=0;
+    for(uint32_t j=0;j<lv_obj_get_child_count(screen);j++) {
+        lv_obj_t *object=lv_obj_get_child(screen,j);
+        if(lv_obj_is_visible(object)&&lv_obj_check_type(object,&lv_button_class)&&visible_text(object,caption)) {
+            lv_obj_send_event(object,LV_EVENT_CLICKED,NULL);targets++;
+        }
+    }
+    assert(targets==1);
+}
+static void weather_touch_audit(const char *directory)
+{
+    cJSON *browse=weather_fixture(directory,"browse-fixtures.json");
+    cJSON *menu=cJSON_GetObjectItem(browse,"local-menu");assert(menu);
+    cJSON *weather=weather_fixture(directory,"weather-both.json");
+    friday_ui_media_clear();friday_ui_set_backend("FRIDAY ONLINE");friday_ui_set_microphone("MICS ONLINE",0,0);
+    friday_ui_set_action_callback(friday_backend_scene_action);native_sender_set_ready(true);native_sender_result=1;
+    int checks=0;
+    for(int cycle=0;cycle<25;cycle++) {
+        assert(friday_ui_set_scene(menu));shown("Memory");shown("Reminders");shown("Calendar");shown("Music");shown("Weather");
+        lv_obj_update_layout(lv_screen_active());int count=0;lv_area_t targets[5];
+        lv_obj_t *screen=lv_screen_active();
+        for(uint32_t j=0;j<lv_obj_get_child_count(screen);j++) {
+            lv_obj_t *object=lv_obj_get_child(screen,j);
+            if(lv_obj_is_visible(object)&&lv_obj_check_type(object,&lv_button_class)) {
+                assert(count<5);lv_obj_get_coords(object,&targets[count]);
+                assert(targets[count].x1>=48&&targets[count].x2<=671&&targets[count].y1>=188&&targets[count].y2<=627);
+                assert(targets[count].x2-targets[count].x1+1>=48&&targets[count].y2-targets[count].y1+1>=48);count++;
+            }
+        }
+        assert(count==5);
+        for(int i=0;i<5;i++)for(int j=i+1;j<5;j++)assert(targets[i].x2<targets[j].x1||targets[j].x2<targets[i].x1||targets[i].y2<targets[j].y1||targets[j].y2<targets[i].y1);
+        int calls=native_sender_calls;tap_caption("Weather");tap_caption("Weather");
+        assert(native_sender_calls==calls+2&&!strcmp(native_sender_action,"weather"));checks+=2;
+        assert(friday_ui_set_scene(weather));shown("07306");shown("10010");hidden_text("Open-Meteo");hidden_text("UTC");
+        if(cycle==0)capture(directory,"weather-touch-result");
+        tap_caption("Dismiss");assert(!strcmp(native_sender_action,"dismiss"));hidden_text("Weather");checks++;
+    }
+    assert(friday_ui_set_scene(menu));native_sender_result=-1;int calls=native_sender_calls;
+    tap_caption("Weather");assert(native_sender_calls==calls+1);shown("Could not open Weather");shown("Memory");shown("Calendar");shown("Music");notice_geometry();capture(directory,"weather-touch-disconnected");checks++;
+    native_sender_set_ready(false);calls=native_sender_calls;tap_caption("Weather");assert(native_sender_calls==calls);shown("Weather");checks++;
+    native_sender_set_ready(true);native_sender_result=1;tap_caption("Weather");assert(!strcmp(native_sender_action,"weather"));
+    assert(friday_ui_set_scene(weather));hidden_text("Could not open Weather");capture(directory,"weather-touch-recovered");checks++;
+    /* A failed send cannot overwrite protected facts, even if a Weather action
+     * is present on an older or concurrently owned review surface. */
+    scene("{\"kind\":\"message\",\"title\":\"Review request\",\"subtitle\":\"Keep the pending facts intact.\",\"actions\":[{\"id\":\"weather\",\"label\":\"Weather\"},{\"id\":\"confirm\",\"label\":\"Confirm\"}]}");
+    native_sender_result=-1;tap_caption("Weather");shown("Keep the pending facts intact.");shown("Confirm");shown("Could not open Weather");notice_geometry();checks++;
+    cJSON *packets=weather_fixture(directory,"weather-touch-fixture.json"),*packet=NULL;
+    cJSON_ArrayForEach(packet,packets) {
+        cJSON *surface=cJSON_GetObjectItem(packet,"surface");
+        if(cJSON_IsObject(surface)) {
+            assert(friday_ui_set_scene(surface));
+            if(!strcmp(field(surface,"title"),"Confirmation required")) {shown("Cancel request");shown("Complete the synthetic reminder?");hidden_text("07306");capture(directory,"weather-touch-confirmation");}
+            else {shown("07306");shown("10010");}
+        } else {
+            scene("{\"kind\":\"message\",\"title\":\"Review request\",\"subtitle\":\"Keep the pending facts intact.\",\"actions\":[{\"id\":\"confirm\",\"label\":\"Confirm\"}]}");
+            display_hold_ms=211;assert(friday_ui_handle_notice(packet));display_hold_ms=0;deferred_notice_tick();
+            shown("Keep the pending facts intact.");shown("Confirm");shown("open Weather");notice_geometry();capture(directory,"weather-touch-protected-notice");
+        }
+        checks++;
+    }
+    cJSON_Delete(packets);cJSON_Delete(weather);cJSON_Delete(browse);
+    native_sender_result=-1;friday_ui_set_action_callback(action);scene("{\"kind\":\"ambient\"}");
+    printf("WEATHER_TOUCH_AUDIT checks=%d fifth-targets/no-overlap/native-sender/repeated/dismiss/offline/recovery/protected/backend-packets PASS\n",checks);
+}
+#endif
+
 int main(int argc,char **argv) {
     assert(argc==2);lv_init();lv_display_t *d=lv_display_create(720,720);
     lv_display_set_color_format(d,LV_COLOR_FORMAT_RGB565);
@@ -512,6 +590,7 @@ int main(int argc,char **argv) {
     music_recovery_route_audit(argv[1]);
 #ifdef FRIDAY_NATIVE_SENDER
     sender_failure_audit(argv[1]);
+    weather_touch_audit(argv[1]);
 #endif
     activity_copy_audit(argv[1]);
 #endif

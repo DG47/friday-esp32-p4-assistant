@@ -81,3 +81,5 @@ without provider names, timestamps or operational diagnostics. Weather data:
    testing remains deferred unless requested.
 5. Rollback by restoring `WEATHER_PROVIDER=none` and restarting after approval;
    neither credential changes nor database migration are needed.
+
+Candidate touch-only hold-menu access and firmware rollout gate: [weather-touch.md](weather-touch.md).

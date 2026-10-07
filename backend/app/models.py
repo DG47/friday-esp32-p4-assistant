@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 AssistantState = Literal["idle", "listening", "thinking", "speaking", "alert"]
@@ -37,7 +37,7 @@ class Reminder(BaseModel):
 
 
 class SurfaceAction(BaseModel):
-    id: str = Field(max_length=64, pattern=r"^(reqcancel:[0-9a-f]{24}|music|musicctl:[0-9a-f]{24}|memories(?::[0-9]+)?|memory:[1-9][0-9]*(?::[0-9]+)?|memreview:[0-9a-f]{24}:[0-9]+|memforget:[1-9][0-9]*|memyes:[0-9a-f]{24}|memno:[0-9a-f]{24}|status|reminders(?::[0-9]+)?|calendar(?::[0-9]+)?|calendar_refresh|calendar_next|event:[0-9a-f]{16}|dismiss|confirm|decline|reminder:[1-9][0-9]*|snooze:[1-9][0-9]*|complete:[1-9][0-9]*|cancel:[1-9][0-9]*)$")
+    id: str = Field(max_length=64, pattern=r"^(reqcancel:[0-9a-f]{24}|music|musicctl:[0-9a-f]{24}|memories(?::[0-9]+)?|memory:[1-9][0-9]*(?::[0-9]+)?|memreview:[0-9a-f]{24}:[0-9]+|memforget:[1-9][0-9]*|memyes:[0-9a-f]{24}|memno:[0-9a-f]{24}|status|weather|reminders(?::[0-9]+)?|calendar(?::[0-9]+)?|calendar_refresh|calendar_next|event:[0-9a-f]{16}|dismiss|confirm|decline|reminder:[1-9][0-9]*|snooze:[1-9][0-9]*|complete:[1-9][0-9]*|cancel:[1-9][0-9]*)$")
     label: str = Field(min_length=1, max_length=32)
 
 
@@ -49,7 +49,14 @@ class Surface(BaseModel):
     expires_ms: int | None = None
     countdown_ms: int | None = Field(default=None, ge=1000, le=86400000)
     deadline_at: datetime | None = None
-    actions: list[SurfaceAction] = Field(default_factory=list, max_length=4)
+    actions: list[SurfaceAction] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def validate_action_capacity(self):
+        if len(self.actions) > 4 and (self.kind != "metric" or
+            [action.id for action in self.actions] != ["memories", "reminders", "calendar", "music", "weather"]):
+            raise ValueError("Five actions are reserved for the local launcher")
+        return self
 
 
 class AgentReply(BaseModel):
