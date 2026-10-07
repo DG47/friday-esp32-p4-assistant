@@ -76,6 +76,7 @@ typedef struct {
 
     int recovery_notice_mask;
     bool hide_scene_summary;
+    bool weather_completion_pending;
     bool scene_active;
     char scene_kind[24];
     unsigned long scene_generation;
@@ -430,6 +431,7 @@ static void scene_layout(bool active)
     lv_obj_set_size(ui.presence,active?96:648,active?48:232);
     lv_obj_align(ui.presence,LV_ALIGN_TOP_LEFT,active?576:36,active?28:300);
     friday_presence_set_compact(ui.presence,active);
+    friday_presence_set_state(ui.presence,friday_state_get());
     lv_obj_set_style_text_letter_space(ui.eyebrow,active?1:3,0);
     lv_obj_align(ui.eyebrow,LV_ALIGN_TOP_LEFT,48,active?38:40);
     if(active) {
@@ -692,27 +694,37 @@ static void weather_layout(const cJSON *surface)
 {
     display_label(ui.eyebrow,"Weather");
     lv_obj_set_style_text_letter_space(ui.eyebrow,0,0);
-    display_label(ui.title,"Current weather");
+    const char *subtitle=scene_string(surface,"subtitle"), *split=strchr(subtitle,'\n');
+    char summary[160];size_t length=split?(size_t)(split-subtitle):strlen(subtitle);
+    if(length>=sizeof(summary))length=sizeof(summary)-1;
+    memcpy(summary,subtitle,length);summary[length]=0;
+    display_label(ui.title,summary[0]?summary:"Weather");
     lv_obj_set_style_text_font(ui.title,&lv_font_montserrat_48,0);
     lv_obj_set_size(ui.title,624,60);lv_obj_align(ui.title,LV_ALIGN_TOP_LEFT,48,88);
     ui.hide_scene_summary=true;
-    lv_obj_add_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
+    display_label(ui.message,split?split+1:"");
+    lv_obj_set_style_text_letter_space(ui.message,0,0);
+    lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_LEFT,0);
+    lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_set_size(ui.message,624,84);lv_obj_align(ui.message,LV_ALIGN_TOP_LEFT,48,158);
+    lv_obj_remove_flag(ui.message,LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
     for(int i=0;i<4;i++) {
         bool primary=(i%2)==0;
         lv_obj_set_style_bg_opa(ui.cards[i],LV_OPA_TRANSP,0);
-        lv_obj_set_size(ui.cards[i],624,primary?88:52);
-        lv_obj_align(ui.cards[i],LV_ALIGN_TOP_LEFT,48,212+(i/2)*194+(primary?0:88));
-        lv_obj_set_style_text_font(ui.card_times[i],&lv_font_montserrat_24,0);
-        lv_obj_set_style_text_color(ui.card_times[i],color_hex(UI_TEXT),0);
-        lv_obj_set_size(ui.card_times[i],340,38);
-        lv_obj_align(ui.card_times[i],LV_ALIGN_LEFT_MID,0,0);
-        lv_obj_set_style_text_font(ui.card_labels[i],primary?&lv_font_montserrat_48:&lv_font_montserrat_24,0);
-        lv_obj_set_style_text_color(ui.card_labels[i],color_hex(primary?UI_TEXT:0x98A4B2),0);
+        lv_obj_set_size(ui.cards[i],624,primary?64:86);
+        lv_obj_align(ui.cards[i],LV_ALIGN_TOP_LEFT,48,255+(i/2)*172+(primary?0:64));
+        lv_obj_set_style_text_font(ui.card_times[i],primary?&lv_font_montserrat_24:&lv_font_montserrat_18,0);
+        lv_obj_set_style_text_color(ui.card_times[i],color_hex(primary?UI_TEXT:0x98A4B2),0);
+        lv_obj_set_size(ui.card_times[i],primary?340:624,primary?38:28);
+        lv_obj_align(ui.card_times[i],primary?LV_ALIGN_LEFT_MID:LV_ALIGN_BOTTOM_LEFT,0,0);
+        lv_obj_set_style_text_font(ui.card_labels[i],primary?&lv_font_montserrat_48:&lv_font_montserrat_32,0);
+        lv_obj_set_style_text_color(ui.card_labels[i],color_hex(UI_TEXT),0);
         lv_obj_set_style_text_align(ui.card_labels[i],primary?LV_TEXT_ALIGN_RIGHT:LV_TEXT_ALIGN_LEFT,0);
         lv_obj_set_size(ui.card_labels[i],primary?260:624,primary?60:38);
-        lv_obj_align(ui.card_labels[i],primary?LV_ALIGN_RIGHT_MID:LV_ALIGN_LEFT_MID,0,0);
+        lv_obj_align(ui.card_labels[i],primary?LV_ALIGN_RIGHT_MID:LV_ALIGN_TOP_LEFT,0,0);
         const cJSON *item=cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(surface,"items"),i);
+        if(!primary)display_label(ui.card_times[i],scene_string(item,"detail"));
         if(primary&&!strcmp(scene_string(item,"label"),"Weather unavailable")) {
             lv_obj_set_style_text_font(ui.card_labels[i],&lv_font_montserrat_24,0);
             lv_label_set_long_mode(ui.card_labels[i],LV_LABEL_LONG_MODE_WRAP);
@@ -883,7 +895,10 @@ bool friday_ui_set_scene(const cJSON *surface)
         if(!strncmp(id,"calendar",8)||!strncmp(id,"event:",6))browse=true;
     }
     if(browse)browse_layout(surface);
-    if(!strcmp(ui.scene_kind,"metric")&&!strcmp(scene_string(surface,"title"),"Weather"))weather_layout(surface);
+    if(!strcmp(ui.scene_kind,"metric")&&!strcmp(scene_string(surface,"title"),"Weather")) {
+        weather_layout(surface);
+        if(ui.weather_completion_pending){friday_presence_complete(ui.presence);ui.weather_completion_pending=false;}
+    }
     recovery_notice_update();
     log_ui_snapshot("scene");
     bsp_display_unlock();
@@ -984,6 +999,7 @@ bool friday_ui_set_surface(const char *kind, const char *title, const char *subt
     if (ui.title == NULL || !bsp_display_lock(1000)) {
         return false;
     }
+    if(!kind||strcmp(kind,"metric")||!title||strcmp(title,"Weather"))ui.weather_completion_pending=false;
     if (!owned_media_render) {
         if(!overlay.active)friday_ui_media_clear();
         lv_label_set_long_mode(ui.message, LV_LABEL_LONG_MODE_DOTS);
@@ -1050,7 +1066,28 @@ bool friday_ui_set_response(const char *text)
 
 void friday_ui_set_tool(const char *name,const char *status)
 {
-    (void)name;
+    bool weather=name&&!strcmp(name,"get_weather");
+    if(weather&&status&&!strcmp(status,"working")) {
+        if(!friday_ui_set_surface("TOOL","Checking the forecast","Temperature and rain / snow outlook."))return;
+        if(!bsp_display_lock(1000))return;
+        display_label(ui.eyebrow,"Friday");lv_obj_set_style_text_letter_space(ui.eyebrow,0,0);
+        lv_obj_set_style_text_font(ui.title,&lv_font_montserrat_48,0);
+        lv_obj_set_size(ui.title,624,120);lv_obj_align(ui.title,LV_ALIGN_TOP_LEFT,48,88);
+        lv_label_set_long_mode(ui.title,LV_LABEL_LONG_MODE_WRAP);
+        lv_obj_add_flag(ui.fact_panel,LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_text_letter_space(ui.message,0,0);
+        lv_obj_set_style_text_align(ui.message,LV_TEXT_ALIGN_LEFT,0);
+        lv_obj_set_size(ui.message,624,76);lv_obj_align(ui.message,LV_ALIGN_TOP_LEFT,48,220);
+        lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_WRAP);
+        friday_presence_set_compact(ui.presence,false);
+        lv_obj_set_size(ui.presence,624,160);lv_obj_align(ui.presence,LV_ALIGN_TOP_LEFT,48,320);
+        friday_presence_set_state(ui.presence,FRIDAY_STATE_THINKING);
+        bsp_display_unlock();return;
+    }
+    if(weather&&status&&(!strcmp(status,"complete")||!strcmp(status,"failed"))) {
+        if(bsp_display_lock(0)){friday_presence_set_state(ui.presence,friday_state_get());bsp_display_unlock();}
+    }
+    if(weather&&status&&!strcmp(status,"complete")){ui.weather_completion_pending=true;return;}
     if(status&&!strcmp(status,"complete")) {
         if(ui.presence&&bsp_display_lock(0)) {
             friday_presence_complete(ui.presence);bsp_display_unlock();

@@ -103,3 +103,48 @@ The redundant summary panel is hidden; partial/total failures retain each city
 name and a clear unavailable/retry message. Dismiss and 30-second expiry remain.
 A small bottom credit uses the existing attribution component. No conditions
 icons, forecast, extra controls or provider change are added.
+
+## Precipitation probability and grounded presence
+
+The [official hourly definitions](https://open-meteo.com/en/docs) describe
+`precipitation_probability` as probability of more than 0.1 mm precipitation in
+the preceding hour, including rain/showers/snow. It is an ensemble estimate at
+roughly 27 km resolution, not a rain-only probability or exact personal-location
+forecast. The approved endpoint and approximate area points remain the same.
+The request additionally asks for this hourly field and six forecast hours;
+current observations, Celsius/km/h preferences and UTC request timezone remain.
+
+At 13:23 local time the selected complete interval is 14:00–15:00, using the
+provider's 15:00 endpoint. At exactly 14:00, 14:00–15:00 is selected. The UI says
+**Next full hour**, then its date and local endpoints. UTC interval selection and
+`America/New_York` conversion avoid ambiguous provider local timestamps. Both
+EDT/EST labels are retained when a repeated/skipped DST hour changes offset;
+midnight includes the next endpoint's date. Both approved cities share the same
+interval. If gathering/publishing crosses the hourly boundary, any reading for
+the old interval becomes unknown rather than being mislabeled.
+
+Each five-minute area cache retains hourly data and selects the interval again
+on every read. A missing/null/out-of-bounds probability, invalid units, mismatched
+arrays, nonhourly/unsorted/gapped timestamps or missing selected endpoint yields
+**Rain / snow chance unknown**; current observations can still be shown. An
+expired cache whose refresh fails remains unavailable. No interpolation, daily
+aggregation, probability summation, invented next-hour value or default-zero
+fallback is used.
+
+Summary rules are deterministic: any known selected probability >=60% gives
+**An umbrella may help.** This is cautious advice for at least one known area,
+not a claim that precipitation is certain or both areas are known. Otherwise,
+any unknown/unavailable area gives **Forecast incomplete.** With all selected
+areas known, a maximum >=30% gives **Wet weather possible.**; below 30% gives
+**Low rain / snow chance.** All areas unavailable gives **Weather unavailable.**
+No additional reasoning-provider call, weather condition/icon or background poll
+is introduced. Existing city/temperature text for spoken requests is retained.
+
+On admitted `get_weather` working activity, the existing Friday ribbon expands
+and uses its thinking motion beside **Checking the forecast**. Completion returns
+it to the actual assistant state and gives its existing 320 ms cue after the
+result geometry is installed. Idle results settle; other navigation cancels the
+weather activity cue/state. The protected ownership and bounded send paths remain
+unchanged. This is task feedback; neither static pixels nor this motion establish
+sentience or awareness. Native playback uses synthetic responses and the actual
+production UI/presence code. Physical touch/voice verification remains deferred.
