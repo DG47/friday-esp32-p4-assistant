@@ -19,6 +19,51 @@ class WorkerOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def entered(self, event):
         self.assertTrue(await asyncio.to_thread(event.wait, 2))
 
+    async def test_blocked_native_worker_retains_ownership_after_caller_timeout(self):
+        p = self.provider()
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        def work():
+            calls.append(1)
+            entered.set()
+            release.wait(2)
+        first = asyncio.create_task(p._run_worker(work))
+        await self.entered(entered)
+        first.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+        try:
+            for _ in range(5):
+                with self.assertRaises(TimeoutError):
+                    await asyncio.wait_for(p._run_worker(work), .01)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(p._workers), 1)
+            self.assertTrue(p._worker_lock.locked())
+        finally:
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*p._workers), 2)
+
+    async def test_direct_owner_cancellation_characterizes_shutdown_limit(self):
+        # Global event-loop cancellation differs from canceling a public caller:
+        # it releases the asyncio permit while the native thread still runs.
+        p = self.provider()
+        entered, release, next_entered = threading.Event(), threading.Event(), threading.Event()
+        def work():
+            entered.set()
+            release.wait(2)
+        first = asyncio.create_task(p._run_worker(work))
+        await self.entered(entered)
+        owner = next(iter(p._workers))
+        owner.cancel()
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                await first
+            await asyncio.wait_for(p._run_worker(next_entered.set), 2)
+            self.assertTrue(next_entered.is_set())
+            self.assertFalse(release.is_set())
+        finally:
+            release.set()
+
     async def test_cancelled_wake_cannot_overlap_next_decode(self):
         p = self.provider()
         first_entered, second_entered, release = threading.Event(), threading.Event(), threading.Event()

@@ -100,3 +100,22 @@ No real model construction, inference, speech playback or audio capture is used.
 Final isolated checks: 7 targeted tests and 371 aggregate backend tests passed;
 10 synthetic localhost callback scenarios passed; Python compileall and Git
 whitespace checks passed. Firmware was not changed or built.
+
+## Independent lifecycle review
+
+Two additional synthetic tests characterize shutdown and blocked-worker limits.
+Repeated caller timeouts retain one active native owner and discard all queued
+work. Direct cancellation of that owner (as during global event-loop teardown)
+releases its asyncio lock even though the native thread remains alive. This is
+an explicitly reproduced limitation, not a shutdown fix. The provider has no
+close hook, no native execution deadline and no provider-level admission cap;
+the socket connection cap and foreground deadlines bound ordinary callers only.
+A permanently hung native call can delay default-executor process teardown.
+Do not claim bounded shutdown or reuse the provider after globally canceling its
+owners. No subprocess process-exit test or real native throughput test was run.
+
+The independent review found no ordinary caller-cancellation race. Existing wake
+exception-text logging is outside this patch and remains a privacy concern.
+The final aggregate suite contains 373 passing tests, including the two added
+lifecycle characterizations. Deployment of this backend-only candidate would
+require backend source replacement and a service restart; no firmware change.
