@@ -19,6 +19,9 @@ class FasterWhisperTranscriber:
         self.language = language or None
         self._model = None
         self._model_lock = asyncio.Lock()
+        self._model_task = None
+        self._worker_lock = asyncio.Lock()
+        self._workers = set()
 
     async def transcribe(self, pcm: bytes, audio_format: AudioFormat) -> str:
         if audio_format.encoding != "pcm_s16le":
@@ -32,7 +35,7 @@ class FasterWhisperTranscriber:
                 model = await self._get_model()
             failure_reason = FailureReason.STT_ERROR
             phase(Phase.WORKER_WAIT)
-            return await asyncio.to_thread(self._transcribe_sync, model, pcm, audio_format)
+            return await self._run_worker(self._transcribe_sync, model, pcm, audio_format)
         except TranscriptionError as error:
             if error.reason is None:
                 error.reason = failure_reason
@@ -45,7 +48,7 @@ class FasterWhisperTranscriber:
             raise TranscriptionError("Wake detection requires mono pcm_s16le audio")
         try:
             model = await self._get_model()
-            return await asyncio.to_thread(
+            return await self._run_worker(
                 self._transcribe_sync,
                 model,
                 pcm,
@@ -60,9 +63,54 @@ class FasterWhisperTranscriber:
         except Exception as error:
             raise TranscriptionError(f"Local wake detection failed: {error}") from error
 
+    def _worker_finished(self, task):
+        self._workers.discard(task)
+        # An abandoned worker's exception must be retrieved without exposing its
+        # text. Active callers still receive the same exception from their await.
+        if not task.cancelled():
+            task.exception()
+
+    async def _await_owned(self, task):
+        # wait() does not cancel its child when this waiter is canceled. Unlike
+        # shield() on Python 3.14, it also does not send a late private exception
+        # to the loop exception handler after an abandoned waiter.
+        await asyncio.wait({task})
+        return task.result()
+
+    async def _run_worker(self, function, *args, **kwargs):
+        started = False
+
+        async def run():
+            nonlocal started
+            async with self._worker_lock:
+                started = True
+                return await asyncio.to_thread(function, *args, **kwargs)
+
+        task = asyncio.create_task(run())
+        self._workers.add(task)
+        task.add_done_callback(self._worker_finished)
+        try:
+            return await self._await_owned(task)
+        except asyncio.CancelledError:
+            if not started:
+                # Queued work whose caller expired must never consume the model.
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            # A running thread cannot be stopped by Task.cancel(). Its owner
+            # keeps the permit until it actually exits, while this caller returns.
+            raise
+
     async def _get_model(self):
         if self._model is not None:
             return self._model
+        if self._model_task is None or self._model_task.done():
+            self._model_task = asyncio.create_task(self._load_model())
+            self._model_task.add_done_callback(self._worker_finished)
+        # Cold construction has an owner too: canceled waiters cannot abandon
+        # the cached result or allow another constructor to race the first.
+        return await self._await_owned(self._model_task)
+
+    async def _load_model(self):
         async with self._model_lock:
             if self._model is None:
                 try:
@@ -71,7 +119,7 @@ class FasterWhisperTranscriber:
                     raise TranscriptionError(
                         "faster-whisper is not installed; install backend requirements"
                     ) from error
-                self._model = await asyncio.to_thread(
+                self._model = await self._run_worker(
                     WhisperModel,
                     self.model_name,
                     device=self.device,
