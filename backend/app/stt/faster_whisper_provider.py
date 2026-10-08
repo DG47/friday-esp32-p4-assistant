@@ -8,7 +8,7 @@ import wave
 from pathlib import Path
 
 from .base import AudioFormat, TranscriptionError
-from .diagnostics import FailureReason, Phase, measure, phase
+from .diagnostics import FailureReason, Phase, measure, phase, voice_detection, decoded
 
 
 class FasterWhisperTranscriber:
@@ -217,7 +217,7 @@ class FasterWhisperTranscriber:
 
             failure_reason = FailureReason.DECODE
             with measure(Phase.DECODE):
-                segments, _ = model.transcribe(
+                segments, info = model.transcribe(
                     str(path),
                     language=self.language,
                     beam_size=beam_size,
@@ -226,7 +226,14 @@ class FasterWhisperTranscriber:
                     hotwords=hotwords,
                     initial_prompt=initial_prompt,
                 )
-                return " ".join(segment.text.strip() for segment in segments).strip()
+                voice_detection(vad_filter, info)
+                texts = []
+                count = 0
+                for segment in segments:
+                    count += 1
+                    texts.append(segment.text.strip())
+                decoded(count)
+                return " ".join(texts).strip()
         except TranscriptionError as error:
             if error.reason is None:
                 error.reason = failure_reason
