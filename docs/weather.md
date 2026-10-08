@@ -97,10 +97,10 @@ public institutional examples, not personal addresses; no runtime geocoding or
 location request is added. The raw ZIP remains in model tool payloads and caches.
 
 The named-location screen has the agenda's 48px left margin, 48px headline,
-compact ribbon and open spacing. Each location has its name and large Celsius
+compact ribbon and open spacing. Each location has its name and large Fahrenheit
 reading on one line, followed by quieter wind in km/h and humidity in percent.
 The redundant summary panel is hidden; partial/total failures retain each city
-name and a clear unavailable/retry message. Dismiss and 30-second expiry remain.
+name and a clear unavailable/retry message. Dismiss remains. Weather stays open, while a bounded device timer clears expired data without closing the view.
 A small bottom credit uses the existing attribution component. No conditions
 icons, forecast, extra controls or provider change are added.
 
@@ -132,13 +132,13 @@ aggregation, probability summation, invented next-hour value or default-zero
 fallback is used.
 
 Summary rules are deterministic: any known selected probability >=60% gives
-**An umbrella may help.** This is cautious advice for at least one known area,
-not a claim that precipitation is certain or both areas are known. Otherwise,
-any unknown/unavailable area gives **Forecast incomplete.** With all selected
-areas known, a maximum >=30% gives **Wet weather possible.**; below 30% gives
-**Low rain / snow chance.** All areas unavailable gives **Weather unavailable.**
-No additional reasoning-provider call, probability-derived condition/icon or
-background poll is introduced. Existing city/temperature text for spoken requests is retained.
+The headline comes from current WMO conditions, never future probability.
+Matching known conditions use their actual label (for example **Clear.** or
+**Rain.**); differing city conditions use **Conditions vary.** Each city retains
+its own prominent current-condition label. Missing condition fields remain
+**Conditions unknown.** or **Conditions incomplete.** Rain/snow chance remains
+secondary information for the explicitly labelled future window, including 0%.
+No generic no-precipitation headline is substituted for current conditions.
 
 On admitted `get_weather` working activity, the existing Friday ribbon expands
 and uses its thinking motion beside **Checking the forecast**. Completion returns
@@ -176,3 +176,13 @@ are added; native peak LVGL heap is 88,464 bytes (816 bytes above the preceding
 unknown chance, current rain, and day/night, and verifies distinct city scenes.
 Existing navigation/recovery/protected text audits remain enabled. All supplied
 art mock readings and conditions are explicitly synthetic.
+
+## Temperature presentation
+
+Both configured cities display Fahrenheit. The adapter keeps validated
+Open-Meteo measurements and its private cache in Celsius, then converts each
+published reading with `°F = °C × 9/5 + 32`, rounded to one decimal place.
+Tool/model payloads, display labels and spoken temperature wording all use
+Fahrenheit. Cache hits do not reconvert previously converted values. Wind
+remains in km/h. This requires a backend deployment/restart, with no provider,
+credentials, private configuration or firmware change.

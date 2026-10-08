@@ -18,6 +18,21 @@ LOCATIONS = [dict(label='07306', latitude=40.736294, longitude=-74.071128),
 
 
 class WeatherLocationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_both_city_tool_payloads_and_surface_use_fahrenheit(self):
+        def response(request):
+            data = payload()
+            data['current']['temperature_2m'] = 21.5 if request.url.params['latitude'] == '40.736294' else 22
+            return httpx.Response(200, json=data)
+        with TemporaryDirectory() as directory:
+            agent = self.agent(directory, response)
+            outcome = await agent._execute_read_tool('get_weather', {'location': 'both'}, 'test', 'fahrenheit', 0)
+            readings = json.loads(outcome.content)['locations']
+            self.assertEqual([x['temperature_2m'] for x in readings], [70.7, 71.6])
+            self.assertTrue(all(x['units']['temperature'] == '°F' for x in readings))
+            self.assertEqual(outcome.surface.items[0]['label'], '70.7 °F')
+            self.assertEqual(outcome.surface.items[2]['label'], '71.6 °F')
+            self.assertNotIn('°C', outcome.content + outcome.surface.model_dump_json())
+
     def agent(self, directory, response):
         settings = Settings(_env_file=None, assistant_provider='mock', weather_provider='open-meteo', weather_locations=LOCATIONS)
         agent = FridayAgent(settings, ReminderStore(Path(directory)/'test.db'))
@@ -35,7 +50,7 @@ class WeatherLocationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([item['time'] for item in result.surface.items if item['time']],[{'07306':'Jersey City, NJ','10010':'New York, NY'}[label] for label in labels])
                 self.assertEqual(len(seen),len(labels))
                 self.assertEqual(result.provider,'local')
-                self.assertIn('21.5 °C',result.text)
+                self.assertIn('70.7 °F',result.text)
                 self.assertIn('Rain / snow chance unknown',result.text)
                 self.assertIn('["07306", "10010"]',agent._instructions())
                 self.assertNotIn('UTC',result.surface.model_dump_json())

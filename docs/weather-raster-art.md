@@ -27,3 +27,39 @@ The fixed Spotify 192×192 artwork codec and 128KiB transport bound are unchange
 Native captures validate production rendering and synthetic navigation. They
 are not proof of calibrated physical touch, physical display pixels, device FPS
 or successful voice interaction; physical voice testing remains deferred.
+
+## Persistent view and freshness
+
+Weather stays open until Dismiss or a newer navigation/priority surface. It is
+excluded from the generic scene-closing expiry timer. Current WMO conditions
+lead the headline and each city card; the next full hour's probability remains
+secondary and never controls the current condition or image.
+
+The backend supplies a bounded data-valid duration: the earliest of the two
+areas' remaining five-minute cache lifetime, observation-age limit, or the next
+full-hour label changing. A single device-owned one-shot timer then clears
+temperatures, current-condition claims, probabilities, wind and humidity without
+closing Weather. It switches art to neutral and labels the old window as past.
+This works while disconnected; no automatic provider polling is introduced.
+Reopening Weather explicitly refreshes data under the existing cache rules.
+
+Scene replacement cancels the timer, and its generation guard prevents an old
+callback from replacing a newer Weather result or protected interaction.
+Missing/invalid freshness metadata fails closed. Allocation failure clears data
+instead of leaving current values unbounded. All-unavailable views contain no
+current measurements and remain honest without a data timer.
+
+At the exact hour, the selected complete interval starts now and remains valid:
+its end, rather than its start, bounds the normal remaining cache/observation
+lease. This retains the existing exact-hour selection while avoiding an
+immediate blank. Requests just before the hour still expire at that boundary;
+requests just after it select the following complete hour.
+
+The absolute data deadline is retained with the surface, and its remaining lease
+is recomputed inside each peer's send lock. Queued delivery or a stored-result
+replay cannot regain the original five-minute lifetime; malformed/past deadlines
+clear data immediately. Internal cache freshness fields are removed from tool
+payloads.
+
+This combined persistence/freshness change requires reviewed backend deployment
+and an app-only firmware flash; the Fahrenheit conversion alone does not.

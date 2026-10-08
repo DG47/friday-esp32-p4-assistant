@@ -3,8 +3,31 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from fastapi import WebSocket, WebSocketDisconnect
+
+
+def weather_packet(message: dict, now: datetime | None = None) -> dict:
+    """Rebound a Weather lease at actual send time, including stored replays.
+
+    A queued/old result must not regain its original five-minute lifetime.
+    Called inside the existing peer send lock; it changes no ownership rules.
+    """
+    surface = message.get('surface')
+    if not isinstance(surface, dict) or surface.get('kind') != 'metric' or surface.get('title') != 'Weather':
+        return message
+    lease = surface.get('weather_valid_ms')
+    if lease is None:
+        return message  # all-unavailable: no measurements to invalidate
+    remaining = 1
+    try:
+        deadline = datetime.fromisoformat(surface['deadline_at'])
+        if deadline.tzinfo is not None and type(lease) is int and 1 <= lease <= 300000:
+            remaining = max(1, min(lease, int((deadline - (now or datetime.now(timezone.utc))).total_seconds() * 1000)))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        pass
+    return {**message, 'surface': {**surface, 'weather_valid_ms': remaining}}
 
 
 @dataclass
@@ -83,7 +106,7 @@ class DeviceHub:
         async def send():
             async with peer.send_lock:
                 if not allowed():return 0
-                await peer.websocket.send_json(message)
+                await peer.websocket.send_json(weather_packet(message))
                 return 1
         try:return await asyncio.wait_for(send(),self.send_timeout)
         except (RuntimeError,WebSocketDisconnect,OSError,TimeoutError):
@@ -103,7 +126,7 @@ class DeviceHub:
                 # reminder delivery or other devices. Serialize concurrent producers.
                 async def serialized_send() -> None:
                     async with peer.send_lock:
-                        await peer.websocket.send_json(decorate(peer.websocket,message) if decorate else message)
+                        await peer.websocket.send_json(weather_packet(decorate(peer.websocket,message) if decorate else message))
                 await asyncio.wait_for(serialized_send(), self.send_timeout)
                 return 1
             except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError):

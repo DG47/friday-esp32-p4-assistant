@@ -17,6 +17,27 @@ def payload():
 
 
 class WeatherTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fahrenheit_values_units_bounds_and_cache_hits(self):
+        for celsius, fahrenheit in [(-100, -148), (-40, -40), (0, 32),
+                                    (21.5, 70.7), (37, 98.6), (100, 212)]:
+            data = payload()
+            data['current']['temperature_2m'] = celsius
+            calls = []
+            def response(request):
+                calls.append(request)
+                return httpx.Response(200, json=data)
+            service = WeatherService(1, 2, httpx.MockTransport(response))
+            first, second = await service.current(), await service.current()
+            for reading in (first, second):
+                self.assertEqual(reading['temperature_2m'], fahrenheit)
+                self.assertEqual(reading['units']['temperature'], '°F')
+                self.assertEqual(reading['wind_speed_10m'], 8.5)
+                self.assertEqual(reading['units']['wind'], 'km/h')
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0].url.params['temperature_unit'], 'celsius')
+            self.assertEqual(service._cache['temperature_2m'], celsius)
+            self.assertEqual(service._cache['units']['temperature'], '°C')
+
     async def test_contract_and_real_scene_with_mock_transport(self):
         seen = []
         def response(request):
@@ -28,7 +49,7 @@ class WeatherTests(unittest.IsolatedAsyncioTestCase):
             agent.weather = WeatherService(1, 2, httpx.MockTransport(response))
             result = await agent.handle('a', 'show weather')
             self.assertEqual(result.surface.kind, 'metric')
-            self.assertEqual(result.surface.title, '21.5 °C')
+            self.assertEqual(result.surface.title, '70.7 °F')
             self.assertIn('Open-Meteo', result.surface.items[-1]['label'])
             self.assertEqual(seen[0].url.host, 'api.open-meteo.com')
             self.assertEqual(seen[0].url.params['latitude'], '1')
