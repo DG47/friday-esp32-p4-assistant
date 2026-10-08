@@ -754,6 +754,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                 diagnostics = TranscriptionDiagnostics(len(audio.data),
                     capture_format.sample_rate if capture_format else 0,
                     capture_format.channels if capture_format else 0)
+                diagnostics.input_level(audio.data, capture_format.encoding if capture_format else "")
                 reason = (FailureReason.CAPTURE_MISSING if not audio.active
                           else FailureReason.CAPTURE_MALFORMED)
                 with observe(diagnostics):
