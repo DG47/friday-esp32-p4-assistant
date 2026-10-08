@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import tempfile
 import wave
 from pathlib import Path
@@ -22,8 +24,43 @@ class FasterWhisperTranscriber:
         self._model_task = None
         self._worker_lock = asyncio.Lock()
         self._workers = set()
+        self._started_workers = set()
+        self._closed = False
+        self._admitted = 0
+        self._admission_limit = 32
+
+    async def _admit(self, function, *args):
+        if self._closed:
+            raise TranscriptionError("Local transcription is shutting down")
+        if self._admitted >= self._admission_limit:
+            raise TranscriptionError("Local transcription queue is full")
+        self._admitted += 1
+        try:
+            return await function(*args)
+        finally:
+            self._admitted -= 1
 
     async def transcribe(self, pcm: bytes, audio_format: AudioFormat) -> str:
+        return await self._admit(self._transcribe, pcm, audio_format)
+
+    async def transcribe_wake(self, pcm: bytes, audio_format: AudioFormat) -> str:
+        return await self._admit(self._transcribe_wake, pcm, audio_format)
+
+    async def close(self, timeout: float = 5.0) -> bool:
+        """Stop admission; return whether native ownership drained by deadline."""
+        self._closed = True
+        for task in tuple(self._workers):
+            if task not in self._started_workers:
+                task.cancel()
+        pending = set(self._workers)
+        if self._model_task is not None and not self._model_task.done():
+            pending.add(self._model_task)
+        if not pending:
+            return True
+        _, pending = await asyncio.wait(pending, timeout=max(0.0, timeout))
+        return not pending
+
+    async def _transcribe(self, pcm: bytes, audio_format: AudioFormat) -> str:
         if audio_format.encoding != "pcm_s16le":
             raise TranscriptionError(f"Unsupported audio encoding: {audio_format.encoding}")
         if audio_format.channels != 1:
@@ -43,7 +80,7 @@ class FasterWhisperTranscriber:
         except Exception as error:
             raise TranscriptionError(f"Could not load the local Whisper model: {error}", reason=failure_reason) from error
 
-    async def transcribe_wake(self, pcm: bytes, audio_format: AudioFormat) -> str:
+    async def _transcribe_wake(self, pcm: bytes, audio_format: AudioFormat) -> str:
         if audio_format.encoding != "pcm_s16le" or audio_format.channels != 1:
             raise TranscriptionError("Wake detection requires mono pcm_s16le audio")
         try:
@@ -65,6 +102,7 @@ class FasterWhisperTranscriber:
 
     def _worker_finished(self, task):
         self._workers.discard(task)
+        self._started_workers.discard(task)
         # An abandoned worker's exception must be retrieved without exposing its
         # text. Active callers still receive the same exception from their await.
         if not task.cancelled():
@@ -78,13 +116,37 @@ class FasterWhisperTranscriber:
         return task.result()
 
     async def _run_worker(self, function, *args, **kwargs):
+        if self._closed:
+            raise TranscriptionError("Local transcription is shutting down")
+        if len(self._workers) >= self._admission_limit:
+            raise TranscriptionError("Local transcription queue is full")
         started = False
 
         async def run():
             nonlocal started
             async with self._worker_lock:
+                if self._closed:
+                    raise TranscriptionError("Local transcription is shutting down")
                 started = True
-                return await asyncio.to_thread(function, *args, **kwargs)
+                self._started_workers.add(asyncio.current_task())
+                context = contextvars.copy_context()
+                native = asyncio.get_running_loop().run_in_executor(
+                    None, functools.partial(context.run, function, *args, **kwargs)
+                )
+                canceled = False
+                while not native.done():
+                    try:
+                        await asyncio.wait({native})
+                    except asyncio.CancelledError:
+                        # Direct/global owner cancellation must not free the
+                        # permit while native execution continues. Close admission.
+                        self._closed = True
+                        canceled = True
+                if canceled:
+                    if not native.cancelled():
+                        native.exception()
+                    raise asyncio.CancelledError
+                return native.result()
 
         task = asyncio.create_task(run())
         self._workers.add(task)
@@ -101,6 +163,8 @@ class FasterWhisperTranscriber:
             raise
 
     async def _get_model(self):
+        if self._closed:
+            raise TranscriptionError("Local transcription is shutting down")
         if self._model is not None:
             return self._model
         if self._model_task is None or self._model_task.done():

@@ -116,6 +116,11 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        close_transcriber = getattr(transcriber, "close", None)
+        if close_transcriber is not None:
+            drained = await close_transcriber()
+            if drained is False:
+                logger.warning("Local transcription shutdown deadline exceeded; native worker remains active")
         await local_music.close()
         await speech.close()
         if discovery_transport is not None:

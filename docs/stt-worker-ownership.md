@@ -89,7 +89,7 @@ echo suppression still require a controlled physical speech test.
 
 ## Validation
 
-Seven targeted synthetic tests cover cancellation/wake-to-foreground ownership,
+Twelve targeted synthetic tests cover cancellation/wake-to-foreground ownership,
 expired queue dropping, cache reuse and load retry, 20 queued timeouts with
 bounded bookkeeping, late-private-error handling, and an actual socket handler
 using the real provider orchestration with a fake decoder: timeout causes no
@@ -97,25 +97,27 @@ enqueue, late recognition is ignored, and the next turn enqueues only its fresh
 result. Existing diagnostic/privacy tests are retained in the aggregate suite.
 No real model construction, inference, speech playback or audio capture is used.
 
-Final isolated checks: 7 targeted tests and 371 aggregate backend tests passed;
+Final isolated checks: 12 targeted tests in the 376-test aggregate backend suite passed;
 10 synthetic localhost callback scenarios passed; Python compileall and Git
 whitespace checks passed. Firmware was not changed or built.
 
-## Independent lifecycle review
+## Independent lifecycle review and repair
 
-Two additional synthetic tests characterize shutdown and blocked-worker limits.
-Repeated caller timeouts retain one active native owner and discard all queued
-work. Direct cancellation of that owner (as during global event-loop teardown)
-releases its asyncio lock even though the native thread remains alive. This is
-an explicitly reproduced limitation, not a shutdown fix. The provider has no
-close hook, no native execution deadline and no provider-level admission cap;
-the socket connection cap and foreground deadlines bound ordinary callers only.
-A permanently hung native call can delay default-executor process teardown.
-Do not claim bounded shutdown or reuse the provider after globally canceling its
-owners. No subprocess process-exit test or real native throughput test was run.
+Shutdown closes admission before awaiting work. Public foreground/wake calls and
+internal worker owners each have a limit of 32, including cold-load waiters.
+Queued owners are canceled; active native futures retain the execution permit
+until they actually return. Direct owner cancellation closes admission and waits
+through cancellation without canceling the native future. Contextvars continue
+into the native worker. The application lifespan invokes the optional close hook.
 
-The independent review found no ordinary caller-cancellation race. Existing wake
-exception-text logging is outside this patch and remains a privacy concern.
-The final aggregate suite contains 373 passing tests, including the two added
-lifecycle characterizations. Deployment of this backend-only candidate would
-require backend source replacement and a service restart; no firmware change.
+`close(timeout=5)` reports False when native work has not drained by its deadline;
+it neither kills a native thread nor claims successful cleanup. A permanently
+hung native worker can still delay Python default-executor/process teardown.
+Process-level hard termination is outside this change. No subprocess process-exit
+or real native throughput test was run. Existing wake exception-text logging is a
+separate privacy concern. No empty-recognition or physical-quality fix is claimed.
+
+Deterministic tests cover direct owner cancellation, shutdown during loading and
+decoding, queued cancellation, repeated timeouts behind a blocked native worker,
+and bounded public cold waiters. Deployment requires backend source replacement
+and a service restart only. No firmware changes or live actions were performed.

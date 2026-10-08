@@ -43,11 +43,9 @@ class WorkerOwnershipTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             await asyncio.wait_for(asyncio.gather(*p._workers), 2)
 
-    async def test_direct_owner_cancellation_characterizes_shutdown_limit(self):
-        # Global event-loop cancellation differs from canceling a public caller:
-        # it releases the asyncio permit while the native thread still runs.
+    async def test_direct_owner_cancellation_closes_admission_and_retains_lock(self):
         p = self.provider()
-        entered, release, next_entered = threading.Event(), threading.Event(), threading.Event()
+        entered, release = threading.Event(), threading.Event()
         def work():
             entered.set()
             release.wait(2)
@@ -55,14 +53,86 @@ class WorkerOwnershipTests(unittest.IsolatedAsyncioTestCase):
         await self.entered(entered)
         owner = next(iter(p._workers))
         owner.cancel()
+        await asyncio.sleep(0)
         try:
-            with self.assertRaises(asyncio.CancelledError):
-                await first
-            await asyncio.wait_for(p._run_worker(next_entered.set), 2)
-            self.assertTrue(next_entered.is_set())
-            self.assertFalse(release.is_set())
+            self.assertTrue(p._worker_lock.locked())
+            self.assertFalse(await p.close(.01))
+            with self.assertRaises(TranscriptionError):
+                await p._run_worker(lambda: None)
         finally:
             release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(first, 2)
+        self.assertTrue(await p.close(.1))
+
+    async def test_shutdown_cancels_queue_and_bounds_admission(self):
+        p = self.provider()
+        p._admission_limit = 2
+        entered, release = threading.Event(), threading.Event()
+        def work():
+            entered.set()
+            release.wait(2)
+        first = asyncio.create_task(p._run_worker(work))
+        await self.entered(entered)
+        queued = asyncio.create_task(p._run_worker(lambda: self.fail("queued work ran")))
+        await asyncio.sleep(0)
+        try:
+            with self.assertRaises(TranscriptionError):
+                await p._run_worker(lambda: None)
+            self.assertFalse(await p.close(.01))
+            with self.assertRaises(asyncio.CancelledError):
+                await queued
+            with self.assertRaises(TranscriptionError):
+                await p.transcribe(b"\0\0", FORMAT)
+        finally:
+            release.set()
+            await asyncio.wait_for(first, 2)
+        self.assertTrue(await p.close(.1))
+
+    async def test_cold_waiters_have_bounded_public_admission(self):
+        p = self.provider()
+        p._admission_limit = 2
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def model():
+            entered.set()
+            await release.wait()
+            return object()
+        with patch.object(p, "_get_model", model):
+            first = asyncio.create_task(p.transcribe(b"\0\0", FORMAT))
+            await entered.wait()
+            second = asyncio.create_task(p.transcribe_wake(b"\0\0", FORMAT))
+            await asyncio.sleep(0)
+            try:
+                with self.assertRaises(TranscriptionError):
+                    await p.transcribe(b"\0\0", FORMAT)
+                self.assertEqual(p._admitted, 2)
+            finally:
+                first.cancel()
+                second.cancel()
+                await asyncio.gather(first, second, return_exceptions=True)
+            self.assertEqual(p._admitted, 0)
+
+    async def test_shutdown_during_loading_keeps_single_native_constructor(self):
+        p = self.provider()
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+        def constructor(*args, **kwargs):
+            calls.append(1)
+            entered.set()
+            release.wait(2)
+            return object()
+        with patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=constructor)}):
+            loading = asyncio.create_task(p._get_model())
+            await self.entered(entered)
+            try:
+                self.assertFalse(await p.close(.01))
+                with self.assertRaises(TranscriptionError):
+                    await p._get_model()
+                self.assertEqual(len(calls), 1)
+            finally:
+                release.set()
+                await asyncio.wait_for(loading, 2)
+            self.assertTrue(await p.close(.1))
 
     async def test_cancelled_wake_cannot_overlap_next_decode(self):
         p = self.provider()
