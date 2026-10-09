@@ -21,7 +21,9 @@ jobs:
           TTS_PROVIDER: none
           WEATHER_PROVIDER: none
           STT_PROVIDER: none
-        run: python -m unittest discover -s backend/tests -v
+        run: |
+          mkdir -p outputs
+          python -m unittest discover -s backend/tests -v
       - name: Synthetic real-loopback Spotify callback regression
         run: python scripts/test_spotify_loopback.py
       - name: Python syntax and whitespace
@@ -55,3 +57,29 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/main -I firmware/tests/voice_stubs firmware/tests/test_echo.c firmware/main/friday_echo.c -o /tmp/friday-echo-test
           /tmp/friday-echo-test
+
+  task-prototype-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Existing Homebrew runtime and isolated test dependencies
+        run: |
+          test -x /opt/homebrew/bin/python3
+          /opt/homebrew/bin/python3 -m venv .venv
+          .venv/bin/python -m pip install -r backend/requirements.txt
+      - name: Disconnected task and trusted local fixture regressions
+        env:
+          PYTHONPATH: backend
+          ASSISTANT_PROVIDER: mock
+          TTS_PROVIDER: none
+          WEATHER_PROVIDER: none
+          STT_PROVIDER: none
+        run: |
+          mkdir -p outputs
+          .venv/bin/python -m unittest discover -s backend/tests -p 'test_task_*.py' -v
+          node scripts/test_task_phone.js
+          FRIDAY_TEST_PYTHON="$PWD/.venv/bin/python" node scripts/test_task_phone_service.js
