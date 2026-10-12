@@ -65,7 +65,7 @@ class LocalMusicRuntime:
     def persistent(self,view):
         return self.hub.peer_has_capability(view.device,view.websocket,'media_persistent_v1')
 
-    def suspend(self,device,websocket=None,new_overlay=False):
+    def suspend(self,device,websocket=None,new_overlay=False,preserve_other=False):
         bindings={}
         for view in list(self.views.values()):
             if view.device!=device or websocket is not None and view.websocket is not websocket:continue
@@ -75,7 +75,7 @@ class LocalMusicRuntime:
             view.suspended=True;view.signature=None;view.artwork_sent=None
             bindings[id(view.websocket)]={'media_request_id':view.request,'media_session_id':view.session,
                 'overlay_id':view.overlay,'media_sequence':view.sequence,'state':'suspend'}
-        if bindings:
+        if bindings and not preserve_other:
             self.artwork_generation+=1;self.cover=None;self.cover_status='unavailable';self._retire(self.artwork_task)
         if self.views and all(v.suspended for v in self.views.values()):
             self._retire(self.artwork_task)
@@ -114,6 +114,17 @@ class LocalMusicRuntime:
         bindings=self.suspend(device,new_overlay=protected) if priority else {}
         def decorate(websocket,packet):
             binding=bindings.get(id(websocket))
+            return dict(packet,media_overlay=binding) if binding else packet
+        return decorate
+
+    def interrupt_peer(self,device,websocket,message):
+        """Legacy stale delivery affects its own view, never current device work."""
+        kind=message.get('type');surface=message.get('surface')
+        protected=isinstance(surface,dict) and (surface.get('kind')=='reminder' or any(isinstance(a,dict) and str(a.get('id','')).startswith(('memyes:','memno:','reqcancel:')) for a in surface.get('actions',[])))
+        priority=kind in {'surface','agent.result','assistant.text'} or kind=='tool.activity' and message.get('status')=='working' or kind=='state' and message.get('state') in {'thinking','listening','speaking'}
+        bindings=self.suspend(device,websocket,new_overlay=protected,preserve_other=True) if priority else {}
+        def decorate(recipient,packet):
+            binding=bindings.get(id(recipient))
             return dict(packet,media_overlay=binding) if binding else packet
         return decorate
 

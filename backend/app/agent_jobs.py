@@ -13,6 +13,7 @@ from pathlib import Path
 from .agent import FridayAgent
 from .device_hub import DeviceHub
 from .models import AgentReply
+from .providers.local_policy import LocalModelUnavailable, LOCAL_FAILURE_MESSAGES
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,10 @@ class AgentJobStore:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def active_for(self, device_id):
+        with closing(self._connect()) as connection:
+            return connection.execute("SELECT 1 FROM agent_jobs WHERE device_id=? AND status IN ('queued','running') LIMIT 1", (device_id,)).fetchone() is not None
 
     def _initialize(self) -> None:
         with closing(self._connect()) as connection:
@@ -359,6 +364,7 @@ class AgentJobWorker:
         concurrency: int = 4,
     ) -> None:
         self.on_reply = None
+        self.on_finished = None
         self.store = store
         self.agent = agent
         self.hub = hub
@@ -367,6 +373,10 @@ class AgentJobWorker:
         self.concurrency = max(1, min(16, concurrency))
 
     async def _publish(self, job: AgentJob, reply: AgentReply) -> int:
+        with self.hub.experience.for_job(job.id):
+            return await self._publish_owned(job, reply)
+
+    async def _publish_owned(self, job: AgentJob, reply: AgentReply) -> int:
         if reply.surface.countdown_ms and reply.surface.deadline_at:
             remaining = int((reply.surface.deadline_at - datetime.now(timezone.utc)).total_seconds() * 1000)
             if remaining < 1000:
@@ -384,10 +394,11 @@ class AgentJobWorker:
         acknowledged_peers = await self.hub.broadcast(job.device_id, {
             "type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id,
             "status": "completed", "text": reply.text, "provider": reply.provider,
+            **({"retain_context":True} if reply.retain_context else {}),
             "surface": reply.surface.model_dump(mode="json")}, required_capability="result_ack")
         await self.hub.broadcast(
             job.device_id,
-            {"type": "surface", "surface": reply.surface.model_dump(mode="json")},
+            {"type": "surface", "surface": reply.surface.model_dump(mode="json"),**({"retain_context":True} if reply.retain_context else {})},
             excluded_capability="result_ack",
         )
         recipients = await self.hub.broadcast(
@@ -400,66 +411,75 @@ class AgentJobWorker:
             },
             excluded_capability="result_ack",
         )
-        if self.on_reply and job.delivery_attempted_at is None:
+        owned = not self.hub.has_capability(job.device_id, "experience_context_v1") or self.hub.experience.current.get(job.device_id) == self.hub.experience.origin.get()
+        if self.on_reply and job.delivery_attempted_at is None and owned:
             await self.on_reply(job.device_id, reply.text, job.id)
         if job.delivery_attempted_at is None:
             await self.hub.broadcast(job.device_id, {"type": "state", "state": "idle"}, excluded_capability="pcm_speech")
+        await self.hub.broadcast(job.device_id, {"type":"experience.finished"}, required_capability="experience_context_v1")
         return recipients + acknowledged_peers
 
     async def deliver_pending(self, device_id: str) -> int:
         delivered = 0
         for job in self.store.pending_results(device_id):
-            if not self.store.claim_result_delivery(
-                job.id, datetime.now(timezone.utc)
-            ):
-                continue
-            if self.hub.has_capability(device_id, "result_ack"):
-                self.store.require_result_ack(job.id)
-            acknowledged_peers = 0
-            if job.status in {"expired", "late", "failed"}:
-                text = "Friday could not complete that request." if job.status == "failed" else "That request is no longer current, so I discarded its result."
-                acknowledged_peers = await self.hub.broadcast(job.device_id, {"type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id, "status": job.status, "text": text, "surface": {"kind": "message", "title": "Request unavailable", "subtitle": text}}, required_capability="result_ack")
-            if job.status in {"expired", "late"}:
-                recipients = await self.hub.broadcast(
-                    job.device_id,
-                    {
-                        "type": "error",
-                        "code": "agent_stale",
-                        "message": "That request is no longer current, so I discarded its result.",
-                        "job_id": job.id,
-                    },
-                    excluded_capability="result_ack",
-                )
-                if job.delivery_attempted_at is None:
-                    await self.hub.broadcast(
-                        job.device_id, {"type": "state", "state": "idle"}
+            with self.hub.experience.for_job(job.id):
+                reason = (job.error or '').removeprefix('local-only:') if (job.error or '').startswith('local-only:') else ''
+                local_failure = LOCAL_FAILURE_MESSAGES.get(reason)
+                if not self.store.claim_result_delivery(
+                    job.id, datetime.now(timezone.utc)
+                ):
+                    continue
+                if self.hub.has_capability(device_id, "result_ack"):
+                    self.store.require_result_ack(job.id)
+                acknowledged_peers = 0
+                if job.status in {"expired", "late", "failed"}:
+                    text = (local_failure or "Friday could not complete that request.") if job.status == "failed" else "That request is no longer current, so I discarded its result."
+                    acknowledged_peers = await self.hub.broadcast(job.device_id, {"type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id, "status": job.status, "text": text, "surface": {"kind": "message", "title": "Local reasoning unavailable" if local_failure else "Request unavailable", "subtitle": text}}, required_capability="result_ack")
+                if job.status in {"expired", "late"}:
+                    recipients = await self.hub.broadcast(
+                        job.device_id,
+                        {
+                            "type": "error",
+                            "code": "agent_stale",
+                            "message": "That request is no longer current, so I discarded its result.",
+                            "job_id": job.id,
+                        },
+                        excluded_capability="result_ack",
                     )
-            elif job.status == "failed":
-                recipients = await self.hub.broadcast(
-                    job.device_id,
-                    {
-                        "type": "error",
-                        "code": "agent_failed",
-                        "message": "Friday could not complete that request.",
-                        "job_id": job.id,
-                    },
-                    excluded_capability="result_ack",
-                )
-                if job.delivery_attempted_at is None:
-                    await self.hub.broadcast(
-                        job.device_id, {"type": "state", "state": "idle"}
+                    if job.delivery_attempted_at is None:
+                        await self.hub.broadcast(
+                            job.device_id, {"type": "state", "state": "idle"}
+                        )
+                elif job.status == "failed":
+                    recipients = await self.hub.broadcast(
+                        job.device_id,
+                        {
+                            "type": "error",
+                            "code": "local_reasoning_unavailable" if local_failure else "agent_failed",
+                            "message": local_failure or "Friday could not complete that request.",
+                            "job_id": job.id,
+                        },
+                        excluded_capability="result_ack",
                     )
-            elif job.reply_json:
-                reply = AgentReply.model_validate(json.loads(job.reply_json))
-                recipients = await self._publish(job, reply)
-            else:
-                recipients = 0
-            if recipients + acknowledged_peers > 0:
-                # Mixed clients must still wait for an acknowledgement-capable UI.
-                if not self.hub.has_capability(device_id, "result_ack"):
-                    self.store.mark_result_delivered(job.id)
-                delivered += 1
+                    if job.delivery_attempted_at is None:
+                        await self.hub.broadcast(
+                            job.device_id, {"type": "state", "state": "idle"}
+                        )
+                elif job.reply_json:
+                    reply = AgentReply.model_validate(json.loads(job.reply_json))
+                    recipients = await self._publish(job, reply)
+                else:
+                    recipients = 0
+                if recipients + acknowledged_peers > 0:
+                    # Mixed clients must still wait for an acknowledgement-capable UI.
+                    if not self.hub.has_capability(device_id, "result_ack"):
+                        self.store.mark_result_delivered(job.id)
+                    delivered += 1
         return delivered
+
+    async def _handle_owned(self, job):
+        with self.hub.experience.for_job(job.id):
+            return await self.agent.handle(job.device_id, job.text, request_id=job.id)
 
     async def process_once(self) -> bool:
         self.store.expire_stale(max_age_seconds=self.max_age_seconds)
@@ -471,9 +491,20 @@ class AgentJobWorker:
             return False
         try:
             reply = await asyncio.wait_for(
-                self.agent.handle(job.device_id, job.text, request_id=job.id),
+                self._handle_owned(job),
                 timeout=self.timeout_seconds,
             )
+        except LocalModelUnavailable as error:
+            # Do not retry a known unavailable local model or obscure it behind a
+            # generic failure. Persist only a safe code, never provider payloads.
+            reason = error.reason if error.reason in LOCAL_FAILURE_MESSAGES else 'local_inference_failed'
+            self.store.fail(job, 'local-only:' + reason, max_attempts=1)
+            logger.warning('Local reasoning unavailable: %s', reason)
+            if job.device_id in self.hub.device_ids():
+                await self.deliver_pending(job.device_id)
+            if self.on_finished:
+                await self.on_finished(job.device_id)
+            return True
         except Exception as error:
             status = self.store.fail(job, str(error))
             if status == "failed":
@@ -484,11 +515,15 @@ class AgentJobWorker:
                 logger.warning(
                     "Agent job %s failed and will retry: %s", job.id, error
                 )
+            if self.on_finished:
+                await self.on_finished(job.device_id)
             return True
 
         self.store.complete(job.id, reply, max_age_seconds=self.max_age_seconds)
         if job.device_id in self.hub.device_ids():
             await self.deliver_pending(job.device_id)
+        if self.on_finished:
+            await self.on_finished(job.device_id)
         return True
 
     async def _run_slot(self) -> None:

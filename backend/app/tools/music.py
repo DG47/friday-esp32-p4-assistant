@@ -172,7 +172,7 @@ class MusicService:
                 {'time': 'Lyrics', 'label': self.lyrics.label()}],
             actions=actions, expires_ms=30000)
 
-    async def scene(self, device_id, action):
+    async def scene(self, device_id, action, *, allowed=None):
         async with self.lock:
             if action.startswith('musicctl:'):
                 entry = self.tokens.pop(action.split(':', 1)[1], None)
@@ -183,6 +183,8 @@ class MusicService:
                 if current.context != entry[2] or not self._allowed(current, command):
                     self.cache = current
                     return self._scene(device_id, current, 'Playback changed; refresh')
+                if allowed is not None and not allowed():
+                    return self._scene(device_id, current, 'Request no longer current; no command sent')
                 # Consumed token prevents repeated taps and replay. Never retry a mutation.
                 self.tokens.clear()
                 method = 'POST' if command in {'next', 'previous'} else 'PUT'

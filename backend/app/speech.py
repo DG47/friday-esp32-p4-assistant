@@ -60,6 +60,8 @@ class SpeechDirector:
 
     async def speak(self, device_id, text, job_id=None):
         async with self.control_lock(device_id):
+            if not self.presentation_current(device_id):
+                return
             if device_id in self.latest and self.latest[device_id] != job_id:
                 return
             await self._cancel_locked(device_id)
@@ -84,6 +86,8 @@ class SpeechDirector:
         try:
             async with self.synthesis_slots:
                 pcm = await asyncio.wait_for(self.provider.synthesize(text), 35)
+            if not self.presentation_current(device_id):
+                return
             if not pcm or len(pcm) > MAX_PCM_BYTES or len(pcm) % 2:
                 raise ValueError("Invalid synthesized PCM")
             logger.info("speech_playback_start device=%s bytes=%d sample_rate=24000", device_id, len(pcm))
@@ -117,6 +121,10 @@ class SpeechDirector:
                 self.tasks.pop(device_id, None)
             if not asyncio.current_task().cancelling():
                 await self.hub.broadcast(device_id, {"type": "state", "state": "idle"}, required_capability="pcm_speech")
+
+    def presentation_current(self, device_id):
+        experience = getattr(self.hub, "experience", None)
+        return not experience or not self.hub.has_capability(device_id, "experience_context_v1") or experience.origin.get() is not None and experience.current.get(device_id) == experience.origin.get()
 
     async def close(self):
         for device_id in list(self.tasks):

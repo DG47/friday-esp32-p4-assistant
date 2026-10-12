@@ -55,3 +55,10 @@ jobs:
         run: |
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/main -I firmware/tests/voice_stubs firmware/tests/test_echo.c firmware/main/friday_echo.c -o /tmp/friday-echo-test
           /tmp/friday-echo-test
+
+      - name: Native capture metadata and experience recovery guards
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror -I firmware/main firmware/tests/test_capture_metrics.c -lm -o /tmp/friday-capture-test
+          /tmp/friday-capture-test
+          cc -std=c11 -Wall -Wextra -Werror -I firmware/main -I /usr/include/cjson firmware/tests/test_experience_guard.c firmware/main/friday_experience_guard.c -lcjson -o /tmp/friday-experience-test
+          /tmp/friday-experience-test

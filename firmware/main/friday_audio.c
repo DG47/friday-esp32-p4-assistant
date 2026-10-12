@@ -4,6 +4,8 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include <string.h>
 
 #include "bsp/esp-bsp.h"
@@ -21,6 +23,7 @@
 #include "friday_ui.h"
 #include "friday_vad.h"
 #include "friday_echo.h"
+#include "friday_capture_metrics.h"
 #include "esp_timer.h"
 
 #define FRIDAY_AUDIO_SAMPLE_RATE 24000
@@ -40,6 +43,47 @@
 #define FRIDAY_AUDIO_MAX_RECORDING_FRAMES (12000 / FRIDAY_AUDIO_FRAME_MS)
 
 static const char *TAG = "friday_audio";
+typedef struct {
+    friday_capture_metrics_t metrics;
+    uint32_t wall_ms, sequence;
+    int64_t captured_us;
+} capture_diag_window_t;
+static QueueHandle_t capture_diag_queue;
+static TaskHandle_t capture_diag_task;
+static SemaphoreHandle_t capture_diag_lock;
+static char capture_diag_json[640];
+static int64_t capture_diag_captured_us;
+
+bool friday_audio_copy_capture_diagnostics(char *destination, size_t capacity)
+{
+    if (capture_diag_lock == NULL || xSemaphoreTake(capture_diag_lock, 0) != pdTRUE) return false;
+    int64_t age_ms = (esp_timer_get_time() - capture_diag_captured_us) / 1000;
+    bool available = capture_diag_captured_us > 0 && age_ms >= 0 && age_ms <= 3000;
+    int written = available ? snprintf(destination, capacity, "{\"age_ms\":%lu,%s",
+                                       (unsigned long)age_ms, capture_diag_json + 1) : -1;
+    xSemaphoreGive(capture_diag_lock);
+    return written > 0 && (size_t)written < capacity;
+}
+
+static void capture_diagnostics_task(void *argument)
+{
+    (void)argument;
+    capture_diag_window_t window;
+    while (true) {
+        if (xQueueReceive(capture_diag_queue, &window, portMAX_DELAY) == pdTRUE) {
+            char payload[sizeof(capture_diag_json)];
+            int written = friday_capture_format_json(payload, sizeof(payload),
+                &window.metrics, window.wall_ms, window.sequence);
+            if (written > 0 && (size_t)written < sizeof(payload) &&
+                xSemaphoreTake(capture_diag_lock, 0) == pdTRUE) {
+                memcpy(capture_diag_json, payload, (size_t)written + 1);
+                capture_diag_captured_us = window.captured_us;
+                xSemaphoreGive(capture_diag_lock);
+            }
+        }
+    }
+}
+
 static esp_codec_dev_handle_t microphone;
 
 /* Bounded PCM playback. The WebSocket callback collects one utterance; a
@@ -217,6 +261,9 @@ static void microphone_task(void *argument)
 
     friday_ui_set_surface("AMBIENT", "FRIDAY", "Say \"Friday\" or tap the orb");
 
+    friday_capture_metrics_t capture_metrics = {0};
+    int64_t metrics_started = esp_timer_get_time();
+    uint32_t metrics_sequence = 0;
     uint32_t frames = 0;
     uint32_t recording_frames = 0;
     uint32_t wake_vad_guard_frames = 0;
@@ -255,6 +302,7 @@ static void microphone_task(void *argument)
         for (size_t index = 0; index < FRIDAY_AUDIO_SAMPLES_PER_CHANNEL; ++index) {
             int32_t left = samples[index * FRIDAY_AUDIO_CHANNELS];
             int32_t right = samples[index * FRIDAY_AUDIO_CHANNELS + 1];
+            friday_capture_raw(&capture_metrics, left, right);
             int32_t raw_mono = (left + right) / 2;
             mono_sum_squares += (uint64_t)(raw_mono * raw_mono);
 
@@ -263,7 +311,9 @@ static void microphone_task(void *argument)
         int32_t mono_rms = (int32_t)sqrt(
             (double)mono_sum_squares / (double)FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
 
-        bool clean_capture=friday_echo_process(mono,esp_timer_get_time(),friday_audio_playing());
+        bool capture_playback = friday_audio_playing();
+        bool clean_capture=friday_echo_process(mono,esp_timer_get_time(),capture_playback);
+        friday_capture_stage(&capture_metrics, mono, FRIDAY_AUDIO_SAMPLES_PER_CHANNEL, 0);
         mono_sum_squares=0;
         for(size_t i=0;i<FRIDAY_AUDIO_SAMPLES_PER_CHANNEL;i++) {
             int32_t sample=mono[i];mono_sum_squares+=(uint64_t)(sample*sample);
@@ -271,10 +321,30 @@ static void microphone_task(void *argument)
         }
         mono_rms=(int32_t)sqrt((double)mono_sum_squares/FRIDAY_AUDIO_SAMPLES_PER_CHANNEL);
 
+        friday_capture_stage(&capture_metrics, mono, FRIDAY_AUDIO_SAMPLES_PER_CHANNEL, 1);
         for (size_t index = 0; index < FRIDAY_AUDIO_STREAM_SAMPLES; ++index) {
             int32_t filtered =
                 ((int32_t)mono[index * 2] + (int32_t)mono[index * 2 + 1]) / 2;
             mono[index] = (int16_t)filtered;
+        }
+
+        friday_capture_stage(&capture_metrics, mono, FRIDAY_AUDIO_STREAM_SAMPLES, 2);
+        bool recording = friday_backend_audio_active();
+        capture_metrics.frames++;
+        capture_metrics.clean_frames += clean_capture;
+        capture_metrics.playback_frames += capture_playback;
+        capture_metrics.recording_frames += recording;
+        if (capture_metrics.frames == 50) {
+            int64_t metrics_now = esp_timer_get_time();
+            capture_diag_window_t window = {
+                .metrics = capture_metrics,
+                .wall_ms = (uint32_t)((metrics_now - metrics_started) / 1000),
+                .sequence = ++metrics_sequence,
+                .captured_us = metrics_now,
+            };
+            if (capture_diag_queue != NULL) xQueueOverwrite(capture_diag_queue, &window);
+            capture_metrics = (friday_capture_metrics_t){0};
+            metrics_started = metrics_now;
         }
 
         if (!clean_capture) {
@@ -285,7 +355,6 @@ static void microphone_task(void *argument)
             friday_vad_begin_turn(&wake_vad);
             continue; /* Missing/unsafe reference never opens a wake window. */
         }
-        bool recording = friday_backend_audio_active();
         if (recording) {
             idle_audio_used = 0;
             wake_window = false;
@@ -395,8 +464,6 @@ static void microphone_task(void *argument)
             friday_ui_set_microphone("MICS ONLINE", peak, rms);
         }
         if ((frames % 50U) == 0U) {
-            ESP_LOGI(TAG, "Microphone 1s max=%ld current_rms=%ld",
-                     (long)interval_peak, (long)rms);
             interval_peak = 0;
         }
         frames++;
@@ -426,6 +493,19 @@ esp_err_t friday_audio_start(void)
         TAG, "Could not set microphone gain");
 
     friday_echo_init();
+    /* Latest-only fixed metadata handoff; capture never waits for logging. */
+    capture_diag_lock = xSemaphoreCreateMutex();
+    capture_diag_queue = capture_diag_lock ? xQueueCreate(1, sizeof(capture_diag_window_t)) : NULL;
+    if (capture_diag_queue != NULL &&
+        xTaskCreate(capture_diagnostics_task, "friday_capture_diag", 3072, NULL, 1, &capture_diag_task) != pdPASS) {
+        vQueueDelete(capture_diag_queue);
+        capture_diag_queue = NULL;
+    }
+    if (capture_diag_queue == NULL) {
+        if (capture_diag_lock != NULL) vSemaphoreDelete(capture_diag_lock);
+        capture_diag_lock = NULL;
+        ESP_LOGW(TAG, "Capture diagnostics unavailable");
+    }
     playback_lock = xSemaphoreCreateMutex();
     playback_queue = xQueueCreate(1, sizeof(playback_job_t));
     speaker = bsp_audio_codec_speaker_init();
@@ -440,6 +520,14 @@ esp_err_t friday_audio_start(void)
     }
     BaseType_t created = xTaskCreatePinnedToCore(
         microphone_task, "friday_mics", 8192, NULL, 6, NULL, 1);
+    if (created != pdPASS) {
+        if (capture_diag_task != NULL) vTaskDelete(capture_diag_task);
+        if (capture_diag_queue != NULL) vQueueDelete(capture_diag_queue);
+        if (capture_diag_lock != NULL) vSemaphoreDelete(capture_diag_lock);
+        capture_diag_lock = NULL;
+        capture_diag_task = NULL;
+        capture_diag_queue = NULL;
+    }
     ESP_RETURN_ON_FALSE(created == pdPASS, ESP_ERR_NO_MEM, TAG,
                         "Could not start microphone task");
     return ESP_OK;

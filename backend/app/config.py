@@ -21,9 +21,16 @@ class Settings(BaseSettings):
 
     assistant_env: Literal["development", "production", "test"] = "development"
     assistant_timezone: str = "America/New_York"
-    assistant_user_name: str = "Dhruv"
-    assistant_provider: Literal["auto", "mock", "ollama", "openai", "anthropic"] = "auto"
+    assistant_user_name: str = "User"
+    assistant_voice_diagnostic_only: bool = False
+    assistant_provider: Literal["auto", "mock", "ollama", "openai", "anthropic", "local-only"] = "auto"
     assistant_auto_provider_preference: Literal["openai", "anthropic"] = "openai"
+    assistant_report_telegram_enabled: bool = False
+    assistant_report_telegram_config_path: Path | None = None
+    assistant_reports_enabled: bool = False
+    assistant_reports_allow_real_projects: bool = False
+    assistant_reports_enrollment_path: Path | None = None
+    assistant_reports_validation_root: Path | None = None
     assistant_memory_enabled: bool = False
     assistant_database_path: Path = Path("data/friday.db")
     assistant_reminder_poll_seconds: float = 1.0
@@ -53,6 +60,7 @@ class Settings(BaseSettings):
     music_provider: Literal["none", "synthetic", "spotify"] = "none"
 
     music_account_access_approved: bool = False
+    music_conversation_enabled: bool = False
     music_credentials_path: Path = Path("data/disabled-spotify.json")
     music_timed_display_enabled: bool = False
     lyrics_metadata_sharing_approved: bool = False
@@ -87,10 +95,18 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_runtime(self):
         ZoneInfo(self.assistant_timezone)
+        if self.assistant_provider == 'local-only':
+            from .providers.local_policy import local_endpoint, local_model
+            self.ollama_base_url = local_endpoint(self.ollama_base_url)
+            local_model(self.ollama_model)
+            if self.tts_provider == 'openai':
+                raise ValueError('Local-only reasoning cannot enable paid speech; choose none or macos')
         if self.music_artwork_enabled and self.music_provider != 'spotify':
             raise ValueError('Artwork requires explicit Spotify account opt in')
         if self.music_provider == 'spotify' and not self.music_account_access_approved:
             raise ValueError('Spotify requires explicit account-access opt in')
+        if self.music_conversation_enabled and self.music_provider != 'spotify':
+            raise ValueError('Conversation playback requires approved Spotify access')
         if self.music_timed_display_enabled and (self.music_provider != 'spotify' or not self.lyrics_metadata_sharing_approved
             or not self.lyrics_client_identifier or len(self.lyrics_client_identifier)>200 or not self.lyrics_client_identifier.isascii()
             or any(ord(c)<32 or ord(c)==127 for c in self.lyrics_client_identifier)):

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from fastapi import WebSocket, WebSocketDisconnect
+from .experience import Experience, CAPABILITY, PRESENTATION
 
 
 def weather_packet(message: dict, now: datetime | None = None) -> dict:
@@ -15,6 +17,19 @@ def weather_packet(message: dict, now: datetime | None = None) -> dict:
     Called inside the existing peer send lock; it changes no ownership rules.
     """
     surface = message.get('surface')
+    if isinstance(surface, dict) and isinstance(surface.get('context'), dict):
+        context = dict(surface['context'])
+        for name in ('event', 'weather'):
+            remaining = 0
+            try:
+                lease = context[name+'_valid_ms']
+                deadline = datetime.fromisoformat(context[name+'_deadline_at'])
+                if deadline.tzinfo is not None and type(lease) is int and 0 <= lease <= 300000:
+                    remaining = max(0, min(lease, int((deadline-(now or datetime.now(timezone.utc))).total_seconds()*1000)))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass
+            context[name+'_valid_ms'] = remaining
+        return {**message, 'surface': {**surface, 'context': context}}
     if not isinstance(surface, dict) or surface.get('kind') != 'metric' or surface.get('title') != 'Weather':
         return message
     lease = surface.get('weather_valid_ms')
@@ -35,6 +50,7 @@ class DevicePeer:
     websocket: WebSocket
     capabilities: set[str] = field(default_factory=set)
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    key: str = field(default_factory=lambda: secrets.token_hex(16))
 
 
 class DeviceHub:
@@ -42,6 +58,8 @@ class DeviceHub:
         self.connections: dict[str, list[DevicePeer]] = defaultdict(list)
         self.send_timeout = send_timeout
         self.scene_observer = None
+        self.scene_peer_observer = None
+        self.experience = Experience()
 
     async def connect(self, device_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
@@ -53,6 +71,8 @@ class DeviceHub:
         websocket: WebSocket,
         capabilities: set[str] | None = None,
     ) -> None:
+        if capabilities and CAPABILITY in capabilities:
+            self.experience.session(device_id, reset=not self.connections.get(device_id))
         self.connections[device_id].append(
             DevicePeer(websocket, capabilities or set())
         )
@@ -87,6 +107,9 @@ class DeviceHub:
             for peer in self.connections.get(device_id, [])
         )
 
+    def peer_key(self, device_id, websocket):
+        return next((p.key for p in self.connections.get(device_id, []) if p.websocket is websocket), None)
+
     def device_ids(self) -> list[str]:
         return list(self.connections)
 
@@ -103,10 +126,13 @@ class DeviceHub:
     async def send_media(self,device_id,websocket,message,allowed) -> int:
         peer=next((p for p in self.connections.get(device_id,[]) if p.websocket is websocket),None)
         if peer is None:return 0
+        scoped = self.experience.envelope(device_id, message) if CAPABILITY in peer.capabilities else message
         async def send():
             async with peer.send_lock:
                 if not allowed():return 0
-                await peer.websocket.send_json(weather_packet(message))
+                packet = self.experience.for_peer(device_id, scoped, peer.key) if CAPABILITY in peer.capabilities else message
+                if packet is None:return 0
+                await peer.websocket.send_json(weather_packet(packet))
                 return 1
         try:return await asyncio.wait_for(send(),self.send_timeout)
         except (RuntimeError,WebSocketDisconnect,OSError,TimeoutError):
@@ -119,16 +145,37 @@ class DeviceHub:
         required_capability: str | None = None,
         excluded_capability: str | None = None,
     ) -> int:
-        decorate=self.scene_observer(device_id,message) if self.scene_observer else None
+        negotiated = self.has_capability(device_id, CAPABILITY)
+        scoped = self.experience.envelope(device_id, message) if negotiated else message
+        current = self.experience.current_packet(device_id, scoped)
+        historical = negotiated and (scoped.get("experience_historical") or ("experience_id" in scoped and not current))
+        decorate = None
+        observed = False
         async def send(peer: DevicePeer) -> int:
             try:
                 # Bound lock acquisition too: an unresponsive display must not stall
                 # reminder delivery or other devices. Serialize concurrent producers.
-                async def serialized_send() -> None:
+                async def serialized_send() -> int:
+                    nonlocal decorate, observed
                     async with peer.send_lock:
-                        await peer.websocket.send_json(weather_packet(decorate(peer.websocket,message) if decorate else message))
-                await asyncio.wait_for(serialized_send(), self.send_timeout)
-                return 1
+                        packet = self.experience.for_peer(device_id, scoped, peer.key) if CAPABILITY in peer.capabilities else message
+                        if packet is None:return 0
+                        # Observer creation mutates Media ownership too. It must
+                        # occur after the final freshness check, never while queued.
+                        stale = negotiated and not self.experience.current_packet(device_id, scoped) and scoped.get("type") in PRESENTATION
+                        legacy_stale = negotiated and CAPABILITY not in peer.capabilities and (historical or stale)
+                        if legacy_stale:
+                            peer_observer = self.scene_peer_observer
+                            if peer_observer:packet=peer_observer(device_id,peer.websocket,message)(peer.websocket,packet)
+                        if self.scene_observer and not historical and not stale and not observed:
+                            decorate = self.scene_observer(device_id, message)
+                            observed = True
+                        if decorate and not packet.get("experience_historical"):
+                            decorated=decorate(peer.websocket,packet)
+                            packet=decorated
+                        await peer.websocket.send_json(weather_packet(packet))
+                        return 1
+                return await asyncio.wait_for(serialized_send(), self.send_timeout)
             except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError):
                 self.disconnect(device_id, peer.websocket)
                 return 0

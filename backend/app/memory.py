@@ -45,6 +45,11 @@ class MemoryStore:
         with closing(self.connect()) as db:
             return db.execute("SELECT token FROM memory_confirmations WHERE owner=? AND status='pending' LIMIT 1",(owner,)).fetchone() is not None
 
+    def pending_token(self, owner):
+        with closing(self.connect()) as db:
+            row = db.execute("SELECT token FROM memory_confirmations WHERE owner=? AND status='pending' LIMIT 1", (owner,)).fetchone()
+            return row['token'] if row else None
+
     def confirmation_resolved(self, owner, token):
         with closing(self.connect()) as db:
             row=db.execute("SELECT status FROM memory_confirmations WHERE owner=? AND token=?",(owner,token)).fetchone()

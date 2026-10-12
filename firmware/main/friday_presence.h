@@ -9,3 +9,5 @@ void friday_presence_set_compact(lv_obj_t *object, bool compact);
 
 /* One bounded cue for an actual tool completion. */
 void friday_presence_complete(lv_obj_t *object);
+
+void friday_presence_set_material(lv_obj_t *object, bool material);

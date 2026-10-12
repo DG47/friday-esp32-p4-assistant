@@ -4,6 +4,7 @@ from .anthropic_provider import AnthropicProvider
 from .base import TextProvider
 from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
+from .local_policy import local_endpoint, local_model
 from ..config import Settings
 
 
@@ -13,6 +14,12 @@ class ProviderRouter:
 
     def select(self, prompt: str) -> TextProvider | None:
         requested = self.settings.assistant_provider
+        if requested == 'local-only':
+            # Revalidate at selection too: runtime mutation cannot enable escape.
+            if self.settings.tts_provider == 'openai':
+                raise ValueError('Local-only cannot enable paid speech')
+            return OllamaProvider(local_endpoint(self.settings.ollama_base_url),
+                                  local_model(self.settings.ollama_model), local_only=True)
         if requested == "mock":
             return None
 
