@@ -38,6 +38,9 @@ void app_main(void)
 
     ESP_ERROR_CHECK(bsp_display_lock(-1) ? ESP_OK : ESP_ERR_TIMEOUT);
     friday_ui_create();
+#if CONFIG_FRIDAY_EXPERIENCE_CONTEXT
+    friday_ui_experience_preview(true);
+#endif
     bsp_display_unlock();
 
     ESP_LOGI(TAG, "Friday display online; touch the orb to activate the backend");

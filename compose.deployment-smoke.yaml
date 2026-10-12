@@ -1,0 +1,31 @@
+# Synthetic only. No .env, credentials, public ports or external network.
+# Builds the production Dockerfile only when its prerequisites are available.
+services:
+  smoke:
+    build: ./backend
+    image: friday-deployment-smoke:local
+    network_mode: none
+    user: "10001:10001"
+    init: true
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    environment:
+      ASSISTANT_ENV: test
+      ASSISTANT_DATABASE_PATH: /app/data/synthetic.db
+      ASSISTANT_PROVIDER: mock
+      STT_PROVIDER: none
+      TTS_PROVIDER: none
+      WEATHER_PROVIDER: none
+      MUSIC_PROVIDER: none
+      CALENDAR_PROVIDER: none
+      PYTHONPATH: /app:/app/tests
+    volumes:
+      - deployment-smoke-data:/app/data
+      - ./scripts/backup_database.py:/scripts/backup_database.py:ro
+      - ./scripts/deployment_smoke.py:/scripts/deployment_smoke.py:ro
+    command: [python, -m, unittest, test_deployment_speech, test_deployment_restore, test_deployment_process_smoke, test_worker_contract, -v]
+volumes:
+  deployment-smoke-data:

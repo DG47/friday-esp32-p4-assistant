@@ -128,7 +128,7 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         tool_result = provider.requests[1]["messages"][-1]
         self.assertEqual(tool_result["role"], "tool")
         self.assertIn('"events"', tool_result["content"])
-        self.assertIn("Dhruv", provider.requests[0]["instructions"])
+        self.assertIn(self.settings.assistant_user_name, provider.requests[0]["instructions"])
 
     async def test_model_history_is_available_on_the_next_turn(self):
         first_provider = FakeToolProvider([ProviderTurn(text="Your next event is the interview.")])

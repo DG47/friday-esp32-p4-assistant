@@ -1,0 +1,12 @@
+**
+!Dockerfile
+!requirements.txt
+!requirements.linux-arm64.lock
+!app/
+!app/**
+!tests/
+!tests/**
+**/__pycache__
+**/*.pyc
+**/*.db
+**/.env*

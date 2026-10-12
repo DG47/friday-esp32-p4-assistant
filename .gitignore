@@ -16,3 +16,10 @@ work/
 # Private Google OAuth client and refresh-token storage
 data/google-calendar/
 client_secret*.json
+
+# Protected state/credentials and machine-specific validation output
+*.db-wal
+*.db-shm
+bot-token
+telegram.json
+evidence/

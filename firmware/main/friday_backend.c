@@ -29,6 +29,8 @@
 
 static const char *TAG = "friday_backend";
 static bool scene_action_pending;
+static char scene_action_request[40];
+static portMUX_TYPE scene_action_lock = portMUX_INITIALIZER_UNLOCKED;
 extern const char friday_backend_ca_pem_start[] asm("_binary_friday_backend_ca_pem_start");
 #define FRIDAY_AUDIO_SEND_TIMEOUT_MS 1000
 #define FRIDAY_IDLE_AUDIO_SEND_TIMEOUT_MS 2000
@@ -269,8 +271,33 @@ static bool resume_media(void)
 {
     if(!backend_ready)return false;
     cJSON *root=friday_ui_media_resume_request();if(!root)return false;
-    char *payload=cJSON_PrintUnformatted(root);bool sent=payload&&send_text(payload,pdMS_TO_TICKS(250))>=0;
+    char request[40];snprintf(request,sizeof(request),"%08lx%08lx%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random());cJSON_AddStringToObject(root,"request_id",request);
+    char *payload=cJSON_PrintUnformatted(root);if(payload)friday_ui_experience_request(request);bool sent=payload&&send_text(payload,pdMS_TO_TICKS(250))>=0;
+    if(!sent)friday_ui_experience_send_failed(request);
     cJSON_free(payload);cJSON_Delete(root);friday_ui_media_resume_sent(sent);return sent;
+}
+/* Protect the short latch/identity update across UI and receive tasks.
+ * Never hold this critical section across allocation, display or transport. */
+static bool scene_action_is_pending(void)
+{
+    portENTER_CRITICAL(&scene_action_lock);
+    bool pending=scene_action_pending;
+    portEXIT_CRITICAL(&scene_action_lock);
+    return pending;
+}
+static bool scene_action_begin(const char *request)
+{
+    portENTER_CRITICAL(&scene_action_lock);
+    bool available=!scene_action_pending;
+    if(available){snprintf(scene_action_request,sizeof(scene_action_request),"%s",request);scene_action_pending=true;}
+    portEXIT_CRITICAL(&scene_action_lock);
+    return available;
+}
+static void scene_action_clear(const char *request)
+{
+    portENTER_CRITICAL(&scene_action_lock);
+    if(!request||!strcmp(request,scene_action_request)){scene_action_pending=false;scene_action_request[0]=0;}
+    portEXIT_CRITICAL(&scene_action_lock);
 }
 bool friday_backend_scene_action(const char *action)
 {
@@ -282,7 +309,7 @@ bool friday_backend_scene_action(const char *action)
     /* Navigation pauses the source-owned view; an authenticated overlay binds it. */
     if(!strcmp(action,"dismiss"))friday_ui_media_clear();
     bool mutation = strncmp(action,"reqcancel:",10) == 0 || strncmp(action, "snooze:", 7) == 0 || strncmp(action, "complete:", 9) == 0 || strncmp(action, "cancel:", 7) == 0 || strncmp(action,"musicctl:",9) == 0;
-    if (mutation && scene_action_pending) {
+    if (mutation && scene_action_is_pending()) {
         return true;
     }
     cJSON *message = cJSON_CreateObject();
@@ -293,19 +320,22 @@ bool friday_backend_scene_action(const char *action)
     snprintf(request_id, sizeof(request_id), "%08lx%08lx%08lx%08lx",
              (unsigned long)esp_random(), (unsigned long)esp_random(),
              (unsigned long)esp_random(), (unsigned long)esp_random());
-    if (media_action) friday_ui_media_begin(request_id);
     cJSON_AddStringToObject(message, "type", "scene.action");
     cJSON_AddStringToObject(message, "action", action);
     cJSON_AddStringToObject(message, "request_id", request_id);
     char *encoded = cJSON_PrintUnformatted(message);
+    if(encoded){friday_ui_experience_request(request_id);if(media_action)friday_ui_media_begin(request_id);}
+    /* Publish before transport: the receive task can answer during send_text. */
+    if(encoded&&mutation&&!scene_action_begin(request_id)) {
+        friday_ui_experience_send_failed(request_id);if(media_action)friday_ui_media_send_failed(request_id);cJSON_free(encoded);cJSON_Delete(message);return true;
+    }
     bool sent = encoded != NULL && send_text(encoded, pdMS_TO_TICKS(250)) >= 0;
+    if(!sent&&mutation)scene_action_clear(request_id);
     cJSON_free(encoded);
     cJSON_Delete(message);
+    if (!sent)friday_ui_experience_send_failed(request_id);
     if (!sent && media_action) friday_ui_media_send_failed(request_id);
     if(sent)friday_ui_media_note_action(action);
-    if (sent && mutation) {
-        scene_action_pending = true;
-    }
     return sent;
 }
 
@@ -323,173 +353,48 @@ static void handle_surface(const cJSON *surface)
     friday_ui_set_scene(surface);
 }
 
-static char accepted_results[64][33];
-static unsigned int accepted_result_index;
-
-static void handle_agent_result(const cJSON *root)
+/* A rejection resolves only the admitted, authenticated pending request.
+ * The UI receiver has already checked epoch, sequence and provisional owner;
+ * backend peer routing keeps another display's reply off this connection. */
+static void resolve_scene_action(const cJSON *root, friday_ui_receive_result_t received)
 {
-    const char *delivery_id = json_string(root, "delivery_id");
-    const char *job_id = json_string(root, "job_id");
-    const char *text = json_string(root, "text");
-    const char *status = json_string(root, "status");
-    const cJSON *surface = cJSON_GetObjectItemCaseSensitive(root, "surface");
-    if (delivery_id == NULL || strlen(delivery_id) != 32 || strspn(delivery_id, "0123456789abcdef") != 32 ||
-        job_id == NULL || job_id[0] == '\0' || strlen(job_id) > 128 || text == NULL || !cJSON_IsObject(surface) ||
-        status == NULL || (strcmp(status, "completed") && strcmp(status, "failed") && strcmp(status, "expired") && strcmp(status, "late"))) return;
-    bool duplicate = false;
-    for (int index = 0; index < 64; index++) {
-        if (strcmp(accepted_results[index], delivery_id) == 0) { duplicate = true; break; }
+    if(!received.accepted)return;
+    const char *type=json_string(root,"type");
+    if(!strcmp(type,"experience.rejected")) {
+        const char *request=json_string(root,"experience_id");
+        if(request&&request[0])scene_action_clear(request);
     }
-    if (!duplicate) {
-        if (!friday_ui_set_scene(surface) || !friday_ui_set_response(text)) return;
-        memcpy(accepted_results[accepted_result_index++ % 64], delivery_id, 33);
-        scene_action_pending = false;
-    }
-    cJSON *ack = cJSON_CreateObject();
-    if (ack == NULL) return;
-    cJSON_AddStringToObject(ack, "type", "result.ack");
-    cJSON_AddStringToObject(ack, "job_id", job_id);
-    cJSON_AddStringToObject(ack, "delivery_id", delivery_id);
-    char *payload = cJSON_PrintUnformatted(ack);
-    if (payload != NULL) { send_text(payload, pdMS_TO_TICKS(250)); free(payload); }
-    cJSON_Delete(ack);
-    if(!duplicate)friday_ui_media_overlay_completed(root);
+    else if(received.completed)scene_action_clear(NULL);
 }
 
 static void handle_message(const char *payload)
 {
-    cJSON *root = cJSON_Parse(payload);
-    if (root == NULL) {
-        ESP_LOGW(TAG, "Ignoring malformed backend message");
-        return;
+    cJSON *root=cJSON_Parse(payload);if(!root)return;
+    const char *type=json_string(root,"type");if(!type){cJSON_Delete(root);return;}
+    friday_ui_receive_result_t received=friday_ui_receive(root,audio_active,friday_audio_playing());
+    if(received.ack){send_text(received.ack,pdMS_TO_TICKS(250));free(received.ack);}
+    if(!received.accepted){cJSON_Delete(root);return;}
+    resolve_scene_action(root,received);
+    if(!strcmp(type,"ready")) {
+        backend_ready=true;scene_action_clear(NULL);reconnect_failures=0;
+        if(persist_backend_uri&&friday_wifi_set_backend_uri(backend_uri)==ESP_OK)persist_backend_uri=false;
+        send_text("{\"type\":\"wake.start\"}",pdMS_TO_TICKS(1000));
+    } else if(!strncmp(type,"speech.",7))friday_audio_speech_message(root);
+    else if(!strcmp(type,"wake.detected"))wake_requested=true;
+    else if(!strcmp(type,"state")||!strcmp(type,"surface")) {
+        if(friday_state_get()==FRIDAY_STATE_IDLE&&friday_ui_media_overlay_needs_resume())resume_media();
+    } else if(!strcmp(type,"reminder.alert")) {
+        const cJSON *id=cJSON_GetObjectItemCaseSensitive(root,"reminder_id");
+        if(cJSON_IsNumber(id)) {
+            pending_reminder_id=id->valueint;const cJSON *surface=cJSON_GetObjectItemCaseSensitive(root,"surface");const cJSON *expires=cJSON_GetObjectItemCaseSensitive(surface,"expires_ms");
+            int ms=cJSON_IsNumber(expires)&&expires->valueint>=5000&&expires->valueint<=300000?expires->valueint:60000;
+            if(reminder_expiry_timer){esp_timer_stop(reminder_expiry_timer);esp_timer_start_once(reminder_expiry_timer,(uint64_t)ms*1000U);}
+        }
+    } else if(!strncmp(type,"identity.",9)) {
+        if(clear_device_token())xTaskCreate(restart_after_identity_change,"friday_identity_restart",2048,NULL,5,NULL);
+    } else if(!strcmp(type,"error")&&!strcmp(json_string(root,"code")?json_string(root,"code"):"","pairing_required")) {
+        char message[32];snprintf(message,sizeof(message),"Pairing code: %.4s-%.4s",device_token,device_token+4);friday_ui_set_surface("PAIRING","Friday",message);
     }
-
-    const char *type = json_string(root, "type");
-    if (type == NULL) {
-        cJSON_Delete(root);
-        return;
-    }
-    ESP_LOGI(TAG, "Received backend message: %s", type);
-
-    if(friday_ui_handle_notice(root)){scene_action_pending=false;cJSON_Delete(root);return;}
-    friday_ui_media_prepare_overlay(root);
-    if(!strcmp(type,"media.resume.result")){friday_ui_media_resume_result(root);cJSON_Delete(root);return;}
-    if (!friday_ui_media_suspended() && (strcmp(type,"agent.result") == 0 || strcmp(type,"reminder.alert") == 0 ||
-        strcmp(type,"assistant.text") == 0 || strcmp(type,"error") == 0 ||
-        (strcmp(type,"state") == 0 && json_string(root,"state") != NULL &&
-         strcmp(json_string(root,"state"),"idle") != 0) ||
-        (strcmp(type,"tool.activity") == 0 && json_string(root,"status") != NULL &&
-         strcmp(json_string(root,"status"),"working") == 0))) friday_ui_media_clear();
-    if (strcmp(type, "agent.result") == 0) {
-        handle_agent_result(root);
-    } else if (strncmp(type, "speech.", 7) == 0) {
-        friday_audio_speech_message(root);
-    } else if (strcmp(type, "ready") == 0) {
-        backend_ready = true;
-        scene_action_pending = false;
-        reconnect_failures = 0;
-        if (persist_backend_uri) {
-            if (friday_wifi_set_backend_uri(backend_uri) == ESP_OK) {
-                persist_backend_uri = false;
-                ESP_LOGI(TAG, "Saved authenticated backend endpoint");
-            } else {
-                ESP_LOGW(TAG, "Could not save authenticated backend endpoint");
-            }
-        }
-        friday_ui_set_backend("FRIDAY ONLINE");
-        friday_ui_set_state(parse_state(json_string(root, "state")));
-        if(friday_ui_media_visible())friday_ui_set_response("Connected. Refresh Music for current playback.");
-        else {handle_surface(cJSON_GetObjectItemCaseSensitive(root,"surface"));friday_ui_set_response("Say Friday or touch the light. Hold for local views.");}
-        if (send_text("{\"type\":\"wake.start\"}", pdMS_TO_TICKS(1000)) < 0) {
-            ESP_LOGW(TAG, "Could not start Friday wake detection");
-        }
-    } else if (strcmp(type, "state") == 0) {
-        friday_state_t next = parse_state(json_string(root, "state"));
-        if (!(next == FRIDAY_STATE_SPEAKING && !friday_audio_playing()) && !audio_active) friday_ui_set_state(next);
-        if(next==FRIDAY_STATE_IDLE&&friday_ui_media_overlay_needs_resume())resume_media();
-    } else if (strcmp(type, "wake.detected") == 0) {
-        wake_requested = true;
-    } else if (strcmp(type, "reminder.alert") == 0) {
-        const cJSON *reminder_id = cJSON_GetObjectItemCaseSensitive(
-            root, "reminder_id");
-        const cJSON *surface = cJSON_GetObjectItemCaseSensitive(root, "surface");
-        handle_surface(surface);
-        friday_ui_set_response(json_string(root, "text"));
-        friday_ui_set_state(FRIDAY_STATE_ALERT);
-        if (cJSON_IsNumber(reminder_id)) {
-            pending_reminder_id = reminder_id->valueint;
-            int expires_ms = 60000;
-            const cJSON *expires = cJSON_IsObject(surface)
-                                       ? cJSON_GetObjectItemCaseSensitive(surface, "expires_ms")
-                                       : NULL;
-            if (cJSON_IsNumber(expires) && expires->valueint >= 5000 &&
-                expires->valueint <= 300000) {
-                expires_ms = expires->valueint;
-            }
-            if (reminder_expiry_timer != NULL) {
-                esp_timer_stop(reminder_expiry_timer);
-                esp_timer_start_once(reminder_expiry_timer,
-                                     (uint64_t)expires_ms * 1000U);
-            }
-        }
-    } else if (strcmp(type, "identity.rotate") == 0 ||
-               strcmp(type, "identity.revoked") == 0) {
-        if (clear_device_token()) {
-            friday_ui_set_backend(strcmp(type, "identity.rotate") == 0
-                                      ? "FRIDAY ROTATING IDENTITY"
-                                      : "FRIDAY IDENTITY REVOKED");
-            xTaskCreate(restart_after_identity_change, "friday_identity_restart",
-                        2048, NULL, 5, NULL);
-        } else {
-            ESP_LOGE(TAG, "Could not clear device identity");
-        }
-    } else if (strcmp(type, "surface") == 0) {
-        if (cJSON_HasObjectItem(root,"media_request_id") || cJSON_HasObjectItem(root,"media_session_id") || cJSON_HasObjectItem(root,"media_sequence")) {
-            if (friday_ui_set_media(root)) scene_action_pending = false;
-        } else {
-            handle_surface(cJSON_GetObjectItemCaseSensitive(root,"surface"));
-            friday_ui_media_overlay_completed(root);
-            if(friday_state_get()==FRIDAY_STATE_IDLE&&friday_ui_media_overlay_needs_resume())resume_media();
-        }
-    } else if (strcmp(type, "assistant.text") == 0) {
-        scene_action_pending = false;
-        const char *text = json_string(root, "text");
-        ESP_LOGI(TAG, "Rendering assistant response (%u bytes)",
-                 text != NULL ? (unsigned int)strlen(text) : 0);
-        friday_ui_set_response(text);
-    } else if (strcmp(type, "tool.activity") == 0) {
-        friday_ui_set_tool(json_string(root, "name"), json_string(root, "status"));
-    } else if (strcmp(type, "error") == 0) {
-        scene_action_pending = false;
-        const char *code = json_string(root, "code");
-        if (code != NULL && strcmp(code, "speech_unavailable") == 0) {
-            friday_ui_set_backend("VOICE UNAVAILABLE — TEXT READY");
-            friday_ui_set_state(FRIDAY_STATE_IDLE);
-            cJSON_Delete(root);
-            return;
-        }
-        cJSON *recovery = friday_error_scene(code);
-        if (recovery != NULL) {
-            friday_ui_set_state(FRIDAY_STATE_IDLE);
-            friday_ui_set_scene(recovery);
-            cJSON_Delete(recovery);
-            cJSON_Delete(root);
-            return;
-        }
-        /* Alert state installs a generic message, so apply it before the
-         * specific error surface rather than overwriting the useful detail. */
-        friday_ui_set_state(FRIDAY_STATE_ALERT);
-        if (code != NULL && strcmp(code, "pairing_required") == 0) {
-            char pairing_message[32];
-            snprintf(pairing_message, sizeof(pairing_message),
-                     "Pairing code: %.4s-%.4s", device_token, device_token + 4);
-            friday_ui_set_surface("PAIRING", "FRIDAY", pairing_message);
-            ESP_LOGW(TAG, "Pairing required; code shown on the physical display");
-        } else {
-            friday_ui_set_surface("ERROR", "Friday", json_string(root, "message"));
-        }
-    }
-
     cJSON_Delete(root);
 }
 
@@ -540,8 +445,9 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             "{\"type\":\"hello\",\"protocol\":1,"
             "\"device_token\":\"%s\","
             "\"capabilities\":[\"display\",\"touch\",\"microphone\","
-            "\"reminder_ack\",\"identity_rotate\",\"result_ack\",\"media_updates_v1\",\"media_artwork_v1\",\"media_persistent_v1\"%s]}",
-            device_token, friday_audio_speaker_ready() ? ",\"pcm_speech\"" : "");
+            "\"reminder_ack\",\"identity_rotate\",\"result_ack\",\"media_updates_v1\",\"media_artwork_v1\",\"media_persistent_v1\"%s%s]}",
+            device_token, friday_audio_speaker_ready() ? ",\"pcm_speech\"" : "",
+            friday_ui_experience_enabled()?",\"experience_context_v1\"":"");
         ESP_LOGI(TAG, "Connected to Friday backend");
         friday_ui_set_backend("FRIDAY AUTHENTICATING");
         if (hello_length <= 0 || (size_t)hello_length >= sizeof(hello) ||
@@ -551,6 +457,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         break;
     }
     case WEBSOCKET_EVENT_DISCONNECTED:
+        friday_ui_experience_session(NULL);
         friday_ui_media_clear();
         backend_ready = false;
         audio_active = false;
@@ -720,15 +627,16 @@ bool friday_backend_begin_audio(const char *source)
     }
 
     friday_audio_stop_speech();
-    const char *activation =
-        source != NULL && strcmp(source, "wake_word") == 0
-            ? "{\"type\":\"activate\",\"source\":\"wake_word\"}"
-            : "{\"type\":\"activate\",\"source\":\"touch\"}";
+    char request[40],activation[160];
+    snprintf(request,sizeof(request),"%08lx%08lx%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random());
+    snprintf(activation,sizeof(activation),"{\"type\":\"activate\",\"source\":\"%s\",\"request_id\":\"%s\"}",source&&!strcmp(source,"wake_word")?"wake_word":"touch",request);
+    friday_ui_experience_request(request);
     const char audio_start[] =
         "{\"type\":\"audio.start\",\"format\":\"pcm_s16le\","
         "\"sample_rate\":12000,\"channels\":1}";
     if (send_text(activation, pdMS_TO_TICKS(250)) < 0 ||
         send_text(audio_start, pdMS_TO_TICKS(250)) < 0) {
+        friday_ui_experience_send_failed(request);
         ESP_LOGW(TAG, "Could not send %s activation",
                  source != NULL ? source : "touch");
         return false;
@@ -798,7 +706,16 @@ void friday_backend_end_audio(void)
         return;
     }
     audio_active = false;
-    const char audio_end[] = "{\"type\":\"audio.end\"}";
+    char audio_end[768];
+    const char *prefix = "{\"type\":\"audio.end\",\"capture_diag\":";
+    size_t prefix_length = strlen(prefix);
+    memcpy(audio_end, prefix, prefix_length);
+    if (friday_audio_copy_capture_diagnostics(audio_end + prefix_length,
+                                             sizeof(audio_end) - prefix_length - 1)) {
+        strcat(audio_end, "}");
+    } else {
+        strcpy(audio_end, "{\"type\":\"audio.end\"}");
+    }
     if (send_text(audio_end, pdMS_TO_TICKS(500)) < 0) {
         ESP_LOGW(TAG, "Could not finish audio turn");
         return;
