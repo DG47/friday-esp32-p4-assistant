@@ -21,7 +21,7 @@ jobs:
           TTS_PROVIDER: none
           WEATHER_PROVIDER: none
           STT_PROVIDER: none
-        run: python -m unittest discover -s backend/tests -v
+        run: timeout --signal=SIGABRT --kill-after=10s 120s python -X faulthandler -m unittest discover -s backend/tests -v
       - name: Synthetic real-loopback Spotify callback regression
         run: python scripts/test_spotify_loopback.py
       - name: Python syntax and whitespace
