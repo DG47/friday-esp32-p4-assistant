@@ -113,6 +113,8 @@ class ReportStore(TaskStore):
                 if not stat.S_ISREG(state.st_mode) or state.st_nlink!=1 or state.st_uid!=os.getuid() or state.st_mode & 0o077:raise ValueError('Private regular single-link state file required')
         finally:os.close(parent)
         super().__init__(path,**kwargs)
+        with self.db() as db:
+            db.execute('CREATE TABLE IF NOT EXISTS report_device_stops(device TEXT NOT NULL,owner TEXT NOT NULL,task TEXT NOT NULL,generation INTEGER NOT NULL,PRIMARY KEY(device,owner,task))')
     def prune(self,owner,retention_seconds=7*86400):
         return 0  # Retain report/effect evidence; capacity requires deliberate local maintenance.
     def executor_digest(self):return digest({'task_store':super().executor_digest(),'report_module':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'limits':LIMITS,'artifact_identity':self.artifact_identity})
@@ -129,10 +131,12 @@ class ReportStore(TaskStore):
         task.update(state='awaiting_approval',nonce=secrets.token_hex(16),expires_at=self.clock()+300,
                     scope={'executor':'project-report-v1','project':self.projects[fixture].alias,'manifest':manifest,'original_digest':digest(manifest),'executor_digest':self.executor_digest(),'sections':task['report_plan']['sections'],'operations':['read_enrolled_files','render_report','verify_report'],'writes':'One exclusive report file in enrolled private artifact root; durable task/evidence database','commands':False,'network':False,'publish':False,'models':False,'limits':LIMITS,'grant_seconds':300,'planner':task['report_plan']['provenance']})
         task['scope_digest']=digest(task['scope'])
-    def stop(self,owner,task_id,action_id):
+    def stop(self,owner,task_id,action_id,*,expected_generation=None,device_id=None):
+        if device_id is not None:short(device_id,'device',64)
         with self.db() as db:
             task=self._get(db,owner,task_id)
             if self._action(db,owner,action_id,{'op':'stop','task':task_id},task_id):return task
+            if expected_generation is not None and task['generation']!=expected_generation:raise ValueError('Task control superseded')
             if task['state'] in TERMINAL:return task
             task.update(generation=task['generation']+1,nonce=None)
             if task['state']=='planning':
@@ -142,6 +146,8 @@ class ReportStore(TaskStore):
                 task['state']='stopping';message='Stop requested; admitted local work must drain before stopped.'
             else:
                 task['state']='stopped';message='Stopped before execution admission.'
+            if device_id is not None:
+                db.execute('INSERT OR REPLACE INTO report_device_stops VALUES(?,?,?,?)',(device_id,owner,task_id,task['generation']))
             self._save(db,owner,task,message,'stop');return task
     def begin_plan(self,owner,task_id):
         with self.db() as db:

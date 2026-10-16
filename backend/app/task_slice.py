@@ -83,10 +83,11 @@ class TaskStore:
         """Finish admitted storage work off-loop even if its caller is cancelled."""
         job=asyncio.create_task(asyncio.to_thread(operation,*args,**kwargs))
         try:
-            return await asyncio.shield(job)
+            await asyncio.wait({job})  # Cancellation never propagates into admitted I/O.
+            return job.result()
         except asyncio.CancelledError:
             while not job.done():
-                try: await asyncio.shield(job)
+                try: await asyncio.wait({job})
                 except asyncio.CancelledError: continue
             # Retrieve errors; cancellation remains the caller-visible outcome.
             if not job.cancelled(): job.exception()

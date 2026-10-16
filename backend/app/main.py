@@ -41,7 +41,7 @@ from .tools.music_runtime import MusicInteractionPending
 from .speech import SpeechDirector
 from .speech_provider import create_speech_provider, speech_availability
 from .scene_diagnostics import log_scene_action
-from .report_runtime import create_report_runtime
+from .report_runtime import create_report_runtime, ReportStopPending
 
 
 settings = get_settings()
@@ -290,6 +290,8 @@ async def handle_utterance(
             speech.latest[device_id] = None
             await speech.cancel(device_id)
             return report_job
+    if report_runtime is not None and await report_runtime.mutation_blocked(device_id):
+        raise ReportStopPending()
     job = job_store.enqueue(device_id, text, request_id=request_id)
     if job.status not in {"queued", "running"}:
         # Idempotency returns the old row; terminal replay must not claim a new
@@ -697,12 +699,10 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             if action.startswith('reportstop:'):
                                 if report_runtime is None:raise ValueError('Project reports are disabled')
                                 if hub.experience.origin.get() is None or not hub.peer_has_capability(device_id,websocket,CAPABILITY) or not hub.peer_has_capability(device_id,websocket,'result_ack'):raise ValueError('Negotiated report request identity required')
-                                await report_runtime.stop(device_id,action)
-                                if not report_can_present(device_id):
-                                    await send_error(websocket,'interaction_pending','Report Stop requested; finish the protected interaction before viewing its state.')
-                                    continue
-                                await claim_scene_navigation(device_id)
-                                await report_runtime.recover(device_id)
+                                observation=await report_runtime.stop(device_id,action)
+                                # Do not follow a bounded observer with unbounded DB
+                                # recovery, or replace an unrelated protected view.
+                                await send_error(websocket,observation.code,observation.message)
                                 continue
                             negotiated = hub.peer_has_capability(device_id, websocket, CAPABILITY)
                             if negotiated:

@@ -26,9 +26,12 @@ class ReportContext:
         return Surface(kind='artifact',title='Project report',subtitle='State: '+task['state'],items=items,actions=actions,expires_ms=30000)
     def ask(self,device,task_id,turn_id,text):
         return self.store.conversation(self.owner(device),task_id,turn_id,'LCD',text)
-    def stop(self,device,token):
+    def stop_grant(self,device,token):
         grant=self.tokens.get(token);owner=self.owner(device)
         if not grant or grant['device']!=device or grant['owner']!=owner or time.time()>=grant['expires']:raise ValueError('Task control expired')
-        task=self.store.get(owner,grant['task'])
+        return dict(grant)
+    def stop(self,device,token):
+        grant=self.stop_grant(device,token)
+        task=self.store.get(grant['owner'],grant['task'])
         if task['generation']!=grant['generation']:raise ValueError('Task control superseded')
-        return self.store.stop(owner,task['id'],token)
+        return self.store.stop(grant['owner'],grant['task'],token,expected_generation=grant['generation'],device_id=device)

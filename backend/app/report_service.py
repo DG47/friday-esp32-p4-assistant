@@ -9,7 +9,7 @@ class ReportService:
     def __init__(self,store,planner,transport,*,enabled=False):
         self.store,self.planner,self.transport,self.enabled=store,planner,transport,enabled
         self.owners=sorted({grant.owner for grant in store.projects.values()})
-        self.fd=None;self.lock=asyncio.Lock()
+        self.fd=None;self.lock=asyncio.Lock();self.active={}
     async def start(self):
         if not self.enabled:raise ValueError('Report service is disabled')
         if self.fd is not None:raise ValueError('Already started')
@@ -27,6 +27,23 @@ class ReportService:
             release=getattr(self.transport,'release_consumer_guard',None)
             if release is not None:release()
             self.fd=None;os.close(fd);raise
+    async def _run_owned(self,owner,task_id,operation):
+        key=(owner,task_id)
+        runner=asyncio.create_task(operation,name='friday-report-owned-work')
+        self.active[key]=runner
+        def finished(task):
+            if self.active.get(key) is task:self.active.pop(key,None)
+            if not task.cancelled():task.exception()
+        runner.add_done_callback(finished)
+        try:
+            return await asyncio.shield(runner)
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling():
+                runner.cancel()
+                raise
+            return False  # Child Stop cancellation must not kill the supervisor.
+    def runner(self,owner,task_id):
+        return self.active.get((owner,task_id))
     async def tick(self):
         if self.fd is None:raise ValueError('Supervisor not started')
         async with self.lock:
@@ -34,14 +51,14 @@ class ReportService:
                 tasks=await self.store.io(self.store.list,owner)
                 for task in tasks:
                     if task['state']=='awaiting_planning':
-                        await self.planner.propose(owner,task['id'])
+                        await self._run_owned(owner,task['id'],self.planner.propose(owner,task['id']))
                         current=await self.store.io(self.store.get,owner,task['id'])
                         if self.transport is not None and current.get('delivery_binding'):
                             try:await self.transport.notify(owner,task['id'])
                             except ValueError:pass
                         return True
                     if task['state']=='queued':
-                        await ReportWorker(self.store,owner).run(task['id'])
+                        await self._run_owned(owner,task['id'],ReportWorker(self.store,owner).run(task['id']))
                         current=await self.store.io(self.store.get,owner,task['id'])
                         if self.transport is not None and current.get('delivery_binding'):
                             try:await self.transport.notify(owner,task['id'])
@@ -53,6 +70,8 @@ class ReportService:
             return False
     async def close(self):
         async with self.lock:
+            if self.active:
+                await asyncio.gather(*(asyncio.shield(task) for task in list(self.active.values())),return_exceptions=True)
             if self.fd is not None:
                 fd,self.fd=self.fd,None
                 fcntl.flock(fd,fcntl.LOCK_UN);os.close(fd)
