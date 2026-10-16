@@ -20,7 +20,7 @@ def observed_read_prose(name, outcome):
         return 'Weather: ' + (outcome.surface.subtitle if outcome.surface else 'Reading unavailable.')
     parts = []
     for reading in readings:
-        label = weather_display_name(reading['location'])
+        label = weather_display_name(reading['location']) + ' (ZIP ' + reading['location'] + ')'
         if not reading.get('ok'):
             parts.append(f'{label}: weather unavailable.')
             continue
