@@ -13,6 +13,7 @@ from pathlib import Path
 from .agent import FridayAgent
 from .device_hub import DeviceHub
 from .models import AgentReply
+from .execution_authority import execution_scope
 from .providers.local_policy import LocalModelUnavailable, LOCAL_FAILURE_MESSAGES
 
 
@@ -69,6 +70,49 @@ class AgentJobStore:
                 (device_id, UNCERTAIN_CLAIM_ERROR),
             ).fetchone() is not None
 
+    def claim_current(self, job):
+        with closing(self._connect()) as connection:
+            return connection.execute(
+                "SELECT 1 FROM agent_jobs WHERE id=? AND device_id=? AND result_delivery_id=? AND attempts=? AND status='running' AND (error IS NULL OR error!=?)",
+                (job.id,job.device_id,job.delivery_id,job.attempts,UNCERTAIN_CLAIM_ERROR),
+            ).fetchone() is not None
+
+    def request_execution_stop(self, device, job_id, incarnation, stop_id):
+        timestamp=datetime.now(timezone.utc).isoformat()
+        with closing(self._connect()) as connection, connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row=connection.execute('SELECT * FROM agent_jobs WHERE id=? AND device_id=? AND result_delivery_id=?',(job_id,device,incarnation)).fetchone()
+            if row is None:raise ValueError('Execution target is unavailable or changed')
+            prior=connection.execute('SELECT response FROM execution_stops WHERE device=? AND job=? AND incarnation=?',(device,job_id,incarnation)).fetchone()
+            if prior:return json.loads(prior[0])
+            never_admitted=row['status']=='queued' and row['attempts']==0
+            revoked=row['status'] in {'queued','running'}
+            if never_admitted:
+                connection.execute("UPDATE agent_jobs SET status='failed',error='user_stop_before_admission',lease_expires_at=NULL,updated_at=? WHERE id=?",(timestamp,job_id))
+                state='stopped_before_admission'
+            elif revoked:
+                connection.execute("UPDATE agent_jobs SET status='running',error=?,updated_at=? WHERE id=?",(UNCERTAIN_CLAIM_ERROR,timestamp,job_id))
+                state='outcome_uncertain'
+            elif row['status'] in {'completed','failed','expired','late'}:state='already_terminal'
+            else:raise ValueError('Execution state is unavailable')
+            result={'id':job_id,'execution_id':incarnation,'state':state,'generation':int(revoked),'no_execution_admitted':never_admitted}
+            connection.execute('INSERT INTO execution_stops VALUES(?,?,?,?,?,?)',(device,job_id,incarnation,stop_id,json.dumps(result),timestamp))
+            return result
+
+    def execution_recovery(self, device):
+        with closing(self._connect()) as connection:
+            row=connection.execute("SELECT id,result_delivery_id FROM agent_jobs WHERE device_id=? AND status='running' AND error=? ORDER BY created_at,id LIMIT 1",(device,UNCERTAIN_CLAIM_ERROR)).fetchone()
+            return {'job_id':row['id'],'execution_id':row['result_delivery_id']} if row else None
+
+    def execution_status(self, device, job_id, incarnation):
+        with closing(self._connect()) as connection:
+            row=connection.execute('SELECT status,error FROM agent_jobs WHERE id=? AND device_id=? AND result_delivery_id=?',(job_id,device,incarnation)).fetchone()
+            if row is None:raise ValueError('Execution target is unavailable or changed')
+            stop=connection.execute('SELECT response FROM execution_stops WHERE device=? AND job=? AND incarnation=?',(device,job_id,incarnation)).fetchone()
+            return {'job_status':row['status'],'authority_revoked':bool(stop and json.loads(stop[0])['generation']),
+                    'outcome_uncertain':row['status']=='running' and row['error']==UNCERTAIN_CLAIM_ERROR,
+                    'no_execution_admitted':row['error']=='user_stop_before_admission'}
+
     def active_for(self, device_id):
         with closing(self._connect()) as connection:
             return connection.execute("SELECT 1 FROM agent_jobs WHERE device_id=? AND status IN ('queued','running') LIMIT 1", (device_id,)).fetchone() is not None
@@ -112,6 +156,7 @@ class AgentJobStore:
                     connection.execute(
                         "ALTER TABLE agent_jobs ADD COLUMN result_attempted_at TEXT"
                     )
+                connection.execute("CREATE TABLE IF NOT EXISTS execution_stops(device TEXT NOT NULL,job TEXT NOT NULL,incarnation TEXT NOT NULL,stop_id TEXT NOT NULL,response TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(device,job,incarnation))")
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS agent_jobs_claimable "
                     "ON agent_jobs(status, available_at, created_at, device_id)"
@@ -408,6 +453,7 @@ class AgentJobStore:
         cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=7)).isoformat()
         with closing(self._connect()) as connection:
             with connection:
+                connection.execute("DELETE FROM execution_stops WHERE NOT EXISTS (SELECT 1 FROM agent_jobs WHERE agent_jobs.id=execution_stops.job AND agent_jobs.device_id=execution_stops.device AND agent_jobs.result_delivery_id=execution_stops.incarnation)")
                 cursor = connection.execute(
                     "DELETE FROM agent_jobs WHERE status IN ('completed', 'failed', 'expired', 'late') "
                     "AND (created_at < ? OR id IN (SELECT id FROM agent_jobs "
@@ -492,6 +538,8 @@ class AgentJobWorker:
             with self.hub.experience.for_job(job.id):
                 reason = (job.error or '').removeprefix('local-only:') if (job.error or '').startswith('local-only:') else ''
                 local_failure = LOCAL_FAILURE_MESSAGES.get(reason)
+                stopped_before = job.error == 'user_stop_before_admission'
+                stop_text = 'Stopped before execution admission. No operation from this request was started.' if stopped_before else None
                 if not self.store.claim_result_delivery(
                     job.id, datetime.now(timezone.utc)
                 ):
@@ -500,8 +548,8 @@ class AgentJobWorker:
                     self.store.require_result_ack(job.id)
                 acknowledged_peers = 0
                 if job.status in {"expired", "late", "failed"}:
-                    text = (local_failure or "Friday could not complete that request.") if job.status == "failed" else "That request is no longer current, so I discarded its result."
-                    acknowledged_peers = await self.hub.broadcast(job.device_id, {"type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id, "status": job.status, "text": text, "surface": {"kind": "message", "title": "Local reasoning unavailable" if local_failure else "Request unavailable", "subtitle": text}}, required_capability="result_ack")
+                    text = (stop_text or local_failure or "Friday could not complete that request.") if job.status == "failed" else "That request is no longer current, so I discarded its result."
+                    acknowledged_peers = await self.hub.broadcast(job.device_id, {"type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id, "status": job.status, "text": text, "surface": {"kind": "message", "title": "Stopped before admission" if stopped_before else "Local reasoning unavailable" if local_failure else "Request unavailable", "subtitle": text}}, required_capability="result_ack")
                 if job.status in {"expired", "late"}:
                     recipients = await self.hub.broadcast(
                         job.device_id,
@@ -523,7 +571,7 @@ class AgentJobWorker:
                         {
                             "type": "error",
                             "code": "local_reasoning_unavailable" if local_failure else "agent_failed",
-                            "message": local_failure or "Friday could not complete that request.",
+                            "message": stop_text or local_failure or "Friday could not complete that request.",
                             "job_id": job.id,
                         },
                         excluded_capability="result_ack",
@@ -545,7 +593,7 @@ class AgentJobWorker:
         return delivered
 
     async def _handle_owned(self, job):
-        with self.hub.experience.for_job(job.id):
+        with execution_scope(lambda:self.store.claim_current(job)), self.hub.experience.for_job(job.id):
             return await self.agent.handle(job.device_id, job.text, request_id=job.id)
 
     async def process_once(self) -> bool:
