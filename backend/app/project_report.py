@@ -129,10 +129,11 @@ class ReportStore(TaskStore):
         task.update(state='awaiting_approval',nonce=secrets.token_hex(16),expires_at=self.clock()+300,
                     scope={'executor':'project-report-v1','project':self.projects[fixture].alias,'manifest':manifest,'original_digest':digest(manifest),'executor_digest':self.executor_digest(),'sections':task['report_plan']['sections'],'operations':['read_enrolled_files','render_report','verify_report'],'writes':'One exclusive report file in enrolled private artifact root; durable task/evidence database','commands':False,'network':False,'publish':False,'models':False,'limits':LIMITS,'grant_seconds':300,'planner':task['report_plan']['provenance']})
         task['scope_digest']=digest(task['scope'])
-    def stop(self,owner,task_id,action_id):
+    def stop(self,owner,task_id,action_id,*,expected_generation=None):
         with self.db() as db:
             task=self._get(db,owner,task_id)
             if self._action(db,owner,action_id,{'op':'stop','task':task_id},task_id):return task
+            if expected_generation is not None and task['generation']!=expected_generation:raise ValueError('Task control superseded')
             if task['state'] in TERMINAL:return task
             task.update(generation=task['generation']+1,nonce=None)
             if task['state']=='planning':

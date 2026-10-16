@@ -15,14 +15,22 @@ from .report_telegram import ReportTelegramTransport
 from .report_telegram_production import attach_configured_telegram
 from .task_slice import digest
 from .experience import CAPABILITY
+from .stop_observer import StopObserver
+from .agent_jobs import JobAdmissionError
 
 TERMINAL={'ready_for_review','failed','stopped','uncertain'}
+
+class ReportStopPending(JobAdmissionError):
+    code='report_stop_unresolved'
+    def __init__(self):
+        super().__init__('Report Stop outcome unresolved. No new work started; read report status or recovery on the Mac.')
+
 
 class ReportRuntime:
     def __init__(self,store,planner,device_owners,hub,authorized,can_present):
         self.store,self.planner,self.hub=store,planner,hub
         self.bridge=ReportContext(store,device_owners);self.authorized,self.can_present=authorized,can_present
-        self.service=ReportService(store,planner,None,enabled=True);self.transport=None
+        self.service=ReportService(store,planner,None,enabled=True);self.transport=None;self.stop_observer=StopObserver();self.stop_tasks={}
         self.origins={};self.sent={};self.stop_event=asyncio.Event();self.ready=False;self.delivery_task=None
         with store.db() as db:
             db.executescript('CREATE TABLE IF NOT EXISTS report_device_views(device TEXT PRIMARY KEY,owner TEXT NOT NULL,task TEXT NOT NULL); CREATE TABLE IF NOT EXISTS report_device_deliveries(device TEXT NOT NULL,owner TEXT NOT NULL,task TEXT NOT NULL,revision INTEGER NOT NULL,delivery TEXT NOT NULL UNIQUE,acked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(device,task,revision));')
@@ -97,6 +105,7 @@ class ReportRuntime:
         if not request_id or origin is None:raise ValueError('Report request_id required')
         if not any(peer.key==origin.peer and {CAPABILITY,'result_ack'}<=peer.capabilities for peer in self.hub.connections.get(device,[])):raise ValueError('Report device requires experience_context_v1 and result_ack')
         if command=='report':
+            if await self.mutation_blocked(device):raise ReportStopPending()
             if len(words)!=3:raise ValueError('Use report PROJECT GOAL with a locally enrolled alias')
             task=await self.store.io(self.store.create,owner,'device:'+digest({'device':device,'request':request_id}),words[2],words[1])
             await self._attach_delivery(owner,task['id'])
@@ -115,9 +124,36 @@ class ReportRuntime:
         task=await self.store.io(self._view,device)
         if not task:return False
         await self.subscribe(device,task['id']);await self.publish(device,force=True);return True
+    async def mutation_blocked(self,device):
+        if device not in self.bridge.device_owners:return False
+        owner=self.owner(device)
+        keys=[key for key in self.stop_tasks if key[:2]==(owner,device)]
+        for key in keys:
+            attempt=self.stop_observer.attempts.get(key)
+            if attempt is None:continue
+            persistence,observation,_=attempt
+            if not persistence.done() or not observation.done():return True
+            task=await self.store.io(self.store.get,owner,self.stop_tasks[key])
+            if task['state'] in {'running','planning','stopping','uncertain'}:return True
+        # Restart has no observer tasks; retain the existing explicit device view's
+        # durable quarantine instead of inferring that absence means drained.
+        def quarantined_view():
+            with self.store.db(write=False) as db:
+                row=db.execute('SELECT task FROM report_device_views WHERE device=? AND owner=?',(device,owner)).fetchone()
+                return bool(row and self.store._get(db,owner,row[0])['state'] in {'stopping','uncertain'})
+        return await self.store.io(quarantined_view)
     async def stop(self,device,token):
-        self.owner(device);task=await self.store.io(self.bridge.stop,device,token)
-        return task
+        owner=self.owner(device)
+        key=(owner,device,token)
+        if key in self.stop_observer.attempts:
+            return await self.stop_observer.request(key,None,None,None)
+        grant=self.bridge.stop_grant(device,token)
+        self.stop_tasks={k:v for k,v in self.stop_tasks.items() if k in self.stop_observer.attempts}
+        self.stop_tasks[key]=grant['task']
+        async def persist():
+            return await self.store.io(self.bridge.stop,device,token)
+        return await self.stop_observer.request(key,grant['generation'],persist,
+            lambda:self.service.runner(owner,grant['task']))
     def _packet(self,device,task):
         owner=self.owner(device);surface=self.bridge.scene(device,task['id']).model_dump(mode='json')
         text='Project report '+task['id']+'. State: '+task['state']+'. '+task['events'][-1]['message']
@@ -164,6 +200,7 @@ class ReportRuntime:
         finally:
             self.ready=False
             if delivery:delivery.cancel();await asyncio.gather(delivery,return_exceptions=True)
+            await self.stop_observer.close()
             await self.service.close()
 
 async def create_report_runtime(settings,hub,authorized,can_present):

@@ -78,3 +78,14 @@ thinking state. A route regression covers ACK and subsequent Reminders navigatio
 preserving one timer, attempt and delivery identity. Historical result redaction remains;
 no old result is rebound as current. This addresses the owner's concrete retry failure,
 not a hard deadline for cancellation-resistant handlers or broad factual-model reliability.
+
+
+## Separate bounded report Stop observer candidate
+
+The report server can observe durable revocation for1s and handler drainage for250ms,
+returning explicit unconfirmed/stopping information while retaining tasks and quarantined
+bytes.649 aggregate tests pass, including8 resistant/failure/restart/authority cases.
+See bounded-report-stop-observer.md. This is not a full Stop SLO: existing synchronous
+pairing authorization, peer delivery, disconnected-client pending UI, generic worker Stop
+and physical/native/remote termination remain architectural/acceptance gaps. No report,
+Telegram, bot, real project, identity bridge or permission is activated.
