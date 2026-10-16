@@ -51,3 +51,10 @@ admission instead of showing work as accepted behind an unresolved claim. No mar
 cleared or effect replayed. Text/voice/controller regressions cover this boundary; see
 uncertain-task-recovery.md. Throughput remains deliberately blocked until private owner
 reconciliation; this is not universal cancellation or automatic task completion.
+
+
+The same admission candidate rejects terminal request-ID replay before claiming busy/
+thinking state. A route regression covers ACK and subsequent Reminders navigation while
+preserving one timer, attempt and delivery identity. Historical result redaction remains;
+no old result is rebound as current. This addresses the owner's concrete retry failure,
+not a hard deadline for cancellation-resistant handlers or broad factual-model reliability.

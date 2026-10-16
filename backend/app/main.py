@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .agent import FridayAgent
 from .conversation_media import ConversationMedia
-from .agent_jobs import AgentJobStore, AgentJobWorker, UncertainExecutionPending
+from .agent_jobs import AgentJobStore, AgentJobWorker, JobAdmissionError, CompletedRequestReplay
 from .audio_session import AudioSession, AudioSessionError
 from .config import get_settings
 from .providers.local_policy import LocalModelUnavailable
@@ -291,6 +291,10 @@ async def handle_utterance(
             await speech.cancel(device_id)
             return report_job
     job = job_store.enqueue(device_id, text, request_id=request_id)
+    if job.status not in {"queued", "running"}:
+        # Idempotency returns the old row; terminal replay must not claim a new
+        # busy/thinking presentation with no worker left to finish it.
+        raise CompletedRequestReplay()
     hub.experience.bind_job(device_id, job.id)
     await claim_scene_navigation(device_id)
     speech.latest[device_id] = job.id
@@ -884,8 +888,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                         {"type": "error", "code": "interaction_pending", "message": message}, websocket)
                                 else:
                                     await send_error(websocket, "interaction_pending", message)
-                        except UncertainExecutionPending as error:
-                            await send_error(websocket, "execution_outcome_uncertain", str(error))
+                        except JobAdmissionError as error:
+                            await send_error(websocket, error.code, str(error))
                         except ValueError:
                             await send_error(websocket, "bad_action", "Action is unavailable or invalid; refresh the scene")
                         finally:
@@ -948,7 +952,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                 request_id=request_id,
                             )
                         except ValueError as error:
-                            code = "execution_outcome_uncertain" if isinstance(error, UncertainExecutionPending) else "request_conflict"
+                            code = error.code if isinstance(error, JobAdmissionError) else "request_conflict"
                             await send_error(websocket, code, str(error))
                     elif message_type == "reminder.ack":
                         if not hub.peer_has_capability(
@@ -1033,8 +1037,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                 await handle_utterance(device_id, text)
                             else:
                                 await handle_utterance(device_id, text, request_id=voice_request_id)
-                        except UncertainExecutionPending as error:
-                            await send_error(websocket, "execution_outcome_uncertain", str(error))
+                        except JobAdmissionError as error:
+                            await send_error(websocket, error.code, str(error))
                     else:
                         await send_error(
                             websocket, "bad_message", f"Unsupported message type: {message_type}"

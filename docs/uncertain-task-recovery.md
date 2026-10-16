@@ -25,3 +25,22 @@ is added. This preserves the conservative single-worker guarantee; process loss 
 marker persistence, remote effects and multiworker scheduling remain outside universal
 protection. No schema or firmware change is required. Exact-head tests/CI belong in the
 PR; actual physical reconnect/voice acceptance remains with the coordinating owner.
+
+
+## Terminal request replay and presentation liveness
+
+The runtime owner's controlled restart/ACK reproduction found that retrying a completed
+request ID retained one timer and one attempt, but the handler still claimed new
+thinking/busy state. No worker remained to finish that row, so Reminders navigation
+was rejected as interaction_pending. The source route regression reproduces acceptance
+on the old handler and exercises the repaired route with actual WebSocket admission,
+result ACK and subsequent Reminders navigation.
+
+A terminal row returned by idempotent enqueue is now rejected before binding presentation,
+claiming navigation, cancelling speech or sending thinking/job.accepted. Completed,
+failed and expired rows cannot be presented as newly executing work. The fixed response
+states that no action was repeated and a new request is needed; it does not rebind an
+old result as current. Stored timer/deadline/result/delivery identity and one attempt
+are preserved. Existing durable ACK/reconnect delivery remains independent. Typed
+admission errors are caught for text, touch and voice so this refusal does not close
+the socket. This removes a false busy state rather than clearing a genuine running job.

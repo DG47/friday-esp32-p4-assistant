@@ -1,5 +1,7 @@
 """Restarted uncertain jobs are visible, never accepted as new executable work."""
 from contextlib import closing
+from datetime import datetime,timedelta,timezone
+from app.models import AgentReply,Surface
 from pathlib import Path
 import tempfile
 import unittest
@@ -76,3 +78,37 @@ class UncertainSocket(unittest.TestCase):
                     self.assertEqual(socket.receive_json().get('code'),'bad_message')
                     with closing(self.job_store._connect()) as db:
                         self.assertEqual(db.execute('SELECT COUNT(*) FROM agent_jobs').fetchone()[0],1)
+
+    def test_completed_replay_does_not_claim_busy_or_block_reminders(self):
+        from app import main
+        device='completed-replay'
+        timer=self.reminder_store.create('Original synthetic timer',datetime.now(timezone.utc)+timedelta(minutes=2),device,'original-timer')
+        job=self.job_store.enqueue(device,'set a timer for 2 minutes',request_id='completed-request')
+        claim=self.job_store.claim_next()
+        self.job_store.complete(job.id,AgentReply(text='Original synthetic timer result',surface=Surface(kind='timer',title='Timer',deadline_at=timer.due_at,countdown_ms=120000)),claim=claim)
+        before=self.job_store.get(job.id)
+        def receive_until(socket,kinds):
+            for _ in range(24):
+                packet=socket.receive_json()
+                if packet['type'] in kinds:return packet
+            self.fail('Expected '+str(kinds))
+        with patch.object(main.agent.memory,'store',None):
+            with TestClient(app) as client:
+                with client.websocket_connect('/ws/device/'+device) as socket:
+                    self.assertEqual(socket.receive_json()['type'],'hello.required')
+                    token='a'*64;self.credential_store.open_pairing_window(device,token[:8])
+                    socket.send_json({'type':'hello','capabilities':[CAPABILITY,'result_ack'],'device_token':token})
+                    receive_until(socket,{'ready'})
+                    socket.send_json({'type':'utterance','text':job.text,'request_id':job.id})
+                    packet=receive_until(socket,{'experience.rejected','job.accepted','error'})
+                    self.assertEqual(packet.get('code'),'request_already_finished')
+                    self.assertNotIn(device,main.local_music.busy)
+                    socket.send_json({'type':'result.ack','job_id':job.id,'delivery_id':before.delivery_id})
+                    socket.send_json({'type':'scene.action','action':'reminders','request_id':'fresh-reminders'})
+                    packet=receive_until(socket,{'surface','experience.rejected','error'})
+                    self.assertEqual(packet['type'],'surface')
+                    self.assertIn('reminders',packet['surface']['title'].lower())
+                    self.assertEqual(len(self.reminder_store.active(device)),1)
+                    after=self.job_store.get(job.id)
+                    self.assertEqual(after.attempts,1);self.assertEqual(after.status,'completed')
+                    self.assertEqual(after.delivery_id,before.delivery_id)

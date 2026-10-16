@@ -34,7 +34,20 @@ class AgentJob:
     delivery_attempted_at: str | None = None
 
 
-class UncertainExecutionPending(ValueError):
+class JobAdmissionError(ValueError):
+    code = "request_conflict"
+
+
+class CompletedRequestReplay(JobAdmissionError):
+    code = "request_already_finished"
+
+    def __init__(self):
+        super().__init__("That request already finished. No action was repeated. Start a new request to continue.")
+
+
+class UncertainExecutionPending(JobAdmissionError):
+    code = "execution_outcome_uncertain"
+
     def __init__(self):
         super().__init__("A previous action has an unconfirmed outcome. No new work was started. Review the outcome on the Mac before retrying; it will not be replayed automatically.")
 
