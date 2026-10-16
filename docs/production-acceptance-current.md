@@ -51,3 +51,14 @@ clock/unit, false empty Calendar and invented Weather after tool calls. This can
 replaces final Calendar/Weather paraphrases with observed source facts and passes 626
 aggregate tests. See observed-read-prose.md. This improves the supported read boundary;
 prior general real-model factual failures and no-tool synthesis remain unresolved.
+
+
+## Same-device restart-intent candidate
+
+The controlled restart regression reproduces loss of the selected Calendar/Weather ZIP
+relation on main. The candidate persists only bounded opaque resume intent in the local
+SQLite store and forces fresh Calendar/Weather reads before facts are displayed. See
+context-restart-checkpoints.md for TTL, privacy, source-change and rollback rules. This
+repairs the same authenticated device relation, not merging different Mac/device
+identities or reviving approval/tasks/screens. General seamless workspace acceptance
+and actual model/device routing remain open.

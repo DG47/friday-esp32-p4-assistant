@@ -176,7 +176,18 @@ class WeatherTouchTests(unittest.TestCase):
                         second.send_json({'type':'scene.action','action':newer_action,'request_id':'new-navigation'})
                         newer=receive_surface(second)
                         self.assertEqual(newer['type'],'surface')
-                        self.assertEqual(receive_surface(first)['surface'],newer['surface'])
+                        first_surface=receive_surface(first)['surface']
+                        second_surface=newer['surface']
+                        if newer_action=='weather':
+                            # Leases are rebound independently at actual peer send
+                            # time. Content and absolute expiry must match, while
+                            # remaining milliseconds can legitimately differ.
+                            first_surface=dict(first_surface);second_surface=dict(second_surface)
+                            for surface in (first_surface,second_surface):
+                                lease=surface.pop('weather_valid_ms')
+                                self.assertGreater(lease,0)
+                                self.assertLessEqual(lease,300000)
+                        self.assertEqual(first_surface,second_surface)
                         boundary=len(observed)
                         release.set()
                         # FIFO on the first authenticated peer is a completion
