@@ -5,7 +5,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
-from app.agent_jobs import AgentJobStore, AgentJobWorker, UNCERTAIN_CLAIM_ERROR
+from app.agent_jobs import AgentJobStore, AgentJobWorker, UNCERTAIN_CLAIM_ERROR, UncertainExecutionPending
 from app.db import ReminderStore
 from app.device_hub import DeviceHub
 from app.models import AgentReply, Surface
@@ -145,7 +145,8 @@ class ClaimOwnershipTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(AgentJobStore(self.path).recover_interrupted(datetime.now(timezone.utc)+timedelta(days=1)), 0)
             self.assertTrue(any(m.get('code')=='execution_outcome_uncertain' for m in socket.messages))
             self.assertFalse(any(m.get('type')=='agent.result' and m.get('status')=='completed' for m in socket.messages))
-            self.store.enqueue('device', 'another synthetic request')
+            with self.assertRaises(UncertainExecutionPending):
+                self.store.enqueue('device', 'another synthetic request')
             self.assertFalse(await worker.process_once())
         finally:
             release.set()

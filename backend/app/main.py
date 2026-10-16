@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .agent import FridayAgent
 from .conversation_media import ConversationMedia
-from .agent_jobs import AgentJobStore, AgentJobWorker
+from .agent_jobs import AgentJobStore, AgentJobWorker, UncertainExecutionPending
 from .audio_session import AudioSession, AudioSessionError
 from .config import get_settings
 from .providers.local_policy import LocalModelUnavailable
@@ -322,7 +322,7 @@ async def send_error(websocket: WebSocket, code: str, message: str) -> None:
 
 
 def recovery_pending(device_id):
-    return bool(store.pending_confirmation(device_id) or agent.memory.store is not None and agent.memory.store.pending_confirmation(device_id))
+    return bool(job_store.uncertain_for(device_id) or store.pending_confirmation(device_id) or agent.memory.store is not None and agent.memory.store.pending_confirmation(device_id))
 
 
 def recover_protected(device_id):
@@ -341,6 +341,10 @@ def recover_protected(device_id):
         return Surface(kind="message", title="Confirmation required",
             subtitle=pending.summary + "\nSay yes to continue, or cancel this exact request.",
             actions=[SurfaceAction(id="reqcancel:"+hashlib.sha256(pending.id.encode()).hexdigest()[:24], label="Cancel request")])
+    if job_store.uncertain_for(device_id):
+        return Surface(kind="message", title="Outcome unconfirmed",
+            subtitle="A previous action may still have taken effect. It was not replayed. Review its outcome on the Mac before sending more work; closing this view does not resolve it.",
+            expires_ms=30000)
     return Surface(kind="message", title="Nothing awaiting review",
         subtitle="No request needs your confirmation.", actions=[SurfaceAction(id="dismiss", label="Back")])
 
@@ -880,6 +884,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                         {"type": "error", "code": "interaction_pending", "message": message}, websocket)
                                 else:
                                     await send_error(websocket, "interaction_pending", message)
+                        except UncertainExecutionPending as error:
+                            await send_error(websocket, "execution_outcome_uncertain", str(error))
                         except ValueError:
                             await send_error(websocket, "bad_action", "Action is unavailable or invalid; refresh the scene")
                         finally:
@@ -942,7 +948,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                 request_id=request_id,
                             )
                         except ValueError as error:
-                            await send_error(websocket, "request_conflict", str(error))
+                            code = "execution_outcome_uncertain" if isinstance(error, UncertainExecutionPending) else "request_conflict"
+                            await send_error(websocket, code, str(error))
                     elif message_type == "reminder.ack":
                         if not hub.peer_has_capability(
                             device_id, websocket, "reminder_ack"
@@ -1021,10 +1028,13 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                         if settings.assistant_voice_diagnostic_only:
                             await hub.broadcast(device_id, {"type": "state", "state": "idle"})
                             continue
-                        if voice_request_id is None:
-                            await handle_utterance(device_id, text)
-                        else:
-                            await handle_utterance(device_id, text, request_id=voice_request_id)
+                        try:
+                            if voice_request_id is None:
+                                await handle_utterance(device_id, text)
+                            else:
+                                await handle_utterance(device_id, text, request_id=voice_request_id)
+                        except UncertainExecutionPending as error:
+                            await send_error(websocket, "execution_outcome_uncertain", str(error))
                     else:
                         await send_error(
                             websocket, "bad_message", f"Unsupported message type: {message_type}"

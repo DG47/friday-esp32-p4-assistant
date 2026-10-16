@@ -42,3 +42,12 @@ owner deploys. Preserve the absolute DB, local-only policy, model/TTS configurat
 trust material, pairing/NVS and report flags. Do not clear uncertain rows to make the
 queue responsive. This backend-only fix needs no firmware flash. Physical and factual
 model acceptance remain gates even when source CI passes.
+
+
+## Uncertain-task restart visibility candidate
+
+Reconnect now offers a fixed honest uncertainty review and refuses new same-device
+admission instead of showing work as accepted behind an unresolved claim. No marker is
+cleared or effect replayed. Text/voice/controller regressions cover this boundary; see
+uncertain-task-recovery.md. Throughput remains deliberately blocked until private owner
+reconciliation; this is not universal cancellation or automatic task completion.
