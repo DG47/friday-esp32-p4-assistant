@@ -153,14 +153,15 @@ class AgentJobStore:
                 )
         return cursor.rowcount
 
-    def mark_execution_uncertain(self, job: AgentJob) -> None:
+    def mark_execution_uncertain(self, job: AgentJob) -> bool:
         # Keep the running claim: cancellation does not prove an external action
         # stopped. Existing columns suffice; never automatically replay this row.
         with closing(self._connect()) as connection, connection:
-            connection.execute(
-                "UPDATE agent_jobs SET error = ? WHERE id = ? AND status = 'running' AND attempts = ?",
-                (UNCERTAIN_CLAIM_ERROR, job.id, job.attempts),
+            cursor = connection.execute(
+                "UPDATE agent_jobs SET error = ? WHERE id = ? AND status = 'running' AND attempts = ? AND result_delivery_id = ?",
+                (UNCERTAIN_CLAIM_ERROR, job.id, job.attempts, job.delivery_id),
             )
+        return cursor.rowcount == 1
 
     def get(self, job_id: str) -> AgentJob | None:
         with closing(self._connect()) as connection:
@@ -217,8 +218,21 @@ class AgentJobStore:
         return self._job(row)
 
     def complete(
-        self, job_id: str, reply: AgentReply, max_age_seconds: float = 300.0
-    ) -> str:
+        self, job_id: str, reply: AgentReply, max_age_seconds: float = 300.0,
+        *, claim: AgentJob | None = None,
+    ) -> str | None:
+        # Claimed asynchronous workers must supply their attempt and incarnation.
+        # By-ID completion remains a trusted fixture/administrative compatibility path.
+        if claim is not None and claim.id != job_id:
+            raise ValueError("Completion claim identity mismatch")
+        guard = (
+            " AND status = 'running' AND attempts = ? AND result_delivery_id = ?"
+            " AND (error IS NULL OR error != ?)"
+        ) if claim is not None else ""
+        guard_values = (
+            (claim.attempts, claim.delivery_id, UNCERTAIN_CLAIM_ERROR)
+            if claim is not None else ()
+        )
         completed_at = datetime.now(timezone.utc)
         now = completed_at.isoformat()
         with closing(self._connect()) as connection:
@@ -227,6 +241,8 @@ class AgentJobStore:
                     "SELECT created_at FROM agent_jobs WHERE id = ?", (job_id,)
                 ).fetchone()
                 if row is None:
+                    if claim is not None:
+                        return None
                     raise ValueError(f"Unknown agent job: {job_id}")
                 created_at = datetime.fromisoformat(row["created_at"])
                 status = (
@@ -234,9 +250,9 @@ class AgentJobStore:
                     if (completed_at - created_at).total_seconds() > max_age_seconds
                     else "completed"
                 )
-                connection.execute(
+                cursor = connection.execute(
                     "UPDATE agent_jobs SET status = ?, reply_json = ?, "
-                    "error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?",
+                    "error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?" + guard,
                     (
                         status,
                         reply.model_dump_json(),
@@ -245,9 +261,10 @@ class AgentJobStore:
                         else None,
                         now,
                         job_id,
+                        *guard_values,
                     ),
                 )
-        return status
+        return status if cursor.rowcount == 1 else None
 
     def expire_stale(
         self, now: datetime | None = None, max_age_seconds: float = 300.0
@@ -272,25 +289,29 @@ class AgentJobStore:
                 ).rowcount
         return queued + completed
 
-    def fail(self, job: AgentJob, error: str, max_attempts: int = 3) -> str:
+    def fail(self, job: AgentJob, error: str, max_attempts: int = 3) -> str | None:
         now = datetime.now(timezone.utc)
         final = job.attempts >= max_attempts
         status = "failed" if final else "queued"
         available = now + timedelta(seconds=min(30, 2 ** max(0, job.attempts - 1)))
         with closing(self._connect()) as connection:
             with connection:
-                connection.execute(
+                cursor = connection.execute(
                     "UPDATE agent_jobs SET status = ?, error = ?, available_at = ?, "
-                    "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
+                    "lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'running' "
+                    "AND attempts = ? AND result_delivery_id = ? AND (error IS NULL OR error != ?)",
                     (
                         status,
                         error[:1000],
                         available.isoformat(),
                         now.isoformat(),
                         job.id,
+                        job.attempts,
+                        job.delivery_id,
+                        UNCERTAIN_CLAIM_ERROR,
                     ),
                 )
-        return status
+        return status if cursor.rowcount == 1 else None
 
     def pending_results(self, device_id: str) -> list[AgentJob]:
         with closing(self._connect()) as connection:
@@ -526,11 +547,14 @@ class AgentJobWorker:
     def _retain_uncertain_claim(self, job):
         self._abandoned_jobs.add(job.id)
         try:
-            self.store.mark_execution_uncertain(job)
+            current = self.store.mark_execution_uncertain(job)
             self._abandoned_jobs.discard(job.id)  # The durable recovery filter now owns this fence.
         except Exception:
             logger.error("Uncertain claim persistence failed; local automatic recovery remains paused")
-        logger.warning("Agent execution interrupted; outcome unconfirmed, automatic claim replay blocked")
+            return False
+        if current:
+            logger.warning("Agent execution interrupted; outcome unconfirmed, automatic claim replay blocked")
+        return current
 
     async def _process_claimed(self, job):
         handler = asyncio.create_task(self._handle_owned(job))
@@ -547,7 +571,8 @@ class AgentJobWorker:
         except TimeoutError:
             # A cancelled coroutine can leave shielded/native/remote work alive.
             # Do not turn a timeout into an automatic repeat of an unknown action.
-            self._retain_uncertain_claim(job)
+            if not self._retain_uncertain_claim(job):
+                return True
             with self.hub.experience.for_job(job.id):
                 await self.hub.broadcast(job.device_id, {
                     "type": "error", "code": "execution_outcome_uncertain",
@@ -562,7 +587,8 @@ class AgentJobWorker:
             # Do not retry a known unavailable local model or obscure it behind a
             # generic failure. Persist only a safe code, never provider payloads.
             reason = error.reason if error.reason in LOCAL_FAILURE_MESSAGES else 'local_inference_failed'
-            self.store.fail(job, 'local-only:' + reason, max_attempts=1)
+            if self.store.fail(job, 'local-only:' + reason, max_attempts=1) is None:
+                return True
             logger.warning('Local reasoning unavailable: %s', reason)
             if job.device_id in self.hub.device_ids():
                 await self.deliver_pending(job.device_id)
@@ -571,6 +597,8 @@ class AgentJobWorker:
             return True
         except Exception as error:
             status = self.store.fail(job, str(error))
+            if status is None:
+                return True
             if status == "failed":
                 logger.exception("Agent job %s failed permanently", job.id)
                 if job.device_id in self.hub.device_ids():
@@ -583,7 +611,10 @@ class AgentJobWorker:
                 await self.on_finished(job.device_id)
             return True
 
-        self.store.complete(job.id, reply, max_age_seconds=self.max_age_seconds)
+        if self.store.complete(
+            job.id, reply, max_age_seconds=self.max_age_seconds, claim=job,
+        ) is None:
+            return True
         if job.device_id in self.hub.device_ids():
             await self.deliver_pending(job.device_id)
         if self.on_finished:

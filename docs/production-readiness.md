@@ -1,3 +1,7 @@
+> Current release gates: [production-acceptance-current.md](production-acceptance-current.md).
+> The provider/configuration descriptions below are historical and must not be used
+> to enable paid providers or infer current live acceptance.
+
 # Current personal-device status
 
 The sections below describe earlier release candidates and are retained as historical
