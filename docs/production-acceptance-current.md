@@ -44,6 +44,15 @@ queue responsive. This backend-only fix needs no firmware flash. Physical and fa
 model acceptance remain gates even when source CI passes.
 
 
+## Observed-read prose candidate
+
+The scripted-provider regressions in test_observed_read_prose.py reproduce wrong
+clock/unit, false empty Calendar and invented Weather after tool calls. This candidate
+replaces final Calendar/Weather paraphrases with observed source facts and passes 626
+aggregate tests. See observed-read-prose.md. This improves the supported read boundary;
+prior general real-model factual failures and no-tool synthesis remain unresolved.
+
+
 ## Same-device restart-intent candidate
 
 The controlled restart regression reproduces loss of the selected Calendar/Weather ZIP
