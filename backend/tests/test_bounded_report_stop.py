@@ -156,7 +156,14 @@ class BoundedStop(unittest.IsolatedAsyncioTestCase):
             db.execute('INSERT INTO report_device_views VALUES(?,?,?)',('lcd','owner',self.task['id']))
         # No actual worker exists in this simulated lost-process fixture.
         self.store.recover('owner')
-        restored=ReportRuntime(self.store,self.planner,{'lcd':'owner'},DeviceHub(),lambda device:True,lambda device:True)
+        restored=ReportRuntime(self.store,self.planner,{'lcd':'owner','another-device':'owner'},DeviceHub(),lambda device:True,lambda device:True)
         self.assertTrue(await restored.mutation_blocked('lcd'))
+        other=self.store.create('owner','another-task','Prepare another report','demo')
+        with self.store.db() as db:
+            db.execute('UPDATE report_device_views SET task=? WHERE device=?',(other['id'],'lcd'))
+            binding=db.execute('SELECT generation FROM report_device_stops WHERE device=? AND task=?',('lcd',self.task['id'])).fetchone()
+        self.assertIsNotNone(binding)
+        self.assertTrue(await restored.mutation_blocked('lcd'))
+        self.assertFalse(await restored.mutation_blocked('another-device'))
         self.assertEqual(self.store.get('owner',self.task['id'])['state'],'uncertain')
         self.assertFalse(await ReportWorker(self.store,'owner').run(self.task['id']))

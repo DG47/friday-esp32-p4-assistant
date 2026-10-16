@@ -35,8 +35,11 @@ of the native thread. It is never published as stopped just because an observer 
 
 Same-device new report/generic work is conservatively refused while its Stop attempt or
 selected effect outcome is unresolved; explicit read-only report status/recovery remains.
-Restart uses the existing durable device-view binding and stopping/uncertain state, not
-absence of in-memory observers, to retain quarantine. No identity is inferred/merged.
+Revocation atomically records an additive report_device_stops binding (device,owner,task,
+generation) in the existing report DB. Restart consults that ledger plus the existing
+device-view binding and stopping/uncertain state, not
+absence of in-memory observers, to retain quarantine. Changing views cannot drop the ledger gate; another device with the same owner is not
+blocked without its own binding. No identity is inferred/merged.
 No automatic replay, clear, forced deletion or replacement effect authority is introduced.
 Already-admitted report bytes remain with write_intent=may_exist and no artifact publication.
 
@@ -73,7 +76,9 @@ This server component does NOT complete the full proposed device/Mac Stop contra
 
 Do not merge/deploy under a claim that these blockers are solved. Review this as a bounded
 server component, with the client/auth/delivery work explicitly outstanding. Keep report
-and Telegram flags false. There is no schema migration or firmware flash. Because report
+and Telegram flags false. There is one additive report_device_stops table and no existing data rewrite or firmware
+flash. It is created only with the already-gated ReportStore. Preserve it with the report
+DB backup; older code ignores it and loses the device admission gate. Because report
 scope/executor digests bind source, existing approved report scopes may require a fresh
 exact review after source change; never rewrite approvals to silently preserve authority.
 The sole live owner controls backup, deployment and physical acceptance.

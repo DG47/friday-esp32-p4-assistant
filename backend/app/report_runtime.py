@@ -139,8 +139,8 @@ class ReportRuntime:
         # durable quarantine instead of inferring that absence means drained.
         def quarantined_view():
             with self.store.db(write=False) as db:
-                row=db.execute('SELECT task FROM report_device_views WHERE device=? AND owner=?',(device,owner)).fetchone()
-                return bool(row and self.store._get(db,owner,row[0])['state'] in {'stopping','uncertain'})
+                rows=db.execute('SELECT task FROM report_device_stops WHERE device=? AND owner=? UNION SELECT task FROM report_device_views WHERE device=? AND owner=?',(device,owner,device,owner)).fetchall()
+                return any(self.store._get(db,owner,row[0])['state'] in {'stopping','uncertain'} for row in rows)
         return await self.store.io(quarantined_view)
     async def stop(self,device,token):
         owner=self.owner(device)

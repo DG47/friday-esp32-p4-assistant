@@ -34,4 +34,4 @@ class ReportContext:
         grant=self.stop_grant(device,token)
         task=self.store.get(grant['owner'],grant['task'])
         if task['generation']!=grant['generation']:raise ValueError('Task control superseded')
-        return self.store.stop(grant['owner'],grant['task'],token,expected_generation=grant['generation'])
+        return self.store.stop(grant['owner'],grant['task'],token,expected_generation=grant['generation'],device_id=device)
