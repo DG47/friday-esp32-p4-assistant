@@ -23,7 +23,7 @@ A ContextVar carries the exact worker claim into supported model/tool admission
 boundaries, including actual reminder mutations and confirmation handling. Each
 boundary rereads durable authority. Operations already admitted across a boundary
 can finish; this is not atomic rollback or a universal remote-process kill switch.
-Late resistant handlers cannot publish completion, admit another supported tool,
+Speech/presentation fencing happens before ACK delivery, including a lost-ACK regression. Late resistant handlers cannot publish completion, admit another supported tool,
 or replace a new speech stream. Speech cancellation retains resistant producers,
 observes handler drain for 250ms and fences late frames inside the peer send lock.
 
@@ -48,7 +48,7 @@ adapter-specific intent/outcome evidence, or an explicitly reviewed owner
 attestation policy. Coroutine drain or model prose cannot establish that proof.
 No-tool factual accuracy and cross-identity sharing remain unproved/unimplemented.
 
-Validation: 667 provider-free backend tests pass (21.108s), including resistant
+Validation: 668 provider-free backend tests pass (20.929s), including resistant
 actual-tool admission, already-admitted effects, delayed/failed durable writes,
 requester cancellation, restart/lost ACK, wrong scope, exact ASR Stop, read-only
 reconciliation, and Node fake-clock client deadlines/ordering. Ten synthetic real

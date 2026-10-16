@@ -14,7 +14,7 @@
     }
     restore(target) {
       if (!target || !id(target.job_id) || !incarnation(target.execution_id)) return false;
-      if (this.pending && (this.pending.job_id !== target.job_id || this.pending.execution_id !== target.execution_id)) return false;
+      if (this.blocked() && this.target && (this.target.job_id !== target.job_id || this.target.execution_id !== target.execution_id)) return false;
       this.target = {job_id: target.job_id, execution_id: target.execution_id};
       this.phase = 'uncertain'; this.notice = 'Earlier execution outcome is uncertain; review it on the Mac. No automatic replay.'; return true;
     }
@@ -51,6 +51,8 @@
       }
       if (frame.type === 'execution.stop.status') {
         if (!this.match(frame, this.query) || !['queued','running','completed','failed','expired','late'].includes(frame.job_status) || typeof frame.outcome_uncertain !== 'boolean' || typeof frame.authority_revoked !== 'boolean' || typeof frame.no_execution_admitted !== 'boolean') return false;
+        if (frame.no_execution_admitted && (frame.outcome_uncertain || !frame.authority_revoked || frame.job_status !== 'failed')) return false;
+        if (frame.outcome_uncertain && frame.job_status !== 'running') return false;
         if (frame.no_execution_admitted && frame.authority_revoked && frame.job_status === 'failed') this.settled('stopped_before_admission', 'Stopped before admission; no operation from this request started.');
         else if (frame.outcome_uncertain) { this.phase = 'uncertain'; this.notice = 'Execution outcome remains uncertain; no automatic replay or reversal is confirmed.'; }
         else if (['completed','failed','expired','late'].includes(frame.job_status)) this.settled('already_terminal', 'Request is terminal; prior effects are not reversed.');

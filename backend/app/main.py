@@ -314,14 +314,19 @@ async def handle_utterance(
 async def execution_control_reply(device,websocket,target,incarnation,action,stop):
     try:
         response=await (execution_stop.request(device,target,incarnation,action) if stop else execution_stop.status(device,target,incarnation,action))
-        await websocket.send_json(response)
+        cancel_speech=False
         if stop and response['authority_revoked']:
             current=hub.experience.current.get(device)
             if current and current.request==target:hub.experience.claim(device)
             if speech.latest.get(device)==target:
                 speech.latest[device]=None
-                await speech.cancel(device)
-            if response['state_at_ack']=='stopped_before_admission':await work_finished(device)
+                # Fence queued audio before delivery: a lost ACK cannot leave
+                # producer authority alive. Handler observation follows delivery.
+                speech.generations[device]=speech.generations.get(device,0)+1
+                cancel_speech=True
+        await websocket.send_json(response)
+        if cancel_speech:await speech.cancel(device)
+        if stop and response['authority_revoked'] and response['state_at_ack']=='stopped_before_admission':await work_finished(device)
     except ValueError:
         await websocket.send_json({'type':'execution.stop.observed' if stop else 'execution.stop.status','request_id':action,'job_id':target,'execution_id':incarnation,'ack_confirmed':False,'authority_revoked':False,'handler_drained':False,'state_at_ack':None,'message':'Stop not confirmed; execution target is unavailable or changed. Work may continue.'})
 

@@ -136,3 +136,23 @@ class ExecutionStops(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(self.stop.observer.attempts);permit.set();await self.stop.observer.close()
             self.assertEqual(self.store.get(job.id).error,'user_stop_before_admission')
         finally:permit.set()
+
+    async def test_lost_ack_delivery_cannot_keep_old_speech_or_presentation_authority(self):
+        from unittest.mock import patch
+        from app import main
+        from app.speech import SpeechDirector
+        job=self.store.enqueue('device','Synthetic queued request','lost-delivery')
+        speech=SpeechDirector(self.hub);speech.latest['device']=job.id;speech.generations['device']=7
+        with self.hub.experience.scope('device',job.id):self.hub.experience.bind_job('device',job.id)
+        class LostAck:
+            async def send_json(inner,response):
+                self.assertTrue(response['authority_revoked'])
+                self.assertIsNone(speech.latest['device'])
+                self.assertGreater(speech.generations['device'],7)
+                self.assertEqual(self.hub.experience.current['device'].request,'stop-lost-delivery')
+                raise OSError('Synthetic lost acknowledgement')
+        with patch.object(main,'execution_stop',self.stop),patch.object(main,'hub',self.hub),patch.object(main,'speech',speech):
+            with self.hub.experience.scope('device','stop-lost-delivery'):
+                with self.assertRaises(OSError):
+                    await main.execution_control_reply('device',LostAck(),job.id,job.delivery_id,'stop-lost-delivery',True)
+        self.assertEqual(self.store.get(job.id).error,'user_stop_before_admission')

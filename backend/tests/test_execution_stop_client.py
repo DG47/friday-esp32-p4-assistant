@@ -26,6 +26,13 @@ assert.equal(c.receive({...ack,state_at_ack:'outcome_uncertain'}),false);
 assert.equal(c.capture(job,execution),false); // terminal before delayed acceptance
 const d=new ExecutionStopClient(()=>false,()=>0);d.capture(job,'c'.repeat(32));d.request('offline');
 assert.equal(d.phase,'unconfirmed');assert.equal(d.blocked(),true);
+const restored=new ExecutionStopClient(()=>true,()=>0);
+assert.equal(restored.restore({job_id:job,execution_id:execution}),true);
+assert.equal(restored.blocked(),true);
+assert.equal(restored.restore({job_id:'different',execution_id:'b'.repeat(32)}),false);
+restored.status('read-restored');
+assert.equal(restored.receive({type:'execution.stop.status',request_id:'read-restored',job_id:job,execution_id:execution,job_status:'failed',authority_revoked:true,outcome_uncertain:true,no_execution_admitted:true}),false);
+assert.equal(restored.phase,'uncertain');
 console.log('deadline, disconnect, lost/stale ACK, scope, retry, status, terminal ordering: pass');
 '''
         result=subprocess.run([node,'-e',script,str(module)],capture_output=True,text=True)
