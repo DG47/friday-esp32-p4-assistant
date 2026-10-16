@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .agent import FridayAgent
 from .conversation_media import ConversationMedia
-from .agent_jobs import AgentJobStore, AgentJobWorker, JobAdmissionError, CompletedRequestReplay
+from .agent_jobs import AgentJobStore, AgentJobWorker, JobAdmissionError, CompletedRequestReplay, UncertainExecutionPending
 from .audio_session import AudioSession, AudioSessionError
 from .config import get_settings
 from .providers.local_policy import LocalModelUnavailable
@@ -42,6 +42,7 @@ from .speech import SpeechDirector
 from .speech_provider import create_speech_provider, speech_availability
 from .scene_diagnostics import log_scene_action
 from .report_runtime import create_report_runtime, ReportStopPending
+from .execution_stop import ExecutionStop, CAPABILITY as EXECUTION_STOP
 
 
 settings = get_settings()
@@ -103,6 +104,7 @@ job_worker.on_reply = speech.speak
 DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 active_sockets: set[WebSocket] = set()
 report_runtime = None
+execution_stop = None
 
 def report_can_present(device):
     return not (recovery_pending(device) or device in local_music.reminder_devices or device in local_music.protected or device in local_music.busy)
@@ -110,7 +112,8 @@ def report_can_present(device):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global report_runtime
+    global report_runtime, execution_stop
+    execution_stop = ExecutionStop(job_store,job_worker)
     report_runtime = await create_report_runtime(settings, hub, lambda device: credential_store.is_paired(device), report_can_present)
     if report_runtime is not None:
         try:await report_runtime.start()
@@ -168,6 +171,7 @@ async def lifespan(_: FastAPI):
         for task in tasks:
             with suppress(asyncio.CancelledError):
                 await task
+        await execution_stop.observer.close()
         await agent.calendar.close()
         report_runtime = None
 
@@ -302,11 +306,24 @@ async def handle_utterance(
     speech.latest[device_id] = job.id
     await speech.cancel(device_id)
     await hub.broadcast(device_id, {"type": "state", "state": "thinking"})
-    await hub.broadcast(
-        device_id,
-        {"type": "job.accepted", "job_id": job.id},
-    )
+    await hub.broadcast(device_id,{"type":"job.accepted","job_id":job.id},excluded_capability=EXECUTION_STOP)
+    await hub.broadcast(device_id,{"type":"job.accepted","job_id":job.id,"execution_id":job.delivery_id},required_capability=EXECUTION_STOP)
     return job.id
+
+
+async def execution_control_reply(device,websocket,target,incarnation,action,stop):
+    try:
+        response=await (execution_stop.request(device,target,incarnation,action) if stop else execution_stop.status(device,target,incarnation,action))
+        await websocket.send_json(response)
+        if stop and response['authority_revoked']:
+            current=hub.experience.current.get(device)
+            if current and current.request==target:hub.experience.claim(device)
+            if speech.latest.get(device)==target:
+                speech.latest[device]=None
+                await speech.cancel(device)
+            if response['state_at_ack']=='stopped_before_admission':await work_finished(device)
+    except ValueError:
+        await websocket.send_json({'type':'execution.stop.observed' if stop else 'execution.stop.status','request_id':action,'job_id':target,'execution_id':incarnation,'ack_confirmed':False,'authority_revoked':False,'handler_drained':False,'state_at_ack':None,'message':'Stop not confirmed; execution target is unavailable or changed. Work may continue.'})
 
 
 async def send_error(websocket: WebSocket, code: str, message: str) -> None:
@@ -427,6 +444,14 @@ async def reminders(request: Request) -> list[dict]:
     ]
 
 
+@app.get('/api/devices/{device_id}/executions/{job_id}/{incarnation}/reconciliation')
+async def execution_reconciliation(device_id: str,job_id: str,incarnation: str,request: Request):
+    require_local_admin(request)
+    if not credential_store.is_paired(device_id):raise HTTPException(404,'Execution unavailable')
+    try:return await execution_stop.reconciliation_preview(device_id,job_id,incarnation)
+    except ValueError:raise HTTPException(404,'Execution unavailable') from None
+
+
 @app.get("/api/devices/{device_id}/report-tasks/{task_id}")
 async def report_review(device_id: str, task_id: str, request: Request):
     require_local_admin(request)
@@ -537,6 +562,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
     wake_enabled = False
     wake_probe_task: asyncio.Task[None] | None = None
     voice_request_id = None
+    voice_stop_target = None
     registered = False
 
     async def detect_wake_word(pcm: bytes) -> None:
@@ -668,6 +694,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                     "type": "ready",
                                     "protocol": 1,
                                     "device_id": device_id,
+                                    **({'execution_stop_v1':True,'execution_recovery':job_store.execution_recovery(device_id)} if {EXECUTION_STOP,'result_ack'}<=capabilities else {}),
                                     "state": "idle",
                                     **({"experience_epoch": hub.experience.session(device_id), "review_pending": recovery_pending(device_id) or report_runtime is not None and await report_runtime.available(device_id)} if CAPABILITY in capabilities else {}),
                                     "surface": {
@@ -704,6 +731,8 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                 # recovery, or replace an unrelated protected view.
                                 await send_error(websocket,observation.code,observation.message)
                                 continue
+                            if job_store.uncertain_for(device_id) and (action=='confirm' or action.startswith(('memyes:','complete:','snooze:','cancel:','musicctl:'))):
+                                raise UncertainExecutionPending()
                             negotiated = hub.peer_has_capability(device_id, websocket, CAPABILITY)
                             if negotiated:
                                 if hub.experience.origin.get() is None:
@@ -902,12 +931,22 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             or not isinstance(delivery_id, str) or re.fullmatch(r"[0-9a-f]{32}", delivery_id) is None
                             or not (job_store.acknowledge_result(device_id, job_id, delivery_id) or report_runtime is not None and await report_runtime.store.io(report_runtime.acknowledge,device_id,job_id,delivery_id))):
                             await send_error(websocket, "bad_result_ack", "Result acknowledgement is invalid or unavailable")
+                    elif message_type in {'execution.stop','execution.status'}:
+                        if not hub.peer_has_capability(device_id,websocket,EXECUTION_STOP) or not hub.peer_has_capability(device_id,websocket,'result_ack'):
+                            await send_error(websocket,'capability_required','Scoped execution Stop capability required')
+                            continue
+                        target,incarnation,action=message.get('job_id'),message.get('execution_id'),message.get('request_id')
+                        if not isinstance(target,str) or not 1<=len(target)<=128 or not isinstance(incarnation,str) or re.fullmatch(r'[0-9a-f]{32}',incarnation) is None or not isinstance(action,str) or not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}',action):
+                            await send_error(websocket,'bad_message','An exact execution incarnation and request identity are required')
+                            continue
+                        await execution_control_reply(device_id,websocket,target,incarnation,action,message_type=='execution.stop')
                     elif message_type == "speech.finished":
                         if hub.peer_has_capability(device_id, websocket, "pcm_speech"):
                             speech.finished(device_id, message.get("stream_id"), message.get("status"))
                     elif message_type == "speech.cancel":
                         await speech.cancel(device_id)
                     elif message_type == "activate":
+                        voice_stop_target = None
                         voice_request_id = message.get("request_id")
                         await claim_scene_navigation(device_id)
                         speech.latest[device_id] = None
@@ -974,6 +1013,12 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             reminder_id, device_id, datetime.now(timezone.utc)
                         ):local_music.clear_protection(device_id)
                     elif message_type == "audio.start":
+                        voice_stop_target = None
+                        target=message.get('execution_target')
+                        if target is not None and hub.peer_has_capability(device_id,websocket,EXECUTION_STOP) and hub.peer_has_capability(device_id,websocket,'result_ack'):
+                            if not isinstance(target,dict) or not isinstance(target.get('job_id'),str) or not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}',target['job_id']) or not isinstance(target.get('execution_id'),str) or re.fullmatch(r'[0-9a-f]{32}',target['execution_id']) is None:
+                                await send_error(websocket,'bad_audio','A scoped execution target is required');continue
+                            voice_stop_target=(target['job_id'],target['execution_id'])
                         speech.latest[device_id] = None
                         await speech.cancel(device_id)
                         try:
@@ -1032,6 +1077,12 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                         if settings.assistant_voice_diagnostic_only:
                             await hub.broadcast(device_id, {"type": "state", "state": "idle"})
                             continue
+                        if voice_stop_target is not None and text.strip().lower().rstrip('.!?') in {'stop','stop task','stop this task'}:
+                            target,incarnation=voice_stop_target;voice_stop_target=None
+                            action=voice_request_id if isinstance(voice_request_id,str) and re.fullmatch(r'[A-Za-z0-9._:-]{1,128}',voice_request_id) else secrets.token_hex(16)
+                            await execution_control_reply(device_id,websocket,target,incarnation,action,True)
+                            continue
+                        voice_stop_target=None
                         try:
                             if voice_request_id is None:
                                 await handle_utterance(device_id, text)

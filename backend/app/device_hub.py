@@ -147,6 +147,7 @@ class DeviceHub:
         message: dict,
         required_capability: str | None = None,
         excluded_capability: str | None = None,
+        *, allowed=None,
     ) -> int:
         negotiated = self.has_capability(device_id, CAPABILITY)
         scoped = self.experience.envelope(device_id, message) if negotiated else message
@@ -161,6 +162,7 @@ class DeviceHub:
                 async def serialized_send() -> int:
                     nonlocal decorate, observed
                     async with peer.send_lock:
+                        if allowed is not None and not allowed():return 0
                         packet = self.experience.for_peer(device_id, scoped, peer.key) if CAPABILITY in peer.capabilities else message
                         if packet is None:return 0
                         # Observer creation mutates Media ownership too. It must

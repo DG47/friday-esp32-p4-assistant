@@ -12,6 +12,23 @@ const dot = document.getElementById("connection-dot");
 const connectionLabel = document.getElementById("connection-label");
 const simulatorToken = document.getElementById("simulator-token");
 
+const executionNotice = document.getElementById('execution-notice');
+const executionButton = document.getElementById('execution-stop');
+const executionStatus = document.getElementById('execution-status');
+let executionSupported = false, latestSubmitted = null;
+const executionControl = new ExecutionStopClient(packet => {
+  if (!authenticated || socket?.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify(packet)); return true;
+});
+function executionRequestId() { return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+function executionRender() {
+  executionNotice.textContent = executionControl.notice;
+  executionButton.disabled = !executionSupported || !executionControl.target;
+  executionStatus.disabled = !executionSupported || !executionControl.target;
+}
+executionButton.addEventListener('click', () => { stopSpeech(); executionControl.request(executionRequestId()); executionRender(); });
+executionStatus.addEventListener('click', () => { executionControl.status(executionRequestId()); executionRender(); });
+setInterval(() => { executionControl.tick(); executionRender(); }, 100);
 let socket;
 let reconnectTimer;
 let surfaceTimer;
@@ -53,13 +70,14 @@ function connect() {
       type: "hello",
       protocol: 1,
       device_token: simulatorToken.value.trim(),
-      capabilities: ["display", "touch", "speech", "reminder_ack", "result_ack", "media_updates_v1"],
+      capabilities: ["display", "touch", "speech", "reminder_ack", "result_ack", "media_updates_v1", "execution_stop_v1"],
     }));
   });
   const current = socket;
   socket.addEventListener("close", () => {
     if (current !== socket) return;
-    authenticated = false;
+    authenticated = false; executionSupported = false;
+    executionControl.disconnected(); executionRender();
     clearMediaOwner();
     stopSpeech();
     actionPending = false;
@@ -80,6 +98,12 @@ function acknowledgeResult(message) {
 }
 
 function handleMessage(message) {
+  if (message.type === 'execution.stop.observed' || message.type === 'execution.stop.status') {
+    executionControl.receive(message); executionRender(); return;
+  }
+  if (message.type === 'job.accepted' && message.job_id === latestSubmitted) {
+    executionControl.capture(message.job_id, message.execution_id); executionRender();
+  }
   if (["agent.result", "reminder.alert", "assistant.text", "ready", "error"].includes(message.type) ||
       (message.type === "state" && ["listening", "thinking", "speaking"].includes(message.state)) ||
       (message.type === "tool.activity" && message.status === "working")) clearMediaOwner();
@@ -90,6 +114,7 @@ function handleMessage(message) {
       renderSurface(message.surface);
       transcript.textContent = message.text;
       actionPending = false;
+      executionControl.result(message.job_id, message.delivery_id); executionRender();
       acceptedResults.add(message.delivery_id);
       if (acceptedResults.size > 64) acceptedResults.delete(acceptedResults.values().next().value);
       acknowledgeResult(message);
@@ -98,7 +123,10 @@ function handleMessage(message) {
       acknowledgeResult(message);
     }
   } else if (message.type === "ready") {
-    authenticated = true;
+    authenticated = true; executionSupported = message.execution_stop_v1 === true;
+    if (message.execution_recovery) executionControl.restore(message.execution_recovery);
+    if (executionControl.target) executionControl.status(executionRequestId());
+    executionRender();
     reconnectDelay = 1200;
     dot.classList.add("online");
     connectionLabel.textContent = "Friday authenticated";
@@ -217,10 +245,15 @@ function sendUtterance(value) {
     transcript.textContent = "Connect Friday with a valid simulator credential first.";
     return;
   }
+  if (text.toLowerCase() === 'stop' && executionControl.target) {
+    stopSpeech(); executionControl.request(executionRequestId()); executionRender(); return;
+  }
+  if (executionControl.blocked()) { executionRender(); return; }
   clearMediaOwner();
   stopSpeech();
   transcript.textContent = `“${text}”`;
   const requestId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  latestSubmitted = requestId;
   socket.send(JSON.stringify({ type: "utterance", text, request_id: requestId }));
 }
 
@@ -307,6 +340,7 @@ function sendSceneAction(action) {
   }
   if (action === "music") musicDismissed = false;
   const mutation = /^(snooze|complete|cancel|musicctl):/.test(action);
+  if (mutation && executionControl.blocked()) { executionRender(); return; }
   if (mutation && actionPending) return;
   if (mutation) {
     actionPending = true;
