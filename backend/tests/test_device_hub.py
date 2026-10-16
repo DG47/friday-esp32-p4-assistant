@@ -61,5 +61,25 @@ class DeviceHubTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(healthy.messages),2)
 
 
+    async def test_closed_stream_peer_can_be_closed(self):
+        for failure in (ClosedResourceError,BrokenResourceError,EndOfStream):
+            with self.subTest(failure=failure.__name__):
+                hub=DeviceHub()
+                class Closed(FakeWebSocket):
+                    async def close(self,code):raise failure()
+                await hub.connect('synthetic-device',Closed())
+                await hub.close_device('synthetic-device')
+                self.assertEqual(hub.device_ids(),[])
+    async def test_closed_stream_targeted_media_peer_is_removed(self):
+        for failure in (ClosedResourceError,BrokenResourceError,EndOfStream):
+            with self.subTest(failure=failure.__name__):
+                hub=DeviceHub()
+                class Closed(FakeWebSocket):
+                    async def send_json(self,message):raise failure()
+                peer=Closed();await hub.connect('synthetic-device',peer)
+                self.assertEqual(await hub.send_media('synthetic-device',peer,{'type':'state','state':'idle'},lambda:True),0)
+                self.assertEqual(hub.device_ids(),[])
+
+
 if __name__ == "__main__":
     unittest.main()

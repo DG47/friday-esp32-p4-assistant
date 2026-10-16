@@ -75,3 +75,18 @@ The combined suite now passes **617 tests**. Independent read-only review found 
 concrete blocker within scope. The CI wall timeout and stack dump expose future stalls;
 they do not prove universally bounded native/remote shutdown or effect cancellation.
 No runtime or certificate change was made by this publication.
+
+
+## Installed peer-path parity follow-up
+
+Installed source `cd58f476` also contains the narrow AnyIO closed-stream catch in
+targeted media delivery. This follow-up restores that path on merged main: closed,
+broken and end-of-stream peers are disconnected and return zero deliveries. Healthy
+peer behavior, send locking, ownership checks and cancellation propagation are
+unchanged. Regressions cover each of the three errors in targeted sends and explicit
+peer close. The targeted-send regression fails for all three errors on pre-fix main.
+
+Direct comparison confirms the resulting DeviceHub and existing agent_jobs source
+files are byte-identical to installed cd58f476. No report/Telegram source, defaults,
+configuration, runtime state or firmware changes are included. Exact-head full-suite
+and CI results are recorded in the follow-up PR.
