@@ -47,6 +47,7 @@ class BoundedStop(unittest.IsolatedAsyncioTestCase):
         await self.start_resistant();token=self.token()
         result=await asyncio.wait_for(self.runtime.stop('lcd',token),2)
         self.assertTrue(result.ack_confirmed);self.assertTrue(result.authority_revoked)
+        self.assertIn(self.task['id'],result.message)
         self.assertFalse(result.handler_drained);self.assertEqual(result.state_at_ack,'stopping')
         self.assertFalse(self.tick.done());self.assertIsNotNone(self.runtime.service.fd)
         self.assertFalse(await ReportWorker(self.store,'owner').run(self.task['id']))

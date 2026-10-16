@@ -43,6 +43,8 @@ blocked without its own binding. No identity is inferred/merged.
 No automatic replay, clear, forced deletion or replacement effect authority is introduced.
 Already-admitted report bytes remain with write_intent=may_exist and no artifact publication.
 
+The acknowledgement names its exact opaque report task ID, including an idempotent
+old-action retry, so it cannot be mistaken for Stop of a different selected task.
 The native route returns a fixed acknowledgement via existing error/rejection messaging;
 it does not append an unbounded database-recovery read to the observer. Existing scope
 priorities remain and no unrelated protected view is replaced. Later status can still

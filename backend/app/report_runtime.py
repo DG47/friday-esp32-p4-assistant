@@ -1,5 +1,6 @@
 """Off-default production dispatcher integration; enrollment is local trusted configuration."""
 import asyncio
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
@@ -142,18 +143,21 @@ class ReportRuntime:
                 rows=db.execute('SELECT task FROM report_device_stops WHERE device=? AND owner=? UNION SELECT task FROM report_device_views WHERE device=? AND owner=?',(device,owner,device,owner)).fetchall()
                 return any(self.store._get(db,owner,row[0])['state'] in {'stopping','uncertain'} for row in rows)
         return await self.store.io(quarantined_view)
+    def _stop_result(self,key,observation):
+        task_id=self.stop_tasks.get(key)
+        return replace(observation,message='Report task '+task_id+'. '+observation.message) if task_id else observation
     async def stop(self,device,token):
         owner=self.owner(device)
         key=(owner,device,token)
         if key in self.stop_observer.attempts:
-            return await self.stop_observer.request(key,None,None,None)
+            return self._stop_result(key,await self.stop_observer.request(key,None,None,None))
         grant=self.bridge.stop_grant(device,token)
         self.stop_tasks={k:v for k,v in self.stop_tasks.items() if k in self.stop_observer.attempts}
         self.stop_tasks[key]=grant['task']
         async def persist():
             return await self.store.io(self.bridge.stop,device,token)
-        return await self.stop_observer.request(key,grant['generation'],persist,
-            lambda:self.service.runner(owner,grant['task']))
+        return self._stop_result(key,await self.stop_observer.request(key,grant['generation'],persist,
+            lambda:self.service.runner(owner,grant['task'])))
     def _packet(self,device,task):
         owner=self.owner(device);surface=self.bridge.scene(device,task['id']).model_dump(mode='json')
         text='Project report '+task['id']+'. State: '+task['state']+'. '+task['events'][-1]['message']
