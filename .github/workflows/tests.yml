@@ -39,11 +39,6 @@ jobs:
           cc -Wall -Wextra -Werror -I firmware/main -I /usr/include/cjson firmware/tests/test_error_scene.c firmware/main/friday_error_scene.c -lcjson -o /tmp/friday-error-test
           /tmp/friday-error-test
 
-      - name: Native scoped execution Stop client
-        run: |
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -I firmware/main -I /usr/include/cjson firmware/tests/test_execution_stop.c firmware/main/friday_execution_stop.c -lcjson -o /tmp/friday-execution-stop-test
-          /tmp/friday-execution-stop-test
-
       - name: Pinned LVGL source for real glyph tests
         uses: actions/checkout@v4
         with:

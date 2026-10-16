@@ -53,7 +53,7 @@ Validation uses only synthetic content and local existing dependencies:
 
 Synthetic native contact sheet is saved in Library as execution-contact.png
 (libfile_19bedca031d08191b4a627710e61f8e5). Source capture frames are local outputs,
-not physical-panel photographs. CI adds the strict C/sanitizer controller regression;
+not physical-panel photographs. The existing native glyph-test CI entrypoint also runs the strict C/sanitizer controller regression, using its already-installed libcjson dependency; no workflow-file modification or new app permission is needed.
 CI does not claim a full ESP-IDF build or physical socket/voice acceptance.
 
 Rollout remains separate: first coordinate exact reviewed server/client revisions,
