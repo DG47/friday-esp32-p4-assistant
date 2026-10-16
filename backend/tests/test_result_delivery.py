@@ -85,8 +85,8 @@ class ResultDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_terminal_result_is_acknowledged_too(self):
         job = self.store.enqueue('a', 'hello')
-        job.attempts = 3
-        self.store.fail(job, 'synthetic failure')
+        job = self.store.claim_next()
+        self.store.fail(job, 'synthetic failure', max_attempts=1)
         await self.worker.deliver_pending('a')
         result = next(m for m in self.messages if m['type'] == 'agent.result')
         self.assertEqual(result['status'], 'failed')
