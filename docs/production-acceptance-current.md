@@ -42,3 +42,14 @@ owner deploys. Preserve the absolute DB, local-only policy, model/TTS configurat
 trust material, pairing/NVS and report flags. Do not clear uncertain rows to make the
 queue responsive. This backend-only fix needs no firmware flash. Physical and factual
 model acceptance remain gates even when source CI passes.
+
+
+## Same-device restart-intent candidate
+
+The controlled restart regression reproduces loss of the selected Calendar/Weather ZIP
+relation on main. The candidate persists only bounded opaque resume intent in the local
+SQLite store and forces fresh Calendar/Weather reads before facts are displayed. See
+context-restart-checkpoints.md for TTL, privacy, source-change and rollback rules. This
+repairs the same authenticated device relation, not merging different Mac/device
+identities or reviving approval/tasks/screens. General seamless workspace acceptance
+and actual model/device routing remain open.

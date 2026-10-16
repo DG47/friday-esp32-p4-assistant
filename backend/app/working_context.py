@@ -1,8 +1,10 @@
-"""Volatile, bounded event/place references. No inference, durable facts or new adapters."""
+"""Leased event/place facts with bounded opaque restart intent; never durable facts."""
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import hashlib
 import re
+import secrets
+from .context_checkpoint import ContextCheckpointStore
 from zoneinfo import ZoneInfo
 from .models import CalendarEvent, Surface, SurfaceAction
 from .tools.google_calendar import event_scene
@@ -15,6 +17,9 @@ def digest(*parts):
 @dataclass
 class Workspace:
     owner: str = ''
+    token_epoch: str = field(default_factory=lambda: secrets.token_hex(16))
+    restored: bool = False
+    calendar_range: str = 'today'
     revision: int = 0
     events: dict = field(default_factory=dict)
     focus: str | None = None
@@ -31,11 +36,19 @@ class WorkingContext:
     def __init__(self, settings, clock):
         self.settings, self.clock = settings, clock
         self.devices = {}
+        self.checkpoints = ContextCheckpointStore(settings.assistant_database_path, clock)
 
     def state(self, device):
         if device not in self.devices:
             if len(self.devices) >= 32: self.devices.pop(next(iter(self.devices)))
-            self.devices[device] = Workspace()
+            state = Workspace()
+            checkpoint = self.checkpoints.load(device)
+            if checkpoint:
+                state.focus, state.weather_event_ref, state.location, state.weather_source_fingerprint, state.calendar_range = checkpoint
+                if state.location not in {place.label for place in self.settings.weather_locations}:
+                    state.weather_event_ref = state.location = state.weather_source_fingerprint = None
+                state.restored = True
+            self.devices[device] = state
         state = self.devices[device]
         if state.event_until and self.clock() >= state.event_until:
             state.events.clear()  # erase private facts, retain public Weather identity only
@@ -49,11 +62,12 @@ class WorkingContext:
 
     def dismiss(self, device):
         state = self.state(device)
+        self.checkpoints.delete(device)
         self.devices[device] = Workspace(owner='dismissed', revision=state.revision+1)
 
     def token(self, device, ref, operation):
         state = self.state(device)
-        token = 'context:' + digest(device, state.revision, ref, operation)
+        token = 'context:' + digest(device, state.token_epoch, state.revision, ref, operation)
         state.tokens[token] = (ref, operation)
         return token
 
@@ -63,9 +77,14 @@ class WorkingContext:
         events = {digest(device, event.id, event.starts_at.isoformat()): CalendarEvent(id=event.id[:256],title=event.title[:160],starts_at=event.starts_at,ends_at=event.ends_at,location=(event.location or "")[:160],people=[name[:48] for name in event.people[:8]],recurring=event.recurring,all_day=event.all_day,all_day_start=event.all_day_start,all_day_end=event.all_day_end)
                   for event in snapshot.events[:32] if (event.id,event.starts_at) in allowed}
         state.events = events
+        state.calendar_range = payload.get('range', 'today')
         state.revision += 1
         state.tokens.clear()
-        if state.focus not in events: state.focus = next(iter(events)) if len(events) == 1 else None
+        if state.focus not in events:
+            # A removed/moved resumed referent must not silently select another event.
+            state.focus = None if state.restored else next(iter(events)) if len(events) == 1 else None
+        state.restored = False
+        self.checkpoints.save(device, state)
         state.event_until = self.clock() + timedelta(milliseconds=surface.expires_ms or 30000)
         payload['context_refs'] = [{'event_ref': ref, 'event_id': event.id} for ref, event in events.items()]
         for item in surface.items:
@@ -127,6 +146,7 @@ class WorkingContext:
         state.weather_until = weather.deadline_at or (self.clock()+timedelta(milliseconds=weather.weather_valid_ms or 1))
         state.revision += 1
         state.tokens.clear()
+        self.checkpoints.save(device, state)
         return self.surface(device)
 
     def surface(self, device, view='both'):
@@ -182,6 +202,7 @@ class WorkingContext:
         if state.focus != ref:
             state.focus = ref
             state.revision += 1; state.tokens.clear()
+            self.checkpoints.save(device, state)
         # Repeated touch changes presentation only, never object identity, lease,
         # or source generation. Weather reads happen only for a new relation or an explicitly refreshed stale reading.
         return ref, operation, self.surface(device, operation)
