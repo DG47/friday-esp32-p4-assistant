@@ -34,6 +34,24 @@ class AgentJob:
     delivery_attempted_at: str | None = None
 
 
+class JobAdmissionError(ValueError):
+    code = "request_conflict"
+
+
+class CompletedRequestReplay(JobAdmissionError):
+    code = "request_already_finished"
+
+    def __init__(self):
+        super().__init__("That request already finished. No action was repeated. Start a new request to continue.")
+
+
+class UncertainExecutionPending(JobAdmissionError):
+    code = "execution_outcome_uncertain"
+
+    def __init__(self):
+        super().__init__("A previous action has an unconfirmed outcome. No new work was started. Review the outcome on the Mac before retrying; it will not be replayed automatically.")
+
+
 class AgentJobStore:
     def __init__(self, path: Path):
         self.path = path
@@ -43,6 +61,13 @@ class AgentJobStore:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def uncertain_for(self, device_id):
+        with closing(self._connect()) as connection:
+            return connection.execute(
+                "SELECT 1 FROM agent_jobs WHERE device_id=? AND status='running' AND error=? LIMIT 1",
+                (device_id, UNCERTAIN_CLAIM_ERROR),
+            ).fetchone() is not None
 
     def active_for(self, device_id):
         with closing(self._connect()) as connection:
@@ -118,6 +143,11 @@ class AgentJobStore:
                 existing = connection.execute(
                     "SELECT * FROM agent_jobs WHERE id = ?", (job_id,)
                 ).fetchone()
+                if connection.execute(
+                    "SELECT 1 FROM agent_jobs WHERE device_id=? AND status='running' AND error=? LIMIT 1",
+                    (device_id, UNCERTAIN_CLAIM_ERROR),
+                ).fetchone():
+                    raise UncertainExecutionPending()
                 if existing is None:
                     pending = connection.execute(
                         "SELECT COUNT(*) FROM agent_jobs WHERE device_id = ? "
