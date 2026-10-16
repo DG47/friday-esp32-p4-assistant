@@ -146,8 +146,29 @@ class ContextRestart(unittest.IsolatedAsyncioTestCase):
         context=self.agent.working_context
         old_action=self.corrected.surface.actions[1].id
         context.disconnect('device')
-        self.assertNotIn('device',context.devices)
+        self.assertEqual(context.state('device').events,{})
+        self.assertIsNone(context.state('device').weather)
+        self.assertFalse(context.current('device','before'))
         result=await self.read(self.agent,'get_weather',{'location':'context'})
         self.assertTrue(result.success)
         self.assertEqual(self.agent.weather.calls,['10010','10010'])
         with self.assertRaises(ValueError):context.touch('device',old_action)
+
+    async def test_disconnect_fences_late_weather_before_reattaching_private_context(self):
+        agent=self.agent;context=agent.working_context
+        entered,release=asyncio.Event(),asyncio.Event()
+        original=agent.weather.current
+        async def delayed(location='both'):
+            entered.set();await release.wait();return await original(location)
+        agent.weather.current=delayed
+        task=asyncio.create_task(self.read(agent,'get_weather',{'location':'context'},request='late-before-disconnect'))
+        try:
+            await asyncio.wait_for(entered.wait(),1)
+            context.disconnect('device')
+            release.set();result=await asyncio.wait_for(task,1)
+            self.assertFalse(result.success);self.assertIn('superseded',result.content)
+            self.assertEqual(context.state('device').events,{})
+            self.assertIsNone(context.state('device').weather)
+            self.assertEqual(context.state('device').owner,'disconnected')
+        finally:
+            release.set();await asyncio.wait_for(task,1)

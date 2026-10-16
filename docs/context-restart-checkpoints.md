@@ -45,3 +45,10 @@ the database privately with the online API and restore-check before backend-only
 The table is additive; no existing data is rewritten. Older source ignores the new table,
 but rollback loses restart-resume behavior. No firmware flash or trust/NVS change is
 required for this source repair. Local-only policy and disabled integration defaults stay.
+
+
+Integration review adds an owner tombstone at disconnect. Volatile facts and tokens
+are erased, but a late in-flight read cannot treat a new ownerless workspace as current
+and reattach them. A regression delays Weather across disconnect and verifies the
+superseded reply, empty private state and retained disconnected owner. A subsequent new
+request can resume only through fresh source validation.

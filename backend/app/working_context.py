@@ -61,8 +61,21 @@ class WorkingContext:
         return self.state(device).owner in {'', request}
 
     def disconnect(self, device):
-        # Erase leased/private facts and tokens, retain only committed resume intent.
-        self.devices.pop(device, None)
+        # Keep a non-current owner tombstone: popping the row would let a late
+        # read mistake a newly ownerless workspace for its original request.
+        previous = self.devices.get(device)
+        if previous is None and len(self.devices) >= 32:
+            self.devices.pop(next(iter(self.devices)))
+        state = Workspace(owner='disconnected')
+        if previous:
+            state.revision = previous.revision + 1
+            state.focus = previous.focus
+            state.weather_event_ref = previous.weather_event_ref
+            state.location = previous.location
+            state.weather_source_fingerprint = previous.weather_source_fingerprint
+            state.calendar_range = previous.calendar_range
+            state.restored = bool(previous.focus)
+        self.devices[device] = state
 
     def dismiss(self, device):
         state = self.state(device)
