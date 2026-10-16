@@ -20,9 +20,10 @@ still exists. The exact source-location fingerprint must still match before its
 explicit ZIP correction is reused. Changed/ambiguous/removed/moved-out-of-range events
 need a new selection; a different sole event is not silently substituted. Weather is
 read again; old measurements never return. Sharing-disabled model requests are rejected
-before resume I/O. New request ownership is rechecked after the read. Restart rotates
+before resume I/O. New request ownership is rechecked after the read. Restart or last-peer disconnect erases private volatile facts and rotates
 the touch-token epoch; old actions are rejected. Explicit dismissal deletes intent;
-expiry and another device ID cannot resume it.
+expiry and another device ID cannot resume it. Last-peer disconnect preserves only
+the committed intent; it is not treated as explicit user dismissal.
 
 The focused native-Python controller tests cover restart, source changes/removal,
 privacy gate, superseded read, original range, expiry, dismissal and identity isolation.

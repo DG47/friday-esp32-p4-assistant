@@ -60,6 +60,10 @@ class WorkingContext:
     def current(self, device, request):
         return self.state(device).owner in {'', request}
 
+    def disconnect(self, device):
+        # Erase leased/private facts and tokens, retain only committed resume intent.
+        self.devices.pop(device, None)
+
     def dismiss(self, device):
         state = self.state(device)
         self.checkpoints.delete(device)

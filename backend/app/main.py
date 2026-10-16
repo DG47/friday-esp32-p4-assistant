@@ -1042,7 +1042,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
             if not hub.connections.get(device_id):
                 scene_navigation.pop(device_id, None)
             local_music.disconnected(device_id)
-            if not hub.connections.get(device_id): agent.working_context.dismiss(device_id)
+            if not hub.connections.get(device_id): agent.working_context.disconnect(device_id)
             if device_id not in hub.device_ids():
                 await speech.cancel(device_id)
                 speech.latest.pop(device_id, None)

@@ -141,3 +141,13 @@ class ContextRestart(unittest.IsolatedAsyncioTestCase):
         with closing(sqlite3.connect(self.path)) as db:
             after=db.execute('SELECT expires_at FROM context_checkpoints WHERE device_id=?',(device,)).fetchone()[0]
         self.assertEqual(before,after)
+
+    async def test_disconnect_erases_private_facts_but_preserves_fresh_resume_intent(self):
+        context=self.agent.working_context
+        old_action=self.corrected.surface.actions[1].id
+        context.disconnect('device')
+        self.assertNotIn('device',context.devices)
+        result=await self.read(self.agent,'get_weather',{'location':'context'})
+        self.assertTrue(result.success)
+        self.assertEqual(self.agent.weather.calls,['10010','10010'])
+        with self.assertRaises(ValueError):context.touch('device',old_action)
