@@ -26,6 +26,8 @@
 #include "friday_audio.h"
 #include "friday_error_scene.h"
 #include "friday_wifi.h"
+#include "friday_execution_stop.h"
+#include <strings.h>
 
 static const char *TAG = "friday_backend";
 static bool scene_action_pending;
@@ -51,6 +53,15 @@ static SemaphoreHandle_t send_lock;
 static volatile bool audio_active;
 static volatile bool wake_requested;
 static volatile bool backend_ready;
+#if CONFIG_FRIDAY_EXECUTION_STOP
+static friday_execution_stop_t execution_control,voice_execution;
+static SemaphoreHandle_t execution_lock;
+static volatile bool execution_negotiated;
+static char voice_execution_action[40];
+static esp_timer_handle_t execution_timer;
+static bool execution_action(bool status);
+static bool execution_mutations_blocked(void);
+#endif
 static char backend_uri[FRIDAY_BACKEND_URI_MAX];
 static char device_token[FRIDAY_DEVICE_TOKEN_LENGTH + 1];
 static bool persist_backend_uri;
@@ -304,6 +315,11 @@ bool friday_backend_scene_action(const char *action)
     if (!backend_ready || action == NULL || strlen(action) > 63) {
         return false;
     }
+#if CONFIG_FRIDAY_EXECUTION_STOP
+    if(!strcmp(action,"execution.stop"))return execution_action(false);
+    if(!strcmp(action,"execution.status"))return execution_action(true);
+    if(execution_mutations_blocked()&&(!strcmp(action,"confirm")||!strncmp(action,"memyes:",7)||!strncmp(action,"complete:",9)||!strncmp(action,"snooze:",7)||!strncmp(action,"cancel:",7)||!strncmp(action,"musicctl:",9)))return false;
+#endif
     if(!strcmp(action,"media.resume"))return resume_media();
     bool media_action = strcmp(action,"music") == 0 || strncmp(action,"musicctl:",9) == 0;
     /* Navigation pauses the source-owned view; an authenticated overlay binds it. */
@@ -345,6 +361,56 @@ static const char *json_string(const cJSON *object, const char *name)
     return cJSON_IsString(value) ? value->valuestring : NULL;
 }
 
+#if CONFIG_FRIDAY_EXECUTION_STOP
+static void execution_publish(void){friday_ui_execution_state(execution_control.phase,backend_ready&&execution_negotiated);}
+static void execution_tick(void *unused)
+{
+    (void)unused;
+    if(xSemaphoreTake(execution_lock,0)!=pdTRUE)return;
+    friday_execution_tick(&execution_control,(uint64_t)esp_timer_get_time()/1000);
+    execution_publish();xSemaphoreGive(execution_lock);
+}
+static bool execution_mutations_blocked(void)
+{
+    if(!execution_lock||xSemaphoreTake(execution_lock,0)!=pdTRUE)return true;
+    bool blocked=friday_execution_blocked(&execution_control);xSemaphoreGive(execution_lock);return blocked;
+}
+static bool execution_action(bool status)
+{
+    if(!backend_ready||!execution_negotiated||xSemaphoreTake(execution_lock,pdMS_TO_TICKS(25))!=pdTRUE)return false;
+    char request[40];snprintf(request,sizeof(request),"%08lx%08lx%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random());
+    cJSON *packet=friday_execution_request(&execution_control,request,(uint64_t)esp_timer_get_time()/1000,status);
+    execution_publish();xSemaphoreGive(execution_lock);
+    if(!packet)return false;
+    if(!status)friday_audio_stop_speech();
+    char *encoded=cJSON_PrintUnformatted(packet);cJSON_Delete(packet);
+    bool sent=encoded&&send_text(encoded,pdMS_TO_TICKS(250))>=0;cJSON_free(encoded);
+    if(!sent&&xSemaphoreTake(execution_lock,pdMS_TO_TICKS(25))==pdTRUE){friday_execution_disconnected(&execution_control);execution_publish();xSemaphoreGive(execution_lock);}
+    /* A failed send is still a handled Stop intent, with an explicit unknown notice. */
+    return true;
+}
+static void execution_frame(const cJSON *root,const char *type)
+{
+    if(xSemaphoreTake(execution_lock,pdMS_TO_TICKS(25))!=pdTRUE)return;
+    if(!strcmp(type,"ready")){
+        execution_negotiated=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root,"execution_stop_v1"))&&friday_ui_experience_enabled();
+        if(execution_negotiated)friday_execution_restore(&execution_control,cJSON_GetObjectItemCaseSensitive(root,"execution_recovery"));
+    }else if(execution_negotiated){
+        if(!strcmp(type,"job.accepted")&&!audio_active)friday_execution_capture(&execution_control,json_string(root,"job_id"),json_string(root,"execution_id"));
+        else if(!strcmp(type,"agent.result"))friday_execution_result(&execution_control,json_string(root,"job_id"),json_string(root,"delivery_id"));
+        else if(!strcmp(type,"transcript")&&voice_execution.job[0]){
+            const char *text=json_string(root,"text");char normalized[64]={0};
+            if(text&&strlen(text)<sizeof(normalized)){snprintf(normalized,sizeof(normalized),"%s",text);size_t n=strlen(normalized);while(n&&strchr(".!? ",normalized[n-1]))normalized[--n]=0;}
+            if((!strcasecmp(normalized,"stop")||!strcasecmp(normalized,"stop task")||!strcasecmp(normalized,"stop this task"))&&!strcmp(execution_control.job,voice_execution.job)&&!strcmp(execution_control.incarnation,voice_execution.incarnation)){
+                cJSON *unused=friday_execution_request(&execution_control,voice_execution_action,(uint64_t)esp_timer_get_time()/1000,false);cJSON_Delete(unused);
+            }
+            memset(&voice_execution,0,sizeof(voice_execution));
+        }else friday_execution_receive(&execution_control,root);
+    }
+    execution_publish();xSemaphoreGive(execution_lock);
+}
+#endif
+
 static void handle_surface(const cJSON *surface)
 {
     if (!cJSON_IsObject(surface)) {
@@ -371,12 +437,21 @@ static void handle_message(const char *payload)
 {
     cJSON *root=cJSON_Parse(payload);if(!root)return;
     const char *type=json_string(root,"type");if(!type){cJSON_Delete(root);return;}
+#if CONFIG_FRIDAY_EXECUTION_STOP
+    if(backend_ready&&(!strcmp(type,"execution.stop.observed")||!strcmp(type,"execution.stop.status"))){execution_frame(root,type);cJSON_Delete(root);return;}
+#endif
     friday_ui_receive_result_t received=friday_ui_receive(root,audio_active,friday_audio_playing());
     if(received.ack){send_text(received.ack,pdMS_TO_TICKS(250));free(received.ack);}
     if(!received.accepted){cJSON_Delete(root);return;}
     resolve_scene_action(root,received);
+#if CONFIG_FRIDAY_EXECUTION_STOP
+    execution_frame(root,type);
+#endif
     if(!strcmp(type,"ready")) {
         backend_ready=true;scene_action_clear(NULL);reconnect_failures=0;
+#if CONFIG_FRIDAY_EXECUTION_STOP
+        execution_tick(NULL);if(execution_negotiated)execution_action(true); /* Read-only recovery; never resend Stop. */
+#endif
         if(persist_backend_uri&&friday_wifi_set_backend_uri(backend_uri)==ESP_OK)persist_backend_uri=false;
         send_text("{\"type\":\"wake.start\"}",pdMS_TO_TICKS(1000));
     } else if(!strncmp(type,"speech.",7))friday_audio_speech_message(root);
@@ -445,9 +520,15 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
             "{\"type\":\"hello\",\"protocol\":1,"
             "\"device_token\":\"%s\","
             "\"capabilities\":[\"display\",\"touch\",\"microphone\","
-            "\"reminder_ack\",\"identity_rotate\",\"result_ack\",\"media_updates_v1\",\"media_artwork_v1\",\"media_persistent_v1\"%s%s]}",
+            "\"reminder_ack\",\"identity_rotate\",\"result_ack\",\"media_updates_v1\",\"media_artwork_v1\",\"media_persistent_v1\"%s%s%s]}",
             device_token, friday_audio_speaker_ready() ? ",\"pcm_speech\"" : "",
-            friday_ui_experience_enabled()?",\"experience_context_v1\"":"");
+            friday_ui_experience_enabled()?",\"experience_context_v1\"":"",
+#if CONFIG_FRIDAY_EXECUTION_STOP
+            friday_ui_experience_enabled()?",\"execution_stop_v1\"":""
+#else
+            ""
+#endif
+            );
         ESP_LOGI(TAG, "Connected to Friday backend");
         friday_ui_set_backend("FRIDAY AUTHENTICATING");
         if (hello_length <= 0 || (size_t)hello_length >= sizeof(hello) ||
@@ -457,6 +538,9 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base,
         break;
     }
     case WEBSOCKET_EVENT_DISCONNECTED:
+#if CONFIG_FRIDAY_EXECUTION_STOP
+        if(xSemaphoreTake(execution_lock,pdMS_TO_TICKS(25))==pdTRUE){execution_negotiated=false;friday_execution_disconnected(&execution_control);memset(&voice_execution,0,sizeof(voice_execution));friday_ui_execution_state(execution_control.phase,false);xSemaphoreGive(execution_lock);}
+#endif
         friday_ui_experience_session(NULL);
         friday_ui_media_clear();
         backend_ready = false;
@@ -567,6 +651,12 @@ static void backend_start_task(void *argument)
 
 esp_err_t friday_backend_start(void)
 {
+#if CONFIG_FRIDAY_EXECUTION_STOP
+    execution_lock=xSemaphoreCreateMutex();ESP_RETURN_ON_FALSE(execution_lock,ESP_ERR_NO_MEM,TAG,"Could not create execution lock");
+    const esp_timer_create_args_t execution_timer_args={.callback=execution_tick,.name="execution_deadline"};
+    ESP_RETURN_ON_ERROR(esp_timer_create(&execution_timer_args,&execution_timer),TAG,"Could not create execution timer");
+    ESP_RETURN_ON_ERROR(esp_timer_start_periodic(execution_timer,100000),TAG,"Could not start execution timer");
+#endif
     send_lock = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(send_lock != NULL, ESP_ERR_NO_MEM, TAG,
                         "Could not create WebSocket send lock");
@@ -629,13 +719,29 @@ bool friday_backend_begin_audio(const char *source)
     friday_audio_stop_speech();
     char request[40],activation[160];
     snprintf(request,sizeof(request),"%08lx%08lx%08lx%08lx",(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random(),(unsigned long)esp_random());
+#if CONFIG_FRIDAY_EXECUTION_STOP
+    char audio_start_buffer[512];friday_execution_stop_t voice_snapshot={0};bool voice_scoped=false;
+    if(xSemaphoreTake(execution_lock,pdMS_TO_TICKS(25))==pdTRUE){
+        voice_snapshot=execution_control;voice_execution=voice_snapshot;voice_scoped=execution_negotiated;
+        if(execution_negotiated&&execution_control.job[0]&&execution_control.action[0])snprintf(request,sizeof(request),"%.32s",execution_control.action);
+        snprintf(voice_execution_action,sizeof(voice_execution_action),"%s",request);
+        xSemaphoreGive(execution_lock);
+    }else return false;
+#endif
     snprintf(activation,sizeof(activation),"{\"type\":\"activate\",\"source\":\"%s\",\"request_id\":\"%s\"}",source&&!strcmp(source,"wake_word")?"wake_word":"touch",request);
     friday_ui_experience_request(request);
     const char audio_start[] =
         "{\"type\":\"audio.start\",\"format\":\"pcm_s16le\","
         "\"sample_rate\":12000,\"channels\":1}";
+    const char *audio_start_payload=audio_start;
+#if CONFIG_FRIDAY_EXECUTION_STOP
+    if(voice_scoped&&voice_snapshot.job[0]){
+        snprintf(audio_start_buffer,sizeof(audio_start_buffer),"{\"type\":\"audio.start\",\"format\":\"pcm_s16le\",\"sample_rate\":12000,\"channels\":1,\"execution_target\":{\"job_id\":\"%s\",\"execution_id\":\"%s\"}}",voice_snapshot.job,voice_snapshot.incarnation);
+        audio_start_payload=audio_start_buffer;
+    }
+#endif
     if (send_text(activation, pdMS_TO_TICKS(250)) < 0 ||
-        send_text(audio_start, pdMS_TO_TICKS(250)) < 0) {
+        send_text(audio_start_payload, pdMS_TO_TICKS(250)) < 0) {
         friday_ui_experience_send_failed(request);
         ESP_LOGW(TAG, "Could not send %s activation",
                  source != NULL ? source : "touch");

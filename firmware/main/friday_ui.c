@@ -269,6 +269,36 @@ static void set_activity_message(const char *text)
 
 /* The top 28px are reserved for actionable recovery notices on every scene.
  * Keep them separate from response text, protected facts, credits and targets. */
+#if CONFIG_FRIDAY_EXECUTION_STOP || defined(FRIDAY_NATIVE_EXECUTION_STOP)
+static atomic_int execution_phase;
+static atomic_bool execution_online;
+static lv_obj_t *execution_stop_button,*execution_status_button,*execution_stop_label;
+static void execution_event(lv_event_t *event)
+{
+    const char *action=lv_event_get_user_data(event);
+    if(action_callback)action_callback(action);
+}
+static void execution_controls_update(void)
+{
+    if(!execution_stop_button)return;
+    int phase=atomic_load(&execution_phase);bool visible=phase>=FR_EXEC_AVAILABLE&&phase<=FR_EXEC_UNCERTAIN;
+    lv_obj_t *controls[]={execution_stop_button,execution_status_button};
+    for(int i=0;i<2;i++){
+        if(visible){lv_obj_remove_flag(controls[i],LV_OBJ_FLAG_HIDDEN);lv_obj_move_foreground(controls[i]);}
+        else lv_obj_add_flag(controls[i],LV_OBJ_FLAG_HIDDEN);
+        if(!atomic_load(&execution_online)||(i==0&&(phase==FR_EXEC_PENDING||phase==FR_EXEC_UNCERTAIN)))lv_obj_add_state(controls[i],LV_STATE_DISABLED);
+        else lv_obj_remove_state(controls[i],LV_STATE_DISABLED);
+    }
+    lv_label_set_text(execution_stop_label,phase==FR_EXEC_UNCONFIRMED?"Retry Stop":"Stop task");
+}
+void friday_ui_execution_state(friday_execution_phase_t phase,bool online)
+{
+    atomic_store(&execution_phase,phase);atomic_store(&execution_online,online);
+}
+#else
+void friday_ui_execution_state(friday_execution_phase_t phase,bool online){(void)phase;(void)online;}
+#endif
+
 static void recovery_notice_update(void)
 {
     int mask=(atomic_load_explicit(&microphone_unavailable,memory_order_relaxed)?1:0)|(ui.voice_notice?2:0);
@@ -283,6 +313,11 @@ static void recovery_notice_update(void)
         lv_snprintf(media_guard.session,sizeof(media_guard.session),"%s",overlay.session);
         media_guard.sequence=overlay.sequence;
     }
+#if CONFIG_FRIDAY_EXECUTION_STOP || defined(FRIDAY_NATIVE_EXECUTION_STOP)
+    execution_controls_update();
+    int phase=atomic_load(&execution_phase);
+    if(phase>=FR_EXEC_PENDING)mask|=256+(phase<<10);
+#endif
     if(mask==ui.recovery_notice_mask)return;
     ui.recovery_notice_mask=mask;
     if(!mask){lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);return;}
@@ -290,6 +325,9 @@ static void recovery_notice_update(void)
         atomic_load(&interaction_notice_memory)?"Finish or cancel this review to open Music.":"Finish or cancel this request to open Music."):mask==3?"Microphone and voice unavailable. Use touch controls.":
         mask==1?"Microphone unavailable. Use touch controls.":
         "Voice isn't available. You can read the response.";
+#if CONFIG_FRIDAY_EXECUTION_STOP || defined(FRIDAY_NATIVE_EXECUTION_STOP)
+    if(mask&256)text=friday_execution_notice((friday_execution_phase_t)phase);
+#endif
     display_label(ui.status,text);
     lv_obj_set_size(ui.status,624,24);lv_obj_align(ui.status,LV_ALIGN_TOP_LEFT,48,4);
     lv_obj_set_style_text_color(ui.status,color_hex(UI_TEXT),0);
@@ -1608,6 +1646,19 @@ void friday_ui_create(void)
     ui.status=make_label(screen,"Here when you need me",&lv_font_montserrat_18,0xAAA8A5);
     lv_obj_align(ui.status,LV_ALIGN_TOP_LEFT,48,4);
     ui.recovery_notice_mask=-1;lv_obj_add_flag(ui.status,LV_OBJ_FLAG_HIDDEN);
+#if CONFIG_FRIDAY_EXECUTION_STOP || defined(FRIDAY_NATIVE_EXECUTION_STOP)
+    lv_obj_t **execution_widgets[]={&execution_stop_button,&execution_status_button};
+    const char *execution_titles[]={"Stop task","Task status"};
+    const char *execution_actions[]={"execution.stop","execution.status"};
+    for(int i=0;i<2;i++){
+        lv_obj_t *button=lv_button_create(screen);*execution_widgets[i]=button;
+        lv_obj_set_pos(button,504,76+i*56);lv_obj_set_size(button,168,48);
+        lv_obj_set_style_radius(button,18,0);lv_obj_set_style_bg_color(button,color_hex(UI_CONTROL),0);
+        lv_obj_t *label=make_label(button,execution_titles[i],&lv_font_montserrat_18,UI_TEXT);lv_obj_center(label);
+        if(!i)execution_stop_label=label;
+        lv_obj_add_event_cb(button,execution_event,LV_EVENT_CLICKED,(void*)execution_actions[i]);lv_obj_add_flag(button,LV_OBJ_FLAG_HIDDEN);
+    }
+#endif
     ui.message=make_label(screen,"",&lv_font_montserrat_24,0xC9C6C1);
     lv_label_set_long_mode(ui.message,LV_LABEL_LONG_MODE_DOTS);
     ui.microphone=make_label(screen,"Microphone starting",&lv_font_montserrat_18,0x757B86);

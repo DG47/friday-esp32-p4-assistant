@@ -61,3 +61,7 @@ void friday_ui_experience_finished(void);
 typedef struct {bool handled, accepted, completed;char *ack;} friday_ui_receive_result_t;
 /* One atomic freshness + render operation. Caller sends/frees ACK after unlock. */
 friday_ui_receive_result_t friday_ui_receive(const cJSON *packet,bool recording,bool speech_playing);
+
+#include "friday_execution_stop.h"
+/* Atomic notice/control state; applied by LVGL timer, separate from protected facts. */
+void friday_ui_execution_state(friday_execution_phase_t phase,bool online);
