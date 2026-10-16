@@ -46,3 +46,19 @@ class ObservedReadProse(unittest.IsolatedAsyncioTestCase):
         reply, _ = await self.ask([call('get_weather'), ProviderTurn(text='It is sunny and 22 Celsius right now.')])
         self.assertIn('not connected', reply.text)
         self.assertNotIn('22', reply.text)
+
+    async def test_exact_temporal_trace_repeats_requested_zip_without_rain_free_extrapolation(self):
+        from app.agent import ToolOutcome
+        from app.models import Surface
+        payload=json.loads((Path(__file__).parent/'fixtures/observed_weather_temporal.json').read_text())
+        observed=ToolOutcome(content=json.dumps(payload),surface=Surface(kind='metric',title='Weather'),success=True)
+        provider=ScriptedProvider([call('get_weather',{'location':'context','event_ref':payload['context']['event_ref']}),ProviderTurn(text='ZIP 10010. Temperature is 70.7°F with no rain expected until later tonight.')])
+        with patch.object(self.agent,'_execute_read_tool',return_value=observed):
+            reply=await self.agent._handle_with_model('synthetic-trace','Check Weather for that same dinner again using my correction. Tell me which ZIP you used.',provider,'synthetic-trace-read')
+        self.assertIn('ZIP 10010',reply.text)
+        self.assertIn('70.7 degrees Fahrenheit',reply.text)
+        self.assertIn('10%',reply.text)
+        self.assertIn('2026-10-16 22:00 UTC',reply.text)
+        self.assertIn('2026-10-16 23:00 UTC',reply.text)
+        self.assertNotIn('until later tonight',reply.text)
+        self.assertNotIn('no rain expected',reply.text)
