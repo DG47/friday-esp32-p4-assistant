@@ -1122,5 +1122,29 @@ int main(int argc,char **argv) {
     mutation_rejection_audit();
     receive_owned_audit();readonly_context_audit(argv[1]);integrated_storyboard(argv[1]);extended_context_story(argv[1]);
 #endif
+#ifdef FRIDAY_NATIVE_EXECUTION_STOP
+    friday_ui_media_clear();friday_ui_set_surface("message","Review the outcome","Synthetic original task; no private facts or real effects.");
+    const friday_execution_phase_t stop_phases[]={FR_EXEC_AVAILABLE,FR_EXEC_PENDING,FR_EXEC_UNCONFIRMED,FR_EXEC_UNCERTAIN,FR_EXEC_STOPPED,FR_EXEC_TERMINAL};
+    const char *stop_names[]={"execution-available","execution-pending","execution-unconfirmed","execution-uncertain","execution-stopped-before-admission","execution-terminal"};
+    for(unsigned i=0;i<sizeof(stop_phases)/sizeof(stop_phases[0]);i++){
+        friday_ui_execution_state(stop_phases[i],true);capture(argv[1],stop_names[i]);
+        unsigned controls=0;int old_actions=actions;
+        for(uint32_t j=0;j<lv_obj_get_child_count(lv_screen_active());j++){
+            lv_obj_t *o=lv_obj_get_child(lv_screen_active(),j);
+            if(!lv_obj_check_type(o,&lv_button_class)||lv_obj_get_width(o)!=168)continue;
+            bool visible=stop_phases[i]<=FR_EXEC_UNCERTAIN;assert(lv_obj_is_visible(o)==visible);
+            if(!visible)continue;
+            bool stop=lv_obj_get_y(o)==76;
+            assert(lv_obj_has_state(o,LV_STATE_DISABLED)==(stop&&(stop_phases[i]==FR_EXEC_PENDING||stop_phases[i]==FR_EXEC_UNCERTAIN)));
+            if(i==0){lv_obj_send_event(o,LV_EVENT_CLICKED,NULL);assert(!strcmp(last_action,stop?"execution.stop":"execution.status"));}
+            controls++;
+        }
+        assert(controls==(stop_phases[i]<=FR_EXEC_UNCERTAIN?2u:0u));if(i==0)assert(actions==old_actions+2);
+    }
+    friday_ui_execution_state(FR_EXEC_UNCONFIRMED,false);capture(argv[1],"execution-disconnected");
+    for(int i=0;i<1000;i++){friday_ui_execution_state(FR_EXEC_PENDING,true);lv_tick_inc(100);lv_timer_handler();friday_ui_execution_state(FR_EXEC_UNCONFIRMED,false);lv_tick_inc(100);lv_timer_handler();}
+    friday_ui_execution_state(FR_EXEC_IDLE,false);capture(argv[1],"execution-reentry");
+    puts("Native execution notices: 720px bounds, 48px controls and 1000 deadline/disconnect cycles PASS");
+#endif
     lv_mem_monitor_t m;lv_mem_monitor(&m);printf("HOST_HEAP used=%zu max=%zu\n",m.total_size-m.free_size,m.max_used);return 0;
 }
