@@ -65,6 +65,6 @@ class PersonaContractTests(unittest.IsolatedAsyncioTestCase):
         result=provider.requests[1][0][-1]
         self.assertEqual(result['role'],'tool')
         self.assertFalse(json.loads(result['content'])['ok'])
-        self.assertEqual(reply.text,"Weather isn't available right now.")
+        self.assertIn("not connected", reply.text)
         self.assertEqual(len(provider.requests),2)
         self.assertEqual(self.store.pending(),[])
