@@ -137,7 +137,8 @@ class DeviceHub:
                 await peer.websocket.send_json(weather_packet(packet))
                 return 1
         try:return await asyncio.wait_for(send(),self.send_timeout)
-        except (RuntimeError,WebSocketDisconnect,OSError,TimeoutError):
+        except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError,
+                ClosedResourceError, BrokenResourceError, EndOfStream):
             self.disconnect(device_id,websocket);return 0
 
     async def broadcast(
