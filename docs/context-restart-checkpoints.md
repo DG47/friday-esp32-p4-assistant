@@ -52,3 +52,11 @@ are erased, but a late in-flight read cannot treat a new ownerless workspace as 
 and reattach them. A regression delays Weather across disconnect and verifies the
 superseded reply, empty private state and retained disconnected owner. A subsequent new
 request can resume only through fresh source validation.
+
+
+Post-PR15 main CI exposed a race-test assertion comparing per-peer remaining Weather
+milliseconds for exact equality (299998 versus 299997), although production intentionally
+rebounds each lease at actual send time. The integrated test compares all stable content
+including the absolute deadline and independently validates both positive bounded leases.
+No server lease or expiry guard is relaxed. The failed CI run remains recorded in the
+coordinated integration handoff rather than being treated as passing evidence.
