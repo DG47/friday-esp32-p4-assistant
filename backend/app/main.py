@@ -150,6 +150,10 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        # Signal producers before cancellation: a transport may drain or resist
+        # cancellation, but must not start another report/poll iteration.
+        if report_runtime is not None:
+            report_runtime.stop_event.set()
         close_transcriber = getattr(transcriber, "close", None)
         if close_transcriber is not None:
             drained = await close_transcriber()

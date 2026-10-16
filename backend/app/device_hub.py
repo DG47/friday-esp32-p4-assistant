@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from fastapi import WebSocket, WebSocketDisconnect
+from anyio import ClosedResourceError, BrokenResourceError, EndOfStream
 from .experience import Experience, CAPABILITY, PRESENTATION
 
 
@@ -117,7 +118,8 @@ class DeviceHub:
         async def close(peer: DevicePeer) -> None:
             try:
                 await asyncio.wait_for(peer.websocket.close(code=1008), self.send_timeout)
-            except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError):
+            except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError,
+                    ClosedResourceError, BrokenResourceError, EndOfStream):
                 pass
             finally:
                 self.disconnect(device_id, peer.websocket)
@@ -176,7 +178,8 @@ class DeviceHub:
                         await peer.websocket.send_json(weather_packet(packet))
                         return 1
                 return await asyncio.wait_for(serialized_send(), self.send_timeout)
-            except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError):
+            except (RuntimeError, WebSocketDisconnect, OSError, TimeoutError,
+                    ClosedResourceError, BrokenResourceError, EndOfStream):
                 self.disconnect(device_id, peer.websocket)
                 return 0
 

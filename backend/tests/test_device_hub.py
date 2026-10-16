@@ -1,4 +1,5 @@
 import unittest
+from anyio import ClosedResourceError, BrokenResourceError, EndOfStream
 
 from app.device_hub import DeviceHub
 
@@ -42,6 +43,22 @@ class DeviceHubTests(unittest.IsolatedAsyncioTestCase):
         hub.disconnect("friday-p3a", device)
         self.assertEqual(len(hub.connections["friday-p3a"]), 1)
         self.assertIs(hub.connections["friday-p3a"][0].websocket, browser)
+
+
+    async def test_closed_stream_peer_is_removed_without_stopping_other_delivery(self):
+        for failure in (ClosedResourceError,BrokenResourceError,EndOfStream):
+            with self.subTest(failure=failure.__name__):
+                hub=DeviceHub();healthy=FakeWebSocket()
+                class Closed(FakeWebSocket):
+                    async def send_json(self,message):raise failure()
+                closed=Closed()
+                await hub.connect('synthetic-device',closed)
+                await hub.connect('synthetic-device',healthy)
+                self.assertEqual(await hub.broadcast('synthetic-device',{'type':'state','state':'idle'}),1)
+                self.assertEqual([p.websocket for p in hub.connections['synthetic-device']],[healthy])
+                self.assertEqual(len(healthy.messages),1)
+                self.assertEqual(await hub.broadcast('synthetic-device',{'type':'state','state':'thinking'}),1)
+                self.assertEqual(len(healthy.messages),2)
 
 
 if __name__ == "__main__":

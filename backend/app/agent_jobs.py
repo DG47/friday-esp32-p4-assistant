@@ -17,6 +17,7 @@ from .providers.local_policy import LocalModelUnavailable, LOCAL_FAILURE_MESSAGE
 
 
 logger = logging.getLogger(__name__)
+UNCERTAIN_CLAIM_ERROR = "interrupted_execution_outcome_uncertain"
 
 
 @dataclass
@@ -137,17 +138,29 @@ class AgentJobStore:
             raise ValueError("request_id is already assigned to another request")
         return self._job(row)
 
-    def recover_interrupted(self, now: datetime | None = None) -> int:
+    def recover_interrupted(self, now: datetime | None = None, *, exclude_job_ids=()) -> int:
         timestamp = (now or datetime.now(timezone.utc)).isoformat()
+        owned = tuple(exclude_job_ids)
+        exclusion = " AND id NOT IN (" + ",".join("?" for _ in owned) + ")" if owned else ""
         with closing(self._connect()) as connection:
             with connection:
                 cursor = connection.execute(
                     "UPDATE agent_jobs SET status = 'queued', available_at = ?, "
                     "lease_expires_at = NULL, updated_at = ? WHERE status = 'running' "
-                    "AND (lease_expires_at IS NULL OR lease_expires_at <= ?)",
-                    (timestamp, timestamp, timestamp),
+                    "AND (lease_expires_at IS NULL OR lease_expires_at <= ?) "
+                    "AND (error IS NULL OR error != ?)" + exclusion,
+                    (timestamp, timestamp, timestamp, UNCERTAIN_CLAIM_ERROR, *owned),
                 )
         return cursor.rowcount
+
+    def mark_execution_uncertain(self, job: AgentJob) -> None:
+        # Keep the running claim: cancellation does not prove an external action
+        # stopped. Existing columns suffice; never automatically replay this row.
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                "UPDATE agent_jobs SET error = ? WHERE id = ? AND status = 'running' AND attempts = ?",
+                (UNCERTAIN_CLAIM_ERROR, job.id, job.attempts),
+            )
 
     def get(self, job_id: str) -> AgentJob | None:
         with closing(self._connect()) as connection:
@@ -371,6 +384,9 @@ class AgentJobWorker:
         self.timeout_seconds = timeout_seconds
         self.max_age_seconds = max(10.0, max_age_seconds)
         self.concurrency = max(1, min(16, concurrency))
+        self._claimed_jobs = set()
+        self._handlers = {}
+        self._abandoned_jobs = set()
 
     async def _publish(self, job: AgentJob, reply: AgentReply) -> int:
         with self.hub.experience.for_job(job.id):
@@ -489,11 +505,59 @@ class AgentJobWorker:
         )
         if job is None:
             return False
+        # No yield between claiming and registering ownership. Track both the
+        # slot and its child: repeated slot cancellation may outlive wait_for.
+        self._claimed_jobs.add(job.id)
+        try:
+            return await self._process_claimed(job)
+        finally:
+            self._claimed_jobs.discard(job.id)
+
+    def recover_interrupted(self, now=None):
+        owned = self._claimed_jobs | self._handlers.keys() | self._abandoned_jobs
+        return self.store.recover_interrupted(now, exclude_job_ids=tuple(owned))
+
+    def _handler_finished(self, job_id, task):
+        if not task.cancelled():
+            task.exception()  # Consume abandoned failures without logging private payloads.
+        if self._handlers.get(job_id) is task:
+            self._handlers.pop(job_id)
+
+    def _retain_uncertain_claim(self, job):
+        self._abandoned_jobs.add(job.id)
+        try:
+            self.store.mark_execution_uncertain(job)
+            self._abandoned_jobs.discard(job.id)  # The durable recovery filter now owns this fence.
+        except Exception:
+            logger.error("Uncertain claim persistence failed; local automatic recovery remains paused")
+        logger.warning("Agent execution interrupted; outcome unconfirmed, automatic claim replay blocked")
+
+    async def _process_claimed(self, job):
+        handler = asyncio.create_task(self._handle_owned(job))
+        self._handlers[job.id] = handler
+        handler.add_done_callback(lambda task: self._handler_finished(job.id, task))
         try:
             reply = await asyncio.wait_for(
-                self._handle_owned(job),
+                handler,
                 timeout=self.timeout_seconds,
             )
+        except asyncio.CancelledError:
+            self._retain_uncertain_claim(job)
+            raise
+        except TimeoutError:
+            # A cancelled coroutine can leave shielded/native/remote work alive.
+            # Do not turn a timeout into an automatic repeat of an unknown action.
+            self._retain_uncertain_claim(job)
+            with self.hub.experience.for_job(job.id):
+                await self.hub.broadcast(job.device_id, {
+                    "type": "error", "code": "execution_outcome_uncertain",
+                    "message": "The request timed out without a confirmed outcome. Check before retrying.",
+                })
+                await self.hub.broadcast(job.device_id, {"type": "state", "state": "idle"})
+                await self.hub.broadcast(job.device_id, {"type": "experience.finished"}, required_capability="experience_context_v1")
+            if self.on_finished:
+                await self.on_finished(job.device_id)
+            return True
         except LocalModelUnavailable as error:
             # Do not retry a known unavailable local model or obscure it behind a
             # generic failure. Persist only a safe code, never provider payloads.
@@ -540,7 +604,7 @@ class AgentJobWorker:
     async def _run_maintenance(self) -> None:
         while True:
             try:
-                self.store.recover_interrupted()
+                self.recover_interrupted()
                 self.store.prune_results()
                 self.store.expire_stale(max_age_seconds=self.max_age_seconds)
                 for device_id in self.hub.device_ids():

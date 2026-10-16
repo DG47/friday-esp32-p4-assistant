@@ -69,7 +69,7 @@ class ReportRuntime:
         first=value.split(maxsplit=1)[0] if value else ''
         return first in {'report','/report','task','/task','/status','/ask'} or value.lower() in {'report status','task status'}
     def require_ready(self):
-        if not self.ready or self.service.fd is None or self.delivery_task is not None and self.delivery_task.done():raise ValueError('Report supervisor unavailable')
+        if not self.ready or self.stop_event.is_set() or self.service.fd is None or self.delivery_task is not None and self.delivery_task.done():raise ValueError('Report supervisor unavailable')
     async def start(self):
         await self.service.start();self.ready=True
     def review(self,owner,task_id):

@@ -154,24 +154,19 @@ async def agent_recovery():
     # Simulate elapsed lease time in this private synthetic DB, without claiming real clock coverage.
     with sqlite3.connect(store.path) as db:
         db.execute("UPDATE agent_jobs SET lease_expires_at='2000-01-01T00:00:00+00:00' WHERE id=?", (job.id,))
-    assert store.recover_interrupted() == 1
-    class Finished:
-        async def handle(self, device_id, text, request_id=None):
-            completed.append(request_id)
-            return AgentReply(text='Original synthetic completion', surface=Surface(kind='message', title='Synthetic'), provider='mock')
-    worker = AgentJobWorker(store, Finished(), DeviceHub(), concurrency=1)
-    assert await worker.process_once()
-    assert not await worker.process_once()
-    assert store.enqueue('synthetic-device', 'Original synthetic request', request_id=job.id).id == job.id
-    assert not await worker.process_once()
-    assert len(completed) == 1 and store.get(job.id).status == 'completed'
+    assert store.recover_interrupted() == 0
+    assert store.get(job.id).error == 'interrupted_execution_outcome_uncertain'
+    # A cancelled async handler is not proof that native/remote effects stopped.
+    # Preserve the uncertain claim for reconciliation instead of replaying it.
+    assert not await AgentJobWorker(store, Blocked(), DeviceHub(), concurrency=1).process_once()
     with sqlite3.connect(store.path) as db:
         assert db.execute('SELECT COUNT(*) FROM agent_jobs').fetchone()[0] == 1
         assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
     RESULT['agent_recovery'] = {'cooperative_inflight_cancel_observed': 'pass',
                               'durable_running_lease_no_false_completion': 'pass',
-                              'simulated_lease_expiry_recovery': 'pass', 'single_completion_no_repeat': 'pass',
+                              'uncertain_cancelled_claim_not_replayed': 'pass',
                               'real_external_effect_cancellation': 'unverified'}
+
 
 
 def main():
