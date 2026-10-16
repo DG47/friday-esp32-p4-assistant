@@ -48,9 +48,24 @@ adapter-specific intent/outcome evidence, or an explicitly reviewed owner
 attestation policy. Coroutine drain or model prose cannot establish that proof.
 No-tool factual accuracy and cross-identity sharing remain unproved/unimplemented.
 
-Validation: 668 provider-free backend tests pass (20.929s), including resistant
+Validation: 672 provider-free backend tests pass (20.580s), including resistant
 actual-tool admission, already-admitted effects, delayed/failed durable writes,
 requester cancellation, restart/lost ACK, wrong scope, exact ASR Stop, read-only
 reconciliation, and Node fake-clock client deadlines/ordering. Ten synthetic real
 loopback callback scenarios pass without credential exchange. Node syntax and
 git whitespace checks pass. Native/browser physical interaction remains separate.
+
+An independent process-local same-device hold survives failed observation cache
+entries and view/reconnect changes while the target is queued/running/unknown.
+It blocks new generic/report admission and dependent mutable scene actions;
+read-only status and protected review/decline remain available. Reconnect restores
+its opaque target. Verified known terminal/pre-admission status can release it;
+unknown outcomes cannot. Explicit same-action retry may restart only a completed
+failed persistence attempt; an outstanding write is never cancelled or replaced.
+A process crash before any successful durable write loses this in-memory hold:
+no source/client can infer a durable revoke from failed storage. Existing worker
+restart uncertainty still applies to attempted jobs; owner reconciliation remains
+necessary. Native/remote already-admitted effects have no universal kill/reversal.
+The actual Chrome DOM test passes 13 synthetic socket/clock interaction checks,
+including duplicate-click disabling, confirmation mutation holds and late
+acceptance after a settled Stop. Browser speech/provider/account calls are absent.

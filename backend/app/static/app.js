@@ -23,7 +23,8 @@ const executionControl = new ExecutionStopClient(packet => {
 function executionRequestId() { return crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
 function executionRender() {
   executionNotice.textContent = executionControl.notice;
-  executionButton.disabled = !executionSupported || !executionControl.target;
+  executionButton.disabled = !executionSupported || !executionControl.target || ['pending','uncertain'].includes(executionControl.phase);
+  executionButton.textContent = executionControl.phase === 'unconfirmed' ? 'Retry Stop' : 'Stop task';
   executionStatus.disabled = !executionSupported || !executionControl.target;
 }
 executionButton.addEventListener('click', () => { stopSpeech(); executionControl.request(executionRequestId()); executionRender(); });
@@ -339,7 +340,7 @@ function sendSceneAction(action) {
     return;
   }
   if (action === "music") musicDismissed = false;
-  const mutation = /^(snooze|complete|cancel|musicctl):/.test(action);
+  const mutation = /^(snooze|complete|cancel|musicctl|memyes):|^confirm$/.test(action);
   if (mutation && executionControl.blocked()) { executionRender(); return; }
   if (mutation && actionPending) return;
   if (mutation) {

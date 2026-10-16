@@ -156,3 +156,51 @@ class ExecutionStops(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(OSError):
                     await main.execution_control_reply('device',LostAck(),job.id,job.delivery_id,'stop-lost-delivery',True)
         self.assertEqual(self.store.get(job.id).error,'user_stop_before_admission')
+
+    async def test_failed_revocation_hold_survives_observer_cache_eviction_and_reconnect(self):
+        from unittest.mock import patch
+        job=self.store.enqueue('device','Synthetic original queued request','failed-hold')
+        with patch.object(self.store,'request_execution_stop',side_effect=OSError('Synthetic storage unavailable')):
+            reply=await self.stop.request('device',job.id,job.delivery_id,'failed-stop')
+        self.assertFalse(reply['ack_confirmed']);self.stop.observer.attempts.clear()
+        self.assertTrue(self.stop.pending_for('device'));self.assertFalse(self.stop.pending_for('other-device'))
+        self.assertEqual(self.stop.recovery('device'),{'job_id':job.id,'execution_id':job.delivery_id})
+        preview=await self.stop.reconciliation_preview('device',job.id,job.delivery_id)
+        self.assertTrue(preview['observer_hold']);self.assertTrue(preview['needs_effect_evidence'])
+        self.assertFalse(preview['replay_allowed'])
+        # No invented durable guarantee if the process dies before the failed write.
+        restarted=ExecutionStop(AgentJobStore(self.path),self.worker)
+        self.assertFalse(restarted.pending_for('device'))
+        await restarted.observer.close()
+        # A failed completed storage attempt can be explicitly retried, retaining
+        # its original identity; this is not an automatic effect replay.
+        retry=await self.stop.request('device',job.id,job.delivery_id,'failed-stop')
+        self.assertTrue(retry['authority_revoked']);self.assertFalse(self.stop.pending_for('device'))
+
+    async def test_wrong_scope_never_creates_hold_and_verified_preadmission_releases_it(self):
+        job=self.store.enqueue('device','Synthetic queued task','hold-release')
+        with self.assertRaises(ValueError):await self.stop.request('other-device',job.id,job.delivery_id,'wrong-stop')
+        self.assertFalse(self.stop.pending_for('other-device'))
+        await self.stop.request('device',job.id,job.delivery_id,'safe-stop')
+        self.assertFalse(self.stop.pending_for('device'));self.assertIsNone(self.stop.recovery('device'))
+
+    async def test_unconfirmed_hold_blocks_new_report_dispatch_before_admission(self):
+        from unittest.mock import patch,Mock
+        from app import main
+        from app.agent_jobs import UncertainExecutionPending
+        job=self.store.enqueue('device','Synthetic original request','hold-dispatch')
+        with patch.object(self.store,'request_execution_stop',side_effect=OSError('Synthetic failed persistence')):
+            await self.stop.request('device',job.id,job.delivery_id,'hold-control')
+        reports=Mock();reports.accepts.side_effect=AssertionError('Report dispatch must not be admitted')
+        with patch.object(main,'execution_stop',self.stop),patch.object(main,'report_runtime',reports):
+            with self.assertRaises(UncertainExecutionPending):await main.handle_utterance('device','Create a synthetic report','new-effect')
+        reports.accepts.assert_not_called()
+
+    async def test_explicit_same_action_retry_after_completed_storage_failure_can_commit(self):
+        from unittest.mock import patch
+        job=self.store.enqueue('device','Synthetic retry target','retry-storage')
+        with patch.object(self.store,'request_execution_stop',side_effect=OSError('Synthetic storage failure')):
+            first=await self.stop.request('device',job.id,job.delivery_id,'same-stop')
+        self.assertFalse(first['ack_confirmed'])
+        retry=await self.stop.request('device',job.id,job.delivery_id,'same-stop')
+        self.assertTrue(retry['ack_confirmed']);self.assertEqual(retry['state_at_ack'],'stopped_before_admission')

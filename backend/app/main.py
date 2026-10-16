@@ -285,6 +285,7 @@ def require_weather_navigation(device_id: str) -> None:
 async def handle_utterance(
     device_id: str, text: str, request_id: str | None = None
 ) -> str:
+    if execution_stop is not None and execution_stop.pending_for(device_id):raise UncertainExecutionPending()
     text = prepare_memory_input(text)
     if report_runtime is not None and report_runtime.accepts(text):
         if not report_can_present(device_id):raise ValueError('Finish or recover the protected interaction before opening a report')
@@ -350,7 +351,7 @@ async def send_error(websocket: WebSocket, code: str, message: str) -> None:
 
 
 def recovery_pending(device_id):
-    return bool(job_store.uncertain_for(device_id) or store.pending_confirmation(device_id) or agent.memory.store is not None and agent.memory.store.pending_confirmation(device_id))
+    return bool(job_store.uncertain_for(device_id) or execution_stop is not None and execution_stop.pending_for(device_id) or store.pending_confirmation(device_id) or agent.memory.store is not None and agent.memory.store.pending_confirmation(device_id))
 
 
 def recover_protected(device_id):
@@ -369,7 +370,7 @@ def recover_protected(device_id):
         return Surface(kind="message", title="Confirmation required",
             subtitle=pending.summary + "\nSay yes to continue, or cancel this exact request.",
             actions=[SurfaceAction(id="reqcancel:"+hashlib.sha256(pending.id.encode()).hexdigest()[:24], label="Cancel request")])
-    if job_store.uncertain_for(device_id):
+    if job_store.uncertain_for(device_id) or execution_stop is not None and execution_stop.pending_for(device_id):
         return Surface(kind="message", title="Outcome unconfirmed",
             subtitle="A previous action may still have taken effect. It was not replayed. Review its outcome on the Mac before sending more work; closing this view does not resolve it.",
             expires_ms=30000)
@@ -699,7 +700,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                     "type": "ready",
                                     "protocol": 1,
                                     "device_id": device_id,
-                                    **({'execution_stop_v1':True,'execution_recovery':job_store.execution_recovery(device_id)} if {EXECUTION_STOP,'result_ack'}<=capabilities else {}),
+                                    **({'execution_stop_v1':True,'execution_recovery':execution_stop.recovery(device_id)} if {EXECUTION_STOP,'result_ack'}<=capabilities else {}),
                                     "state": "idle",
                                     **({"experience_epoch": hub.experience.session(device_id), "review_pending": recovery_pending(device_id) or report_runtime is not None and await report_runtime.available(device_id)} if CAPABILITY in capabilities else {}),
                                     "surface": {
@@ -736,7 +737,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                 # recovery, or replace an unrelated protected view.
                                 await send_error(websocket,observation.code,observation.message)
                                 continue
-                            if job_store.uncertain_for(device_id) and (action=='confirm' or action.startswith(('memyes:','complete:','snooze:','cancel:','musicctl:'))):
+                            if (job_store.uncertain_for(device_id) or execution_stop is not None and execution_stop.pending_for(device_id)) and (action=='confirm' or action.startswith(('memyes:','complete:','snooze:','cancel:','musicctl:'))):
                                 raise UncertainExecutionPending()
                             negotiated = hub.peer_has_capability(device_id, websocket, CAPABILITY)
                             if negotiated:

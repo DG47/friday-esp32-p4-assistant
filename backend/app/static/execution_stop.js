@@ -38,7 +38,7 @@
     match(frame, expected) {
       return expected && frame.request_id === expected.request_id && frame.job_id === expected.job_id && frame.execution_id === expected.execution_id;
     }
-    settled(phase, notice) { this.phase = phase; this.notice = notice; this.pending = null; this.query = null; this.target = null; }
+    settled(phase, notice) { if (this.target) { this.finished.add(this.target.execution_id); if (this.finished.size > 64) this.finished.delete(this.finished.values().next().value); } this.phase = phase; this.notice = notice; this.pending = null; this.query = null; this.target = null; }
     receive(frame) {
       if (frame.type === 'execution.stop.observed') {
         if (!this.match(frame, this.pending) || typeof frame.ack_confirmed !== 'boolean' || typeof frame.authority_revoked !== 'boolean' || typeof frame.handler_drained !== 'boolean') return false;
