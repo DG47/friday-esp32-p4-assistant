@@ -168,3 +168,24 @@ class BoundedStop(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await restored.mutation_blocked('another-device'))
         self.assertEqual(self.store.get('owner',self.task['id'])['state'],'uncertain')
         self.assertFalse(await ReportWorker(self.store,'owner').run(self.task['id']))
+
+    async def test_failed_stop_hold_survives_observer_eviction_and_view_switch(self):
+        await self.start_resistant();first_token=self.token()
+        self.runtime.stop_observer=StopObserver(capacity=1,drain_grace=.01)
+        original=self.store.io
+        async def failed(operation,*args,**kwargs):
+            if getattr(operation,'__name__','')=='stop':raise OSError('synthetic persistence failure')
+            return await original(operation,*args,**kwargs)
+        with patch.object(self.store,'io',side_effect=failed):
+            result=await self.runtime.stop('lcd',first_token)
+        self.assertFalse(result.ack_confirmed)
+        other=self.store.create('owner','other-selected-task','Prepare another report','demo')
+        second_token=self.runtime.bridge.scene('lcd',other['id']).actions[0].id
+        with self.store.db() as db:
+            db.execute('INSERT OR REPLACE INTO report_device_views VALUES(?,?,?)',('lcd','owner',other['id']))
+        await self.runtime.stop('lcd',second_token)
+        self.assertNotIn(('owner','lcd',first_token),self.runtime.stop_observer.attempts)
+        self.assertEqual(self.store.get('owner',self.task['id'])['state'],'running')
+        self.assertTrue(await self.runtime.mutation_blocked('lcd'))
+        self.release.set();await self.tick
+        self.assertFalse(await self.runtime.mutation_blocked('lcd'))

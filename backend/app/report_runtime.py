@@ -31,7 +31,7 @@ class ReportRuntime:
     def __init__(self,store,planner,device_owners,hub,authorized,can_present):
         self.store,self.planner,self.hub=store,planner,hub
         self.bridge=ReportContext(store,device_owners);self.authorized,self.can_present=authorized,can_present
-        self.service=ReportService(store,planner,None,enabled=True);self.transport=None;self.stop_observer=StopObserver();self.stop_tasks={}
+        self.service=ReportService(store,planner,None,enabled=True);self.transport=None;self.stop_observer=StopObserver();self.stop_tasks={};self.stop_holds=set()
         self.origins={};self.sent={};self.stop_event=asyncio.Event();self.ready=False;self.delivery_task=None
         with store.db() as db:
             db.executescript('CREATE TABLE IF NOT EXISTS report_device_views(device TEXT PRIMARY KEY,owner TEXT NOT NULL,task TEXT NOT NULL); CREATE TABLE IF NOT EXISTS report_device_deliveries(device TEXT NOT NULL,owner TEXT NOT NULL,task TEXT NOT NULL,revision INTEGER NOT NULL,delivery TEXT NOT NULL UNIQUE,acked INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(device,task,revision));')
@@ -136,6 +136,13 @@ class ReportRuntime:
             if not persistence.done() or not observation.done():return True
             task=await self.store.io(self.store.get,owner,self.stop_tasks[key])
             if task['state'] in {'running','planning','stopping','uncertain'}:return True
+        # An unconfirmed attempt still gates its task even if the bounded observer
+        # cache evicts the completed failure or the user selects another view.
+        for hold in list(self.stop_holds):
+            if hold[:2]!=(owner,device):continue
+            task=await self.store.io(self.store.get,owner,hold[2])
+            if task['state'] in {'running','planning','stopping','uncertain'}:return True
+            self.stop_holds.discard(hold)
         # Restart has no observer tasks; retain the existing explicit device view's
         # durable quarantine instead of inferring that absence means drained.
         def quarantined_view():
@@ -154,6 +161,7 @@ class ReportRuntime:
         grant=self.bridge.stop_grant(device,token)
         self.stop_tasks={k:v for k,v in self.stop_tasks.items() if k in self.stop_observer.attempts}
         self.stop_tasks[key]=grant['task']
+        self.stop_holds.add((owner,device,grant['task']))
         async def persist():
             return await self.store.io(self.bridge.stop,device,token)
         return self._stop_result(key,await self.stop_observer.request(key,grant['generation'],persist,

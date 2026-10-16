@@ -53,7 +53,7 @@ new observer contract; those integrations stay disabled/deferred.
 
 ## Evidence
 
-Eight new production service/controller regressions cover resistant pre-write work,
+Nine new production service/controller regressions cover resistant pre-write work,
 persistence delay, caller cancellation, storage failure, stale generation/other owner,
 already-admitted fsync-held bytes, same-device admission/read-only access and restart
 without drain proof. The old runtime Stop method fails the persistence-budget regression
@@ -62,7 +62,7 @@ case confirms bytes are retained, artifact is not published, and stopped arrives
 after real handler drain. Existing direct owner/stale control regression is preserved.
 The supported native route fixture now checks the explicit revocation acknowledgement
 before waiting for durable stopped result, instead of treating acknowledgement as failure.
-Aggregate **649 tests pass**; exact-head CI belongs in the PR. No model or real account is
+Standalone aggregate **650 tests pass**; exact-head CI belongs in the PR. No model or real account is
 called. Timings/gates are synthetic observations, not real-time scheduling guarantees.
 
 ## Architectural blockers and release limits
@@ -84,3 +84,13 @@ DB backup; older code ignores it and loses the device admission gate. Because re
 scope/executor digests bind source, existing approved report scopes may require a fresh
 exact review after source change; never rewrite approvals to silently preserve authority.
 The sole live owner controls backup, deployment and physical acceptance.
+
+
+Coordinated integration review adds a same-device task hold independent of the bounded
+observer cache. A completed failed/unconfirmed revocation can be evicted from that cache
+without allowing new work while the original task remains running/planning/stopping/
+uncertain. The hold is scoped to existing owner/device/task identities and clears only
+after observed terminal task state, not cache eviction or view selection. A regression
+forces capacity-one eviction after a storage failure and switches views. This volatile
+hold is not claimed durable when storage never accepted any write; after process loss,
+unknown effects still require owner reconciliation and existing no-replay recovery.
