@@ -42,7 +42,7 @@ The installed-lineage suite reportedly passed 500 tests, including five new owne
 regressions. That result does not cover the merged feature tree. This integration runs
 the full main-based suite separately; the scoped tests cover active lease expiry,
 cancellation-resistant timeout, restart-persisted cancellation, shielded effects after
-parent cancellation and shielded effects after timeout. The five focused tests and the full **614-test integrated suite passed**, with zero
+parent cancellation and shielded effects after timeout. The five focused tests and the initial full **614-test integrated suite passed**, with zero
 failures, errors or skips. The actual updated recovery fixture function also passed
 independently with its database path redirected to temporary synthetic state; its
 container/TLS harness was not rerun. Independent read-only review found no concrete
@@ -57,3 +57,21 @@ makes no certificate/key, TLS-verification, address, network or credential chang
 cannot restore connectivity by itself. Physical panel, touch, microphone, speaker and
 Stop acceptance remain unverified. No physical acceptance is inferred from source
 integration or CI.
+
+
+## Integrated lifecycle failures found by CI
+
+The first main-based PR run passed 614 tests, but duplicate push attempts stalled.
+A bounded CI watchdog exposed two integration failures: a closed AnyIO WebSocket stream
+could escape peer delivery and terminate the report supervisor, and shutdown could wait
+for a report loop that had no cooperative stop signal before cancellation.
+
+The additional narrow fixes disconnect closed/broken/end-of-stream peers without
+suppressing cancellation, signal the shared report stop event before task cancellation,
+and reject new report/admin admission once stopping. Report approval, file execution,
+Telegram owner binding and task-state semantics are preserved. Deterministic regressions
+failed before these fixes and passed afterward; healthy-peer delivery remains available.
+The combined suite now passes **617 tests**. Independent read-only review found no
+concrete blocker within scope. The CI wall timeout and stack dump expose future stalls;
+they do not prove universally bounded native/remote shutdown or effect cancellation.
+No runtime or certificate change was made by this publication.

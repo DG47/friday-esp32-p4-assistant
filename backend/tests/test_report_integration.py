@@ -188,3 +188,21 @@ class IntegratedReports(unittest.TestCase):
             self.assertNotEqual(fresh['nonce'],first['nonce'])
             self.assertGreater(fresh['revision'],first['revision'])
             self.assertEqual(fresh['scope']['manifest'],first['scope']['manifest'])
+
+    def test_shutdown_signals_stop_before_cancelling_resistant_report_tick(self):
+        runtime=main.report_runtime;entered=asyncio.Event();observed=[]
+        async def resistant_tick():
+            entered.set()
+            try:await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                observed.append(runtime.stop_event.is_set())
+                # Also stop an unfixed implementation so the regression fails
+                # promptly instead of leaving a deliberately resistant fixture alive.
+                runtime.stop_event.set()
+                return False
+        with patch.object(runtime.service,'tick',side_effect=resistant_tick):
+            self.client.portal.call(asyncio.wait_for,entered.wait(),1)
+            self.stack.close()
+        self.assertEqual(observed,[True])
+        self.assertFalse(runtime.ready)
+        self.assertIsNone(runtime.service.fd)
