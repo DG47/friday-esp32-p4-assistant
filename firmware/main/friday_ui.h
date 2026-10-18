@@ -47,3 +47,21 @@ void friday_ui_media_note_action(const char *action);
 void friday_ui_media_overlay_completed(const cJSON *root);
 bool friday_ui_media_overlay_needs_resume(void);
 bool friday_ui_media_visible(void);
+
+/* Opt-in continuous-context candidate; CONFIG_FRIDAY_EXPERIENCE_CONTEXT defaults off. */
+void friday_ui_experience_preview(bool enabled);
+
+#include "friday_experience_guard.h"
+bool friday_ui_experience_enabled(void);
+void friday_ui_experience_session(const char *epoch);
+void friday_ui_experience_request(const char *request);
+void friday_ui_experience_send_failed(const char *request);
+friday_experience_accept_t friday_ui_experience_packet(const cJSON *packet);
+void friday_ui_experience_finished(void);
+typedef struct {bool handled, accepted, completed;char *ack;} friday_ui_receive_result_t;
+/* One atomic freshness + render operation. Caller sends/frees ACK after unlock. */
+friday_ui_receive_result_t friday_ui_receive(const cJSON *packet,bool recording,bool speech_playing);
+
+#include "friday_execution_stop.h"
+/* Atomic notice/control state; applied by LVGL timer, separate from protected facts. */
+void friday_ui_execution_state(friday_execution_phase_t phase,bool online);

@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "locations": [
+    {
+      "ok": true,
+      "location": "10010",
+      "temperature_2m": 70.7,
+      "weather_code": 0,
+      "is_day": 1,
+      "wind_speed_10m": 8,
+      "relative_humidity_2m": 65,
+      "rain_forecast": {
+        "starts_at": "2026-10-16T22:00:00+00:00",
+        "ends_at": "2026-10-16T23:00:00+00:00",
+        "probability": 10,
+        "clock_facts": {
+          "start": {
+            "iso": "2026-10-16T22:00:00+00:00",
+            "date": "2026-10-16",
+            "time": "22:00",
+            "zone": "UTC",
+            "utc_offset": "+00:00",
+            "label": "2026-10-16 22:00 UTC (UTC+00:00)"
+          },
+          "end": {
+            "iso": "2026-10-16T23:00:00+00:00",
+            "date": "2026-10-16",
+            "time": "23:00",
+            "zone": "UTC",
+            "utc_offset": "+00:00",
+            "label": "2026-10-16 23:00 UTC (UTC+00:00)"
+          },
+          "elapsed_seconds": 3600.0,
+          "duration_minutes": 60.0,
+          "basis": "elapsed UTC time; local wall clocks may cross DST or midnight"
+        }
+      }
+    }
+  ],
+  "context": {
+    "event_ref": "05a23bf3487d76b82c791b2d",
+    "weather_ref": "07d0f71eb882406f588d007b",
+    "location": "10010"
+  }
+}

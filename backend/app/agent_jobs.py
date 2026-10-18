@@ -13,9 +13,12 @@ from pathlib import Path
 from .agent import FridayAgent
 from .device_hub import DeviceHub
 from .models import AgentReply
+from .execution_authority import execution_scope
+from .providers.local_policy import LocalModelUnavailable, LOCAL_FAILURE_MESSAGES
 
 
 logger = logging.getLogger(__name__)
+UNCERTAIN_CLAIM_ERROR = "interrupted_execution_outcome_uncertain"
 
 
 @dataclass
@@ -32,6 +35,24 @@ class AgentJob:
     delivery_attempted_at: str | None = None
 
 
+class JobAdmissionError(ValueError):
+    code = "request_conflict"
+
+
+class CompletedRequestReplay(JobAdmissionError):
+    code = "request_already_finished"
+
+    def __init__(self):
+        super().__init__("That request already finished. No action was repeated. Start a new request to continue.")
+
+
+class UncertainExecutionPending(JobAdmissionError):
+    code = "execution_outcome_uncertain"
+
+    def __init__(self):
+        super().__init__("A previous action has an unconfirmed outcome. No new work was started. Review the outcome on the Mac before retrying; it will not be replayed automatically.")
+
+
 class AgentJobStore:
     def __init__(self, path: Path):
         self.path = path
@@ -41,6 +62,60 @@ class AgentJobStore:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def uncertain_for(self, device_id):
+        with closing(self._connect()) as connection:
+            return connection.execute(
+                "SELECT 1 FROM agent_jobs WHERE device_id=? AND status='running' AND error=? LIMIT 1",
+                (device_id, UNCERTAIN_CLAIM_ERROR),
+            ).fetchone() is not None
+
+    def claim_current(self, job):
+        with closing(self._connect()) as connection:
+            return connection.execute(
+                "SELECT 1 FROM agent_jobs WHERE id=? AND device_id=? AND result_delivery_id=? AND attempts=? AND status='running' AND (error IS NULL OR error!=?)",
+                (job.id,job.device_id,job.delivery_id,job.attempts,UNCERTAIN_CLAIM_ERROR),
+            ).fetchone() is not None
+
+    def request_execution_stop(self, device, job_id, incarnation, stop_id):
+        timestamp=datetime.now(timezone.utc).isoformat()
+        with closing(self._connect()) as connection, connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row=connection.execute('SELECT * FROM agent_jobs WHERE id=? AND device_id=? AND result_delivery_id=?',(job_id,device,incarnation)).fetchone()
+            if row is None:raise ValueError('Execution target is unavailable or changed')
+            prior=connection.execute('SELECT response FROM execution_stops WHERE device=? AND job=? AND incarnation=?',(device,job_id,incarnation)).fetchone()
+            if prior:return json.loads(prior[0])
+            never_admitted=row['status']=='queued' and row['attempts']==0
+            revoked=row['status'] in {'queued','running'}
+            if never_admitted:
+                connection.execute("UPDATE agent_jobs SET status='failed',error='user_stop_before_admission',lease_expires_at=NULL,updated_at=? WHERE id=?",(timestamp,job_id))
+                state='stopped_before_admission'
+            elif revoked:
+                connection.execute("UPDATE agent_jobs SET status='running',error=?,updated_at=? WHERE id=?",(UNCERTAIN_CLAIM_ERROR,timestamp,job_id))
+                state='outcome_uncertain'
+            elif row['status'] in {'completed','failed','expired','late'}:state='already_terminal'
+            else:raise ValueError('Execution state is unavailable')
+            result={'id':job_id,'execution_id':incarnation,'state':state,'generation':int(revoked),'no_execution_admitted':never_admitted}
+            connection.execute('INSERT INTO execution_stops VALUES(?,?,?,?,?,?)',(device,job_id,incarnation,stop_id,json.dumps(result),timestamp))
+            return result
+
+    def execution_recovery(self, device):
+        with closing(self._connect()) as connection:
+            row=connection.execute("SELECT id,result_delivery_id FROM agent_jobs WHERE device_id=? AND status='running' AND error=? ORDER BY created_at,id LIMIT 1",(device,UNCERTAIN_CLAIM_ERROR)).fetchone()
+            return {'job_id':row['id'],'execution_id':row['result_delivery_id']} if row else None
+
+    def execution_status(self, device, job_id, incarnation):
+        with closing(self._connect()) as connection:
+            row=connection.execute('SELECT status,error FROM agent_jobs WHERE id=? AND device_id=? AND result_delivery_id=?',(job_id,device,incarnation)).fetchone()
+            if row is None:raise ValueError('Execution target is unavailable or changed')
+            stop=connection.execute('SELECT response FROM execution_stops WHERE device=? AND job=? AND incarnation=?',(device,job_id,incarnation)).fetchone()
+            return {'job_status':row['status'],'authority_revoked':bool(stop and json.loads(stop[0])['generation']),
+                    'outcome_uncertain':row['status']=='running' and row['error']==UNCERTAIN_CLAIM_ERROR,
+                    'no_execution_admitted':row['error']=='user_stop_before_admission'}
+
+    def active_for(self, device_id):
+        with closing(self._connect()) as connection:
+            return connection.execute("SELECT 1 FROM agent_jobs WHERE device_id=? AND status IN ('queued','running') LIMIT 1", (device_id,)).fetchone() is not None
 
     def _initialize(self) -> None:
         with closing(self._connect()) as connection:
@@ -81,6 +156,7 @@ class AgentJobStore:
                     connection.execute(
                         "ALTER TABLE agent_jobs ADD COLUMN result_attempted_at TEXT"
                     )
+                connection.execute("CREATE TABLE IF NOT EXISTS execution_stops(device TEXT NOT NULL,job TEXT NOT NULL,incarnation TEXT NOT NULL,stop_id TEXT NOT NULL,response TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(device,job,incarnation))")
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS agent_jobs_claimable "
                     "ON agent_jobs(status, available_at, created_at, device_id)"
@@ -112,6 +188,11 @@ class AgentJobStore:
                 existing = connection.execute(
                     "SELECT * FROM agent_jobs WHERE id = ?", (job_id,)
                 ).fetchone()
+                if connection.execute(
+                    "SELECT 1 FROM agent_jobs WHERE device_id=? AND status='running' AND error=? LIMIT 1",
+                    (device_id, UNCERTAIN_CLAIM_ERROR),
+                ).fetchone():
+                    raise UncertainExecutionPending()
                 if existing is None:
                     pending = connection.execute(
                         "SELECT COUNT(*) FROM agent_jobs WHERE device_id = ? "
@@ -132,17 +213,30 @@ class AgentJobStore:
             raise ValueError("request_id is already assigned to another request")
         return self._job(row)
 
-    def recover_interrupted(self, now: datetime | None = None) -> int:
+    def recover_interrupted(self, now: datetime | None = None, *, exclude_job_ids=()) -> int:
         timestamp = (now or datetime.now(timezone.utc)).isoformat()
+        owned = tuple(exclude_job_ids)
+        exclusion = " AND id NOT IN (" + ",".join("?" for _ in owned) + ")" if owned else ""
         with closing(self._connect()) as connection:
             with connection:
                 cursor = connection.execute(
                     "UPDATE agent_jobs SET status = 'queued', available_at = ?, "
                     "lease_expires_at = NULL, updated_at = ? WHERE status = 'running' "
-                    "AND (lease_expires_at IS NULL OR lease_expires_at <= ?)",
-                    (timestamp, timestamp, timestamp),
+                    "AND (lease_expires_at IS NULL OR lease_expires_at <= ?) "
+                    "AND (error IS NULL OR error != ?)" + exclusion,
+                    (timestamp, timestamp, timestamp, UNCERTAIN_CLAIM_ERROR, *owned),
                 )
         return cursor.rowcount
+
+    def mark_execution_uncertain(self, job: AgentJob) -> bool:
+        # Keep the running claim: cancellation does not prove an external action
+        # stopped. Existing columns suffice; never automatically replay this row.
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                "UPDATE agent_jobs SET error = ? WHERE id = ? AND status = 'running' AND attempts = ? AND result_delivery_id = ?",
+                (UNCERTAIN_CLAIM_ERROR, job.id, job.attempts, job.delivery_id),
+            )
+        return cursor.rowcount == 1
 
     def get(self, job_id: str) -> AgentJob | None:
         with closing(self._connect()) as connection:
@@ -199,8 +293,21 @@ class AgentJobStore:
         return self._job(row)
 
     def complete(
-        self, job_id: str, reply: AgentReply, max_age_seconds: float = 300.0
-    ) -> str:
+        self, job_id: str, reply: AgentReply, max_age_seconds: float = 300.0,
+        *, claim: AgentJob | None = None,
+    ) -> str | None:
+        # Claimed asynchronous workers must supply their attempt and incarnation.
+        # By-ID completion remains a trusted fixture/administrative compatibility path.
+        if claim is not None and claim.id != job_id:
+            raise ValueError("Completion claim identity mismatch")
+        guard = (
+            " AND status = 'running' AND attempts = ? AND result_delivery_id = ?"
+            " AND (error IS NULL OR error != ?)"
+        ) if claim is not None else ""
+        guard_values = (
+            (claim.attempts, claim.delivery_id, UNCERTAIN_CLAIM_ERROR)
+            if claim is not None else ()
+        )
         completed_at = datetime.now(timezone.utc)
         now = completed_at.isoformat()
         with closing(self._connect()) as connection:
@@ -209,6 +316,8 @@ class AgentJobStore:
                     "SELECT created_at FROM agent_jobs WHERE id = ?", (job_id,)
                 ).fetchone()
                 if row is None:
+                    if claim is not None:
+                        return None
                     raise ValueError(f"Unknown agent job: {job_id}")
                 created_at = datetime.fromisoformat(row["created_at"])
                 status = (
@@ -216,9 +325,9 @@ class AgentJobStore:
                     if (completed_at - created_at).total_seconds() > max_age_seconds
                     else "completed"
                 )
-                connection.execute(
+                cursor = connection.execute(
                     "UPDATE agent_jobs SET status = ?, reply_json = ?, "
-                    "error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?",
+                    "error = ?, lease_expires_at = NULL, updated_at = ? WHERE id = ?" + guard,
                     (
                         status,
                         reply.model_dump_json(),
@@ -227,9 +336,10 @@ class AgentJobStore:
                         else None,
                         now,
                         job_id,
+                        *guard_values,
                     ),
                 )
-        return status
+        return status if cursor.rowcount == 1 else None
 
     def expire_stale(
         self, now: datetime | None = None, max_age_seconds: float = 300.0
@@ -254,25 +364,29 @@ class AgentJobStore:
                 ).rowcount
         return queued + completed
 
-    def fail(self, job: AgentJob, error: str, max_attempts: int = 3) -> str:
+    def fail(self, job: AgentJob, error: str, max_attempts: int = 3) -> str | None:
         now = datetime.now(timezone.utc)
         final = job.attempts >= max_attempts
         status = "failed" if final else "queued"
         available = now + timedelta(seconds=min(30, 2 ** max(0, job.attempts - 1)))
         with closing(self._connect()) as connection:
             with connection:
-                connection.execute(
+                cursor = connection.execute(
                     "UPDATE agent_jobs SET status = ?, error = ?, available_at = ?, "
-                    "lease_expires_at = NULL, updated_at = ? WHERE id = ?",
+                    "lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'running' "
+                    "AND attempts = ? AND result_delivery_id = ? AND (error IS NULL OR error != ?)",
                     (
                         status,
                         error[:1000],
                         available.isoformat(),
                         now.isoformat(),
                         job.id,
+                        job.attempts,
+                        job.delivery_id,
+                        UNCERTAIN_CLAIM_ERROR,
                     ),
                 )
-        return status
+        return status if cursor.rowcount == 1 else None
 
     def pending_results(self, device_id: str) -> list[AgentJob]:
         with closing(self._connect()) as connection:
@@ -339,6 +453,7 @@ class AgentJobStore:
         cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=7)).isoformat()
         with closing(self._connect()) as connection:
             with connection:
+                connection.execute("DELETE FROM execution_stops WHERE NOT EXISTS (SELECT 1 FROM agent_jobs WHERE agent_jobs.id=execution_stops.job AND agent_jobs.device_id=execution_stops.device AND agent_jobs.result_delivery_id=execution_stops.incarnation)")
                 cursor = connection.execute(
                     "DELETE FROM agent_jobs WHERE status IN ('completed', 'failed', 'expired', 'late') "
                     "AND (created_at < ? OR id IN (SELECT id FROM agent_jobs "
@@ -359,14 +474,22 @@ class AgentJobWorker:
         concurrency: int = 4,
     ) -> None:
         self.on_reply = None
+        self.on_finished = None
         self.store = store
         self.agent = agent
         self.hub = hub
         self.timeout_seconds = timeout_seconds
         self.max_age_seconds = max(10.0, max_age_seconds)
         self.concurrency = max(1, min(16, concurrency))
+        self._claimed_jobs = set()
+        self._handlers = {}
+        self._abandoned_jobs = set()
 
     async def _publish(self, job: AgentJob, reply: AgentReply) -> int:
+        with self.hub.experience.for_job(job.id):
+            return await self._publish_owned(job, reply)
+
+    async def _publish_owned(self, job: AgentJob, reply: AgentReply) -> int:
         if reply.surface.countdown_ms and reply.surface.deadline_at:
             remaining = int((reply.surface.deadline_at - datetime.now(timezone.utc)).total_seconds() * 1000)
             if remaining < 1000:
@@ -384,10 +507,11 @@ class AgentJobWorker:
         acknowledged_peers = await self.hub.broadcast(job.device_id, {
             "type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id,
             "status": "completed", "text": reply.text, "provider": reply.provider,
+            **({"retain_context":True} if reply.retain_context else {}),
             "surface": reply.surface.model_dump(mode="json")}, required_capability="result_ack")
         await self.hub.broadcast(
             job.device_id,
-            {"type": "surface", "surface": reply.surface.model_dump(mode="json")},
+            {"type": "surface", "surface": reply.surface.model_dump(mode="json"),**({"retain_context":True} if reply.retain_context else {})},
             excluded_capability="result_ack",
         )
         recipients = await self.hub.broadcast(
@@ -400,66 +524,77 @@ class AgentJobWorker:
             },
             excluded_capability="result_ack",
         )
-        if self.on_reply and job.delivery_attempted_at is None:
+        owned = not self.hub.has_capability(job.device_id, "experience_context_v1") or self.hub.experience.current.get(job.device_id) == self.hub.experience.origin.get()
+        if self.on_reply and job.delivery_attempted_at is None and owned:
             await self.on_reply(job.device_id, reply.text, job.id)
         if job.delivery_attempted_at is None:
             await self.hub.broadcast(job.device_id, {"type": "state", "state": "idle"}, excluded_capability="pcm_speech")
+        await self.hub.broadcast(job.device_id, {"type":"experience.finished"}, required_capability="experience_context_v1")
         return recipients + acknowledged_peers
 
     async def deliver_pending(self, device_id: str) -> int:
         delivered = 0
         for job in self.store.pending_results(device_id):
-            if not self.store.claim_result_delivery(
-                job.id, datetime.now(timezone.utc)
-            ):
-                continue
-            if self.hub.has_capability(device_id, "result_ack"):
-                self.store.require_result_ack(job.id)
-            acknowledged_peers = 0
-            if job.status in {"expired", "late", "failed"}:
-                text = "Friday could not complete that request." if job.status == "failed" else "That request is no longer current, so I discarded its result."
-                acknowledged_peers = await self.hub.broadcast(job.device_id, {"type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id, "status": job.status, "text": text, "surface": {"kind": "message", "title": "Request unavailable", "subtitle": text}}, required_capability="result_ack")
-            if job.status in {"expired", "late"}:
-                recipients = await self.hub.broadcast(
-                    job.device_id,
-                    {
-                        "type": "error",
-                        "code": "agent_stale",
-                        "message": "That request is no longer current, so I discarded its result.",
-                        "job_id": job.id,
-                    },
-                    excluded_capability="result_ack",
-                )
-                if job.delivery_attempted_at is None:
-                    await self.hub.broadcast(
-                        job.device_id, {"type": "state", "state": "idle"}
+            with self.hub.experience.for_job(job.id):
+                reason = (job.error or '').removeprefix('local-only:') if (job.error or '').startswith('local-only:') else ''
+                local_failure = LOCAL_FAILURE_MESSAGES.get(reason)
+                stopped_before = job.error == 'user_stop_before_admission'
+                stop_text = 'Stopped before execution admission. No operation from this request was started.' if stopped_before else None
+                if not self.store.claim_result_delivery(
+                    job.id, datetime.now(timezone.utc)
+                ):
+                    continue
+                if self.hub.has_capability(device_id, "result_ack"):
+                    self.store.require_result_ack(job.id)
+                acknowledged_peers = 0
+                if job.status in {"expired", "late", "failed"}:
+                    text = (stop_text or local_failure or "Friday could not complete that request.") if job.status == "failed" else "That request is no longer current, so I discarded its result."
+                    acknowledged_peers = await self.hub.broadcast(job.device_id, {"type": "agent.result", "job_id": job.id, "delivery_id": job.delivery_id, "status": job.status, "text": text, "surface": {"kind": "message", "title": "Stopped before admission" if stopped_before else "Local reasoning unavailable" if local_failure else "Request unavailable", "subtitle": text}}, required_capability="result_ack")
+                if job.status in {"expired", "late"}:
+                    recipients = await self.hub.broadcast(
+                        job.device_id,
+                        {
+                            "type": "error",
+                            "code": "agent_stale",
+                            "message": "That request is no longer current, so I discarded its result.",
+                            "job_id": job.id,
+                        },
+                        excluded_capability="result_ack",
                     )
-            elif job.status == "failed":
-                recipients = await self.hub.broadcast(
-                    job.device_id,
-                    {
-                        "type": "error",
-                        "code": "agent_failed",
-                        "message": "Friday could not complete that request.",
-                        "job_id": job.id,
-                    },
-                    excluded_capability="result_ack",
-                )
-                if job.delivery_attempted_at is None:
-                    await self.hub.broadcast(
-                        job.device_id, {"type": "state", "state": "idle"}
+                    if job.delivery_attempted_at is None:
+                        await self.hub.broadcast(
+                            job.device_id, {"type": "state", "state": "idle"}
+                        )
+                elif job.status == "failed":
+                    recipients = await self.hub.broadcast(
+                        job.device_id,
+                        {
+                            "type": "error",
+                            "code": "local_reasoning_unavailable" if local_failure else "agent_failed",
+                            "message": stop_text or local_failure or "Friday could not complete that request.",
+                            "job_id": job.id,
+                        },
+                        excluded_capability="result_ack",
                     )
-            elif job.reply_json:
-                reply = AgentReply.model_validate(json.loads(job.reply_json))
-                recipients = await self._publish(job, reply)
-            else:
-                recipients = 0
-            if recipients + acknowledged_peers > 0:
-                # Mixed clients must still wait for an acknowledgement-capable UI.
-                if not self.hub.has_capability(device_id, "result_ack"):
-                    self.store.mark_result_delivered(job.id)
-                delivered += 1
+                    if job.delivery_attempted_at is None:
+                        await self.hub.broadcast(
+                            job.device_id, {"type": "state", "state": "idle"}
+                        )
+                elif job.reply_json:
+                    reply = AgentReply.model_validate(json.loads(job.reply_json))
+                    recipients = await self._publish(job, reply)
+                else:
+                    recipients = 0
+                if recipients + acknowledged_peers > 0:
+                    # Mixed clients must still wait for an acknowledgement-capable UI.
+                    if not self.hub.has_capability(device_id, "result_ack"):
+                        self.store.mark_result_delivered(job.id)
+                    delivered += 1
         return delivered
+
+    async def _handle_owned(self, job):
+        with execution_scope(lambda:self.store.claim_current(job)), self.hub.experience.for_job(job.id):
+            return await self.agent.handle(job.device_id, job.text, request_id=job.id)
 
     async def process_once(self) -> bool:
         self.store.expire_stale(max_age_seconds=self.max_age_seconds)
@@ -469,13 +604,79 @@ class AgentJobWorker:
         )
         if job is None:
             return False
+        # No yield between claiming and registering ownership. Track both the
+        # slot and its child: repeated slot cancellation may outlive wait_for.
+        self._claimed_jobs.add(job.id)
+        try:
+            return await self._process_claimed(job)
+        finally:
+            self._claimed_jobs.discard(job.id)
+
+    def recover_interrupted(self, now=None):
+        owned = self._claimed_jobs | self._handlers.keys() | self._abandoned_jobs
+        return self.store.recover_interrupted(now, exclude_job_ids=tuple(owned))
+
+    def _handler_finished(self, job_id, task):
+        if not task.cancelled():
+            task.exception()  # Consume abandoned failures without logging private payloads.
+        if self._handlers.get(job_id) is task:
+            self._handlers.pop(job_id)
+
+    def _retain_uncertain_claim(self, job):
+        self._abandoned_jobs.add(job.id)
+        try:
+            current = self.store.mark_execution_uncertain(job)
+            self._abandoned_jobs.discard(job.id)  # The durable recovery filter now owns this fence.
+        except Exception:
+            logger.error("Uncertain claim persistence failed; local automatic recovery remains paused")
+            return False
+        if current:
+            logger.warning("Agent execution interrupted; outcome unconfirmed, automatic claim replay blocked")
+        return current
+
+    async def _process_claimed(self, job):
+        handler = asyncio.create_task(self._handle_owned(job))
+        self._handlers[job.id] = handler
+        handler.add_done_callback(lambda task: self._handler_finished(job.id, task))
         try:
             reply = await asyncio.wait_for(
-                self.agent.handle(job.device_id, job.text, request_id=job.id),
+                handler,
                 timeout=self.timeout_seconds,
             )
+        except asyncio.CancelledError:
+            self._retain_uncertain_claim(job)
+            raise
+        except TimeoutError:
+            # A cancelled coroutine can leave shielded/native/remote work alive.
+            # Do not turn a timeout into an automatic repeat of an unknown action.
+            if not self._retain_uncertain_claim(job):
+                return True
+            with self.hub.experience.for_job(job.id):
+                await self.hub.broadcast(job.device_id, {
+                    "type": "error", "code": "execution_outcome_uncertain",
+                    "message": "The request timed out without a confirmed outcome. Check before retrying.",
+                })
+                await self.hub.broadcast(job.device_id, {"type": "state", "state": "idle"})
+                await self.hub.broadcast(job.device_id, {"type": "experience.finished"}, required_capability="experience_context_v1")
+            if self.on_finished:
+                await self.on_finished(job.device_id)
+            return True
+        except LocalModelUnavailable as error:
+            # Do not retry a known unavailable local model or obscure it behind a
+            # generic failure. Persist only a safe code, never provider payloads.
+            reason = error.reason if error.reason in LOCAL_FAILURE_MESSAGES else 'local_inference_failed'
+            if self.store.fail(job, 'local-only:' + reason, max_attempts=1) is None:
+                return True
+            logger.warning('Local reasoning unavailable: %s', reason)
+            if job.device_id in self.hub.device_ids():
+                await self.deliver_pending(job.device_id)
+            if self.on_finished:
+                await self.on_finished(job.device_id)
+            return True
         except Exception as error:
             status = self.store.fail(job, str(error))
+            if status is None:
+                return True
             if status == "failed":
                 logger.exception("Agent job %s failed permanently", job.id)
                 if job.device_id in self.hub.device_ids():
@@ -484,11 +685,18 @@ class AgentJobWorker:
                 logger.warning(
                     "Agent job %s failed and will retry: %s", job.id, error
                 )
+            if self.on_finished:
+                await self.on_finished(job.device_id)
             return True
 
-        self.store.complete(job.id, reply, max_age_seconds=self.max_age_seconds)
+        if self.store.complete(
+            job.id, reply, max_age_seconds=self.max_age_seconds, claim=job,
+        ) is None:
+            return True
         if job.device_id in self.hub.device_ids():
             await self.deliver_pending(job.device_id)
+        if self.on_finished:
+            await self.on_finished(job.device_id)
         return True
 
     async def _run_slot(self) -> None:
@@ -505,7 +713,7 @@ class AgentJobWorker:
     async def _run_maintenance(self) -> None:
         while True:
             try:
-                self.store.recover_interrupted()
+                self.recover_interrupted()
                 self.store.prune_results()
                 self.store.expire_stale(max_age_seconds=self.max_age_seconds)
                 for device_id in self.hub.device_ids():

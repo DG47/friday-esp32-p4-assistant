@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -20,13 +21,16 @@
 
 #define FRIDAY_SETUP_SSID "Friday-Setup"
 #define FRIDAY_SETUP_PASSWORD "fridaysetup"
-#define FRIDAY_MAX_RETRIES 5
+#define FRIDAY_WIFI_RETRY_EVENT 1
+#define FRIDAY_WIFI_MAX_RETRY_SECONDS 30
+ESP_EVENT_DEFINE_BASE(FRIDAY_WIFI_RECOVERY_EVENT);
 #define FRIDAY_WIFI_CONNECTED_BIT BIT0
 
 static const char *TAG = "friday_wifi";
 static httpd_handle_t setup_server;
 static bool has_credentials;
-static int retry_count;
+static unsigned int retry_count;
+static esp_timer_handle_t retry_timer;
 static EventGroupHandle_t wifi_events;
 
 static esp_err_t load_credentials(char *ssid, size_t ssid_size,
@@ -72,16 +76,6 @@ static esp_err_t save_credentials(const char *ssid, const char *password,
     }
     nvs_close(handle);
     return result;
-}
-
-static void clear_credentials(void)
-{
-    nvs_handle_t handle;
-    if (nvs_open("friday_wifi", NVS_READWRITE, &handle) == ESP_OK) {
-        nvs_erase_all(handle);
-        nvs_commit(handle);
-        nvs_close(handle);
-    }
 }
 
 static void restart_task(void *argument)
@@ -222,13 +216,33 @@ static esp_err_t start_setup_server(void)
     return ESP_OK;
 }
 
-static void reset_credentials_task(void *argument)
+/* Station recovery never erases NVS or enters provisioning after an outage. */
+static void schedule_wifi_retry(void)
+{
+    unsigned int seconds = 1U << (retry_count < 5 ? retry_count : 5);
+    if (seconds > FRIDAY_WIFI_MAX_RETRY_SECONDS) seconds = FRIDAY_WIFI_MAX_RETRY_SECONDS;
+    if (retry_count < 5) retry_count++;
+    esp_timer_stop(retry_timer);  /* An already stopped timer is harmless. */
+    esp_err_t result = esp_timer_start_once(retry_timer, (uint64_t)seconds * 1000000);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Could not schedule Wi-Fi retry: %s", esp_err_to_name(result));
+    }
+    friday_ui_set_network("WI-FI RECONNECTING", "Saved settings retained; retrying automatically");
+}
+
+static void wifi_retry_timer(void *argument)
 {
     (void)argument;
-    friday_ui_set_network("WI-FI SETUP", "Saved network unavailable; restarting setup...");
-    clear_credentials();
-    vTaskDelay(pdMS_TO_TICKS(1500));
-    esp_restart();
+    /* Keep Wi-Fi state transitions on the existing event loop, not timer context. */
+    if (esp_event_post(FRIDAY_WIFI_RECOVERY_EVENT, FRIDAY_WIFI_RETRY_EVENT, NULL, 0, 0) != ESP_OK) {
+        /* A full event queue must not permanently strand station recovery. */
+        esp_timer_start_once(retry_timer, (uint64_t)FRIDAY_WIFI_MAX_RETRY_SECONDS * 1000000);
+    }
+}
+
+static void connect_saved_wifi(void)
+{
+    if (esp_wifi_connect() != ESP_OK) schedule_wifi_retry();
 }
 
 static void wifi_event_handler(void *argument, esp_event_base_t event_base,
@@ -236,27 +250,22 @@ static void wifi_event_handler(void *argument, esp_event_base_t event_base,
 {
     (void)argument;
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START && has_credentials) {
-        esp_wifi_connect();
+        connect_saved_wifi();
+    } else if (event_base == FRIDAY_WIFI_RECOVERY_EVENT && event_id == FRIDAY_WIFI_RETRY_EVENT &&
+               has_credentials) {
+        /* A retry already queued before GOT_IP must not reconnect a healthy link. */
+        if (!(xEventGroupGetBits(wifi_events) & FRIDAY_WIFI_CONNECTED_BIT)) connect_saved_wifi();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED &&
                has_credentials) {
-        if (wifi_events != NULL) {
-            xEventGroupClearBits(wifi_events, FRIDAY_WIFI_CONNECTED_BIT);
-        }
-        if (retry_count++ < FRIDAY_MAX_RETRIES) {
-            ESP_LOGW(TAG, "Wi-Fi disconnected; retry %d/%d", retry_count, FRIDAY_MAX_RETRIES);
-            esp_wifi_connect();
-        } else {
-            has_credentials = false;
-            xTaskCreate(reset_credentials_task, "friday_wifi_reset", 3072, NULL, 5, NULL);
-        }
+        xEventGroupClearBits(wifi_events, FRIDAY_WIFI_CONNECTED_BIT);
+        schedule_wifi_retry();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         char detail[64];
         snprintf(detail, sizeof(detail), "Connected at " IPSTR, IP2STR(&event->ip_info.ip));
         retry_count = 0;
-        if (wifi_events != NULL) {
-            xEventGroupSetBits(wifi_events, FRIDAY_WIFI_CONNECTED_BIT);
-        }
+        esp_timer_stop(retry_timer);
+        xEventGroupSetBits(wifi_events, FRIDAY_WIFI_CONNECTED_BIT);
         ESP_LOGI(TAG, "%s", detail);
         friday_ui_set_network("WI-FI ONLINE", detail);
     }
@@ -294,6 +303,18 @@ esp_err_t friday_wifi_start(void)
     ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                     wifi_event_handler, NULL), TAG,
                         "IP event handler failed");
+
+    if (has_credentials) {
+        const esp_timer_create_args_t retry = {
+            .callback = wifi_retry_timer,
+            .name = "friday_wifi_retry",
+        };
+        ESP_RETURN_ON_ERROR(esp_timer_create(&retry, &retry_timer), TAG,
+                            "Wi-Fi retry timer failed");
+        ESP_RETURN_ON_ERROR(esp_event_handler_register(FRIDAY_WIFI_RECOVERY_EVENT,
+                                FRIDAY_WIFI_RETRY_EVENT, wifi_event_handler, NULL), TAG,
+                            "Wi-Fi retry event handler failed");
+    }
 
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(has_credentials ? WIFI_MODE_STA : WIFI_MODE_AP),
                         TAG, "Could not set Wi-Fi mode");

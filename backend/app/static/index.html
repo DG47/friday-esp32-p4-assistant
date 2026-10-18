@@ -41,6 +41,11 @@
           <span class="connection-dot" id="connection-dot"></span>
           <span id="connection-label">Connecting</span>
         </div>
+        <div class="suggestions" aria-label="Execution control">
+          <button type="button" id="execution-stop" disabled>Stop task</button>
+          <button type="button" id="execution-status" disabled>Review task status</button>
+        </div>
+        <p class="hint" id="execution-notice" role="status" aria-live="polite"></p>
         <form id="utterance-form">
           <label for="simulator-token">Simulator credential</label>
           <input id="simulator-token" type="password" autocomplete="off"
@@ -65,6 +70,7 @@
         <p class="hint" id="speech-hint">Tap the orb for speech input, or type a request.</p>
       </section>
     </main>
+    <script src="/static/execution_stop.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

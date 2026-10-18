@@ -6,6 +6,9 @@ import re
 
 import httpx
 
+class TelegramPollingRejected(RuntimeError):
+    pass
+
 _locks = {}
 _runners = set()
 _poll_locks = {}
@@ -52,9 +55,16 @@ class TelegramHTTPS:
                         content.extend(chunk)
                 # Bot API failures may use non-2xx with a structured ok:false body.
                 body = json.loads(content)
-                if not isinstance(body, dict) or type(body.get('ok')) is not bool:
+                if (not isinstance(body, dict) or type(body.get('ok')) is not bool
+                        or response.status_code>=300 and body.get('ok') is True
+                        or response.status_code>=500):
+
                     raise ValueError('Invalid response')
+                if method=='getUpdates' and body.get('ok') is False and body.get('error_code') in {401,403,409}:
+                    raise TelegramPollingRejected('Telegram polling authorization or consumer conflict')
                 return body
+        except TelegramPollingRejected:
+            raise TelegramPollingRejected('Telegram polling authorization or consumer conflict') from None
         except Exception:
             raise ValueError('Telegram HTTPS request failed') from None
 
@@ -153,6 +163,8 @@ class TelegramTransport:
                 try:
                     changed=await operation()
                     failures=0
+                except TelegramPollingRejected:
+                    raise
                 except Exception:
                     changed=False; failures=min(failures+1,5)
                 delay=0.01 if changed else min(30,interval*(2**failures))
@@ -161,7 +173,11 @@ class TelegramTransport:
         try:
             await self.recover()
             workers=[asyncio.create_task(loop(self.poll_once)),asyncio.create_task(loop(self.deliver_once))]
-            await stop_event.wait()
+            stopper=asyncio.create_task(stop_event.wait())
+            workers.append(stopper)
+            done,_=await asyncio.wait(workers,return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if task is not stopper:await task
         finally:
             for task in workers: task.cancel()
             await asyncio.gather(*workers,return_exceptions=True)

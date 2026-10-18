@@ -124,11 +124,15 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reply.tool, "get_calendar")
         self.assertEqual(reply.surface.kind, "artifact")
         self.assertIn("Sample event", reply.surface.subtitle)
-        self.assertIn("interview", reply.text)
+        self.assertNotIn("interview at 2 PM", reply.text)
         tool_result = provider.requests[1]["messages"][-1]
         self.assertEqual(tool_result["role"], "tool")
         self.assertIn('"events"', tool_result["content"])
-        self.assertIn("Dhruv", provider.requests[0]["instructions"])
+        import json
+        event = json.loads(tool_result["content"])["events"][0]
+        self.assertIn(event["title"], reply.text)
+        self.assertIn(event["clock_facts"]["start"]["label"], reply.text)
+        self.assertIn(self.settings.assistant_user_name, provider.requests[0]["instructions"])
 
     async def test_model_history_is_available_on_the_next_turn(self):
         first_provider = FakeToolProvider([ProviderTurn(text="Your next event is the interview.")])

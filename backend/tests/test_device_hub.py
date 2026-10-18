@@ -1,4 +1,5 @@
 import unittest
+from anyio import ClosedResourceError, BrokenResourceError, EndOfStream
 
 from app.device_hub import DeviceHub
 
@@ -42,6 +43,42 @@ class DeviceHubTests(unittest.IsolatedAsyncioTestCase):
         hub.disconnect("friday-p3a", device)
         self.assertEqual(len(hub.connections["friday-p3a"]), 1)
         self.assertIs(hub.connections["friday-p3a"][0].websocket, browser)
+
+
+    async def test_closed_stream_peer_is_removed_without_stopping_other_delivery(self):
+        for failure in (ClosedResourceError,BrokenResourceError,EndOfStream):
+            with self.subTest(failure=failure.__name__):
+                hub=DeviceHub();healthy=FakeWebSocket()
+                class Closed(FakeWebSocket):
+                    async def send_json(self,message):raise failure()
+                closed=Closed()
+                await hub.connect('synthetic-device',closed)
+                await hub.connect('synthetic-device',healthy)
+                self.assertEqual(await hub.broadcast('synthetic-device',{'type':'state','state':'idle'}),1)
+                self.assertEqual([p.websocket for p in hub.connections['synthetic-device']],[healthy])
+                self.assertEqual(len(healthy.messages),1)
+                self.assertEqual(await hub.broadcast('synthetic-device',{'type':'state','state':'thinking'}),1)
+                self.assertEqual(len(healthy.messages),2)
+
+
+    async def test_closed_stream_peer_can_be_closed(self):
+        for failure in (ClosedResourceError,BrokenResourceError,EndOfStream):
+            with self.subTest(failure=failure.__name__):
+                hub=DeviceHub()
+                class Closed(FakeWebSocket):
+                    async def close(self,code):raise failure()
+                await hub.connect('synthetic-device',Closed())
+                await hub.close_device('synthetic-device')
+                self.assertEqual(hub.device_ids(),[])
+    async def test_closed_stream_targeted_media_peer_is_removed(self):
+        for failure in (ClosedResourceError,BrokenResourceError,EndOfStream):
+            with self.subTest(failure=failure.__name__):
+                hub=DeviceHub()
+                class Closed(FakeWebSocket):
+                    async def send_json(self,message):raise failure()
+                peer=Closed();await hub.connect('synthetic-device',peer)
+                self.assertEqual(await hub.send_media('synthetic-device',peer,{'type':'state','state':'idle'},lambda:True),0)
+                self.assertEqual(hub.device_ids(),[])
 
 
 if __name__ == "__main__":

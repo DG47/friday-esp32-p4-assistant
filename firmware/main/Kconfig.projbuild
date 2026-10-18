@@ -79,4 +79,20 @@ config FRIDAY_AEC_REFERENCE_DELAY_MS
     range 0 200
     default 60
 
+config FRIDAY_EXPERIENCE_CONTEXT
+    bool "Continuous context experience"
+    default n
+    help
+        Enables the existing experience_context_v1 ownership and native layout.
+        Requires a compatible backend; preserve protected confirmation ownership.
+
+config FRIDAY_EXECUTION_STOP
+    bool "Staged scoped execution Stop client"
+    depends on FRIDAY_EXPERIENCE_CONTEXT
+    default n
+    help
+        Requires the continuous experience runtime and execution_stop_v1 server.
+        Shows pending/unknown outcomes; never proves already-admitted effects undone.
+        Staged source only. Physical acceptance and separate firmware rollout required.
+
 endmenu
