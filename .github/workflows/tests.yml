@@ -76,10 +76,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Existing Homebrew runtime and isolated test dependencies
+      - name: Homebrew Python 3.12 runtime and isolated test dependencies
+        # faster-whisper pins ctranslate2, which publishes no wheels for the newest Homebrew python3,
+        # so use the same 3.12 line as the Linux job.
         run: |
-          test -x /opt/homebrew/bin/python3
-          /opt/homebrew/bin/python3 -m venv .venv
+          brew install python@3.12 >/dev/null
+          PY=/opt/homebrew/opt/python@3.12/bin/python3.12
+          test -x "$PY"
+          "$PY" --version
+          "$PY" -m venv .venv
           .venv/bin/python -m pip install -r backend/requirements.txt
       - name: Disconnected task and trusted local fixture regressions
         env:
