@@ -38,6 +38,8 @@ async def fixtures():
 def create(destination,mode='test'):
     surfaces=asyncio.run(fixtures())
     html=(ROOT/'backend/app/static/index.html').read_text().replace('/static/styles.css',(ROOT/'backend/app/static/styles.css').as_uri())
+    stop=(ROOT/'backend/app/static/execution_stop.js').read_text()
+    html=html.replace('<script src="/static/execution_stop.js"></script>','<script>'+stop+'</script>')
     app=(ROOT/'backend/app/static/app.js').read_text()
     stub='''const qaMessages=[];
 class FixtureSocket {static OPEN=1;readyState=1;addEventListener(){};close(){this.readyState=3};send(value){qaMessages.push(JSON.parse(value))}}

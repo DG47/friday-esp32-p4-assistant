@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent import FridayAgent
+from app.tools.outcome_prose import NO_VERIFIED_OUTCOME
 from app.config import Settings
 from app.db import ReminderStore
 from app.providers.base import ProviderTurn, TextProvider, ToolCall
@@ -145,9 +146,9 @@ class FridayAgentTests(unittest.IsolatedAsyncioTestCase):
 
         history = second_provider.requests[0]["messages"]
         self.assertEqual(history[0]["content"], "What's next?")
-        self.assertEqual(history[1]["content"], "Your next event is the interview.")
+        self.assertEqual(history[1]["content"], NO_VERIFIED_OUTCOME)
         self.assertEqual(history[2]["content"], "Who is it with?")
-        self.assertEqual(reply.text, "It is with David.")
+        self.assertEqual(reply.text, NO_VERIFIED_OUTCOME)
 
     async def test_structured_tool_history_is_available_after_restart(self):
         first_provider = FakeToolProvider(

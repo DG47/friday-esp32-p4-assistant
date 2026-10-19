@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app.agent import FridayAgent
+from app.tools.outcome_prose import NO_VERIFIED_OUTCOME
 from app.agent_jobs import AgentJobStore, AgentJobWorker
 from app.config import Settings, WeatherLocation
 from app.conversation_media import ConversationMedia
@@ -140,7 +141,7 @@ class ConversationSocketScenario(unittest.TestCase):
             self.assertTrue(results[-1]["retain_context"])
             self.assertEqual(sum(method=="PUT" for method,path in transport.calls),1)
             self.assertEqual(results[2]["surface"]["kind"],"media")
-            self.assertIn("Shall I?",results[2]["text"])
+            self.assertIn("Shall I resume the existing queue?",results[2]["text"])
             second=json.dumps(provider.requests[2]["messages"]);self.assertIn("original-evening",second);self.assertIn("07306",second)
             final=json.dumps(provider.requests[6]["messages"]);self.assertIn("get_calendar",final);self.assertIn("get_weather",final);self.assertIn("get_music_state",final)
             self.assertNotIn("Quiet Satellites",final);self.assertNotIn("syntheticSpeaker",final)
@@ -162,7 +163,7 @@ class ConversationContracts(unittest.IsolatedAsyncioTestCase):
     async def test_empty_response_does_not_imply_action_succeeded(self):
         self.agent.providers.select=lambda text:ScriptedProvider([ProviderTurn()])
         reply=await self.agent.handle("device","Help me think","empty")
-        self.assertNotEqual(reply.text,"Done.");self.assertIn("couldn't",reply.text)
+        self.assertEqual(reply.text,NO_VERIFIED_OUTCOME)
 
     async def test_resume_failure_uncertainty_no_retry_and_truthful_reply(self):
         for index,(code,observe,status) in enumerate([(403,True,"rejected"),(204,False,"accepted_unobserved"),(TimeoutError(),True,"uncertain")]):
@@ -206,7 +207,7 @@ class ConversationContracts(unittest.IsolatedAsyncioTestCase):
         self.agent.providers.select=lambda text:provider
         first=await self.agent.handle("device","And the weather there?","no-place")
         second=await self.agent.handle("device","Put something on","ambiguous-music")
-        self.assertEqual(self.transport.calls,[]);self.assertIn("Which location",first.text);self.assertIn("Is that",second.text)
+        self.assertEqual(self.transport.calls,[]);self.assertEqual(first.text,NO_VERIFIED_OUTCOME);self.assertEqual(second.text,NO_VERIFIED_OUTCOME)
         self.assertIn("never silently substitute",provider.requests[0]["instructions"])
 
     async def test_changed_plan_and_superseded_reply_not_saved_as_current_plan(self):

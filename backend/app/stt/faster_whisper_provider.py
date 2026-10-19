@@ -8,7 +8,7 @@ import wave
 from pathlib import Path
 
 from .base import AudioFormat, TranscriptionError
-from .diagnostics import FailureReason, Phase, measure, phase, voice_detection, decoded
+from .diagnostics import FailureReason, Phase, measure, phase, voice_detection, decoded, public_transcription_message
 
 
 class FasterWhisperTranscriber:
@@ -74,17 +74,18 @@ class FasterWhisperTranscriber:
             phase(Phase.WORKER_WAIT)
             return await self._run_worker(self._transcribe_sync, model, pcm, audio_format)
         except TranscriptionError as error:
-            if error.reason is None:
-                error.reason = failure_reason
-            raise
-        except Exception as error:
-            raise TranscriptionError(f"Could not load the local Whisper model: {error}", reason=failure_reason) from error
+            reason = error.reason if isinstance(error.reason, FailureReason) else failure_reason
+            raise TranscriptionError(public_transcription_message(reason), reason=reason) from None
+        except Exception:
+            raise TranscriptionError(public_transcription_message(failure_reason), reason=failure_reason) from None
 
     async def _transcribe_wake(self, pcm: bytes, audio_format: AudioFormat) -> str:
         if audio_format.encoding != "pcm_s16le" or audio_format.channels != 1:
             raise TranscriptionError("Wake detection requires mono pcm_s16le audio")
+        failure_reason = FailureReason.MODEL_LOAD
         try:
             model = await self._get_model()
+            failure_reason = FailureReason.STT_ERROR
             return await self._run_worker(
                 self._transcribe_sync,
                 model,
@@ -95,10 +96,11 @@ class FasterWhisperTranscriber:
                 False,
                 1,
             )
-        except TranscriptionError:
-            raise
-        except Exception as error:
-            raise TranscriptionError(f"Local wake detection failed: {error}") from error
+        except TranscriptionError as error:
+            reason = error.reason if isinstance(error.reason, FailureReason) else failure_reason
+            raise TranscriptionError(public_transcription_message(reason), reason=reason) from None
+        except Exception:
+            raise TranscriptionError(public_transcription_message(failure_reason), reason=failure_reason) from None
 
     def _worker_finished(self, task):
         self._workers.discard(task)
@@ -235,11 +237,10 @@ class FasterWhisperTranscriber:
                 decoded(count)
                 return " ".join(texts).strip()
         except TranscriptionError as error:
-            if error.reason is None:
-                error.reason = failure_reason
-            raise
-        except Exception as error:
-            raise TranscriptionError(f"Local transcription failed: {error}", reason=failure_reason) from error
+            reason = error.reason if isinstance(error.reason, FailureReason) else failure_reason
+            raise TranscriptionError(public_transcription_message(reason), reason=reason) from None
+        except Exception:
+            raise TranscriptionError(public_transcription_message(failure_reason), reason=failure_reason) from None
         finally:
             if path is not None:
                 path.unlink(missing_ok=True)

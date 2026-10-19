@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from app.agent import FridayAgent
+from app.tools.outcome_prose import NO_VERIFIED_OUTCOME
 from app.config import Settings
 from app.db import ReminderStore
 from app.models import CalendarEvent
@@ -53,7 +54,7 @@ class ScheduleFreshnessTests(unittest.IsolatedAsyncioTestCase):
             async def complete(self,*args):return ProviderTurn(text='Earlier you described a sample appointment; that is historical, not current confirmation.')
         with patch.object(self.agent.providers,'select',return_value=HistoricalProvider()):
             reply=await self.ask('What did I previously say about the appointment time?')
-        self.assertIn('historical',reply.text);self.assertEqual(self.calls,[])
+        self.assertEqual(reply.text,NO_VERIFIED_OUTCOME);self.assertEqual(self.calls,[])
     async def test_model_requested_failed_read_cannot_produce_confident_continuation(self):
         from app.providers.base import ToolCall
         class Provider:
