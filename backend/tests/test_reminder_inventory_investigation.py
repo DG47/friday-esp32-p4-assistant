@@ -141,3 +141,28 @@ class InventoryInvestigation(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(answer.text.startswith('0 active reminders.'))
         self.assertTrue(answer.text.endswith('Blue light scatters.'))
         self.assertEqual(answer.surface.items,[])
+
+    async def test_non_surface_followup_cannot_leave_old_list_visible(self):
+        from test_conversation_scenario import ScriptedProvider
+        outer=self
+        class Provider(ScriptedProvider):
+            async def complete(self,messages,instructions,tools):
+                if self.requests:
+                    outer.store.mutate_reminder(outer.reminder.id,'owner','complete','no-surface-wait')
+                return await super().complete(messages,instructions,tools)
+        provider=Provider([ProviderTurn(tool_calls=[ToolCall('list','list_reminders',{}),
+                            ToolCall('unsupported','unsupported_read',{})]),ProviderTurn(text='The list is unchanged.')])
+        with patch.object(self.agent.providers,'select',return_value=provider):
+            answer=await self.agent.handle('owner','Can you check my reminder count?','non-surface')
+        self.assertEqual(answer.text,'0 active reminders.')
+        self.assertEqual(answer.surface.items,[])
+        self.assertNotIn(self.reminder.text,str(answer.surface))
+
+    async def test_failed_mutation_does_not_leave_invalidated_list_surface(self):
+        reply,_=await self.reply('Create a reminder.',[
+            ProviderTurn(tool_calls=[ToolCall('read','list_reminders',{}),
+                ToolCall('failure','create_reminder',{'text':'Synthetic invalid','due_at':'invalid'})]),
+            ProviderTurn(text='All done.')])
+        self.assertIn('No completion is confirmed.',reply.text)
+        self.assertEqual(reply.surface.kind,'message')
+        self.assertNotIn(self.reminder.text,str(reply.surface))
