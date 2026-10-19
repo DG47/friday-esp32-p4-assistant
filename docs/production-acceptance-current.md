@@ -13,7 +13,7 @@ owner data; the private handoff records the owner's separate current inventory.
 | Context ownership/restart | Bounded32 workspaces; opaque24h restart intent; source facts reread | **Failed baseline; repaired candidate**: eviction recreated ownerless authority and late Calendar returned stale success. Non-creating checks and workspace-instance fences cover replacement/eviction/same-ID reuse, including native navigation. **Not implemented** automatic bridging of distinct identities/shared universal workspace. |
 | Explicit memory | Default off; local CRUD,500 ASCII characters, sequential full-page review, per-device scope; soft deletion | **Passed** SQL/restart/owner tests and68 actual Chrome checks. **Failed baseline browser latch; repaired candidate**. Memory is not automatically extracted or supplied to model reasoning. **Not implemented** provider-sharing approval, hard-purge/export UI or general autobiographical recall. |
 | Voice/STT/TTS | Backend local Whisper/optional macOS speech; browser uses separate browser speech engines | **Failed baseline private STT exception disclosure; repaired candidate** with fixed public copy/reason codes. **Passed** synthetic thread ownership/cancel/metadata and browser interruption. **Blocked** real model availability/recognition, speaker/AEC, hardware interruption and soak. Ready/health are not those observations. Browser ASR/TTS locality/availability is not proved by backend local-only reasoning; typed browser input remains supported. |
-| Tool outcome truth | Calendar/Weather final prose derives from observed reads; exact reminder actions require existing scope/confirmation rules | **Failed baseline no-tool completion claim; repaired candidate**: final operation prose derives only from supported adapter receipts; tool-call narrative is not stored as a completed effect. No-result turns return fixed unverified-outcome guidance. **Not implemented under this policy** unrestricted model-only chat, planning or historical paraphrase; prompt/persona alone is not correctness evidence. |
+| Tool outcome truth | Explicit English operation directives with operational targets use evidence-only action responses; ordinary conversation restored | **Passed bounded regressions**: original no-tool reminder claim and adversarial paraphrases cannot become action receipts/history for covered requests. No execution returns explicit no-action status. Mixed requests isolate tool-free chat. **Not established** universal action-intent recognition or semantic truthfulness of arbitrary conversational prose; see contract below. |
 | Direct Calendar/Weather | Providers default none; Google read-only, approved Weather ZIPs; model sharing off by default | **Passed** synthetic freshness, units/clocks/DST, privacy, unavailable/stale and correction tests. **Blocked** real account/source validity and local-model end-to-end semantic acceptance in this audit. No Calendar write capability. |
 | Music/timed lyrics/artwork | Default none; explicit Spotify opt-in; existing-device controls; conversational control default off | **Passed** mocked adapter/ownership/replay/lease/glyph tests. **Blocked** actual account/playback/lyrics/artwork acceptance. No invented artwork or unrestricted music search/selection. Opt-in conversational control is not established by a touch-control pass. |
 | Bounded Mac reports | Default off, explicit nonsecret file allowlist, enum plan, fixed read-only renderer, exact scope approval | **Disabled** unless deliberately configured. Synthetic executor/fencing/artifact evidence passes; no real folder enrollment here. **Not implemented** general shell, arbitrary Mac app control or remote worker execution; worker presence is not an executor. |
@@ -25,16 +25,39 @@ owner data; the private handoff records the owner's separate current inventory.
 
 ## Candidate repairs and product limitation
 
-Model-only text is not an operation receipt. The candidate does not try to infer
-truth from success words, model self-classification or a provider name. Supported
-Calendar/Weather/reminder/playback tools supply observed responses; failed/partial
-and round-limit admitted effects retain explicit receipts. Unknown unsupported
-outcomes remain unverified. Without a supported outcome, raw model text is neither
-shown nor stored as final assistant fact. This deliberately restricts open-ended
-chat/clarifications; it is a capability limitation to review, not a completed
-implementation of a general personal assistant. Local deterministic commands and
-explicit confirmation paths remain supported. Old conversation history is not
-retroactively scrubbed. Model/tool-selection competence still needs real acceptance.
+Model-only text is not an operation receipt. Supported Calendar/Weather/reminder/
+playback tools supply observed responses; failed/partial and round-limit admitted
+effects retain explicit receipts. Proposed tool-call narrative is not stored as a
+completed effect. Existing permission, confirmation and context fences remain.
+
+The narrowed action contract is explicit English directives at clause starts
+(optional "please" or "could you"), using a supported operation construction and
+an operational target such as reminder, timer, playback, event, report or file.
+This recognizes requests, not truth from generated words. On a covered request,
+the final action response comes only from structured adapter outcomes. With no
+observed execution it says "No action was performed"; raw model acknowledgment is
+neither displayed nor stored. A read does not establish a requested mutation.
+An unsupported operation still cannot acquire authority through this parser.
+
+Ordinary greetings, explanations, clarifications, attributed history, hypotheticals
+and negation retain model prose. Explicit mixed input such as "Complete my reminder
+and explain why the sky looks blue" gets a separate tool-free conversational call
+for the independent question. It receives no action arguments, outcomes, private
+history or working references. Failure of that optional call cannot hide an
+admitted action. Cancellation/Stop checks precede and follow model calls.
+
+This is **a bounded action contract, not a universal hallucination detector**.
+Unrecognized implicit commands, other languages, complex conditional scopes and
+model claims made during ordinary conversation are not proven safe by it. Model
+conversation and the isolated chat answer can still be wrong, including unexpected
+action prose; neither is evidence of execution. Prompt instructions do not prove
+otherwise. Mixed conditional input beginning with if/unless/when/suppose/imagine
+is treated as conversation. Independent chat deliberately lacks prior context;
+complex mixed requests should be split into separate turns. Chat following a
+pending confirmation or the four-round limit is not separately generated in that
+turn. General semantic acceptance remains open. The prior broad suppression is
+removed, and the failed verb-based output filter is not shipped. Old conversation
+history is not retroactively scrubbed.
 
 Local Stop intent independently fences the interrupted target's visible/audible
 result. Delivery can still be acknowledged without replaying output or clearing

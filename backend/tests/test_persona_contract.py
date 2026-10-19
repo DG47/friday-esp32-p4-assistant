@@ -7,7 +7,6 @@ import unittest
 from copy import deepcopy
 from pathlib import Path
 from app.agent import FridayAgent, TOOL_DEFINITIONS
-from app.tools.outcome_prose import NO_VERIFIED_OUTCOME
 from app.config import Settings
 from app.db import ReminderStore
 from app.providers.base import ProviderTurn, TextProvider, ToolCall
@@ -31,7 +30,7 @@ class PersonaContractTests(unittest.IsolatedAsyncioTestCase):
         self.agent = FridayAgent(settings, self.store)
     async def asyncTearDown(self):
         self.temp.cleanup()
-    async def test_contextual_restraint_prompt_survives_without_unverified_no_tool_prose(self):
+    async def test_contextual_restraint_reaches_provider_without_extra_ack_or_action(self):
         scenarios = [
             ('I am worried about my health; please keep this serious.', 'What would you like help with?'),
             ('I cannot pay my bills; no jokes, please.', 'Which bill would you like to work through first?'),
@@ -42,7 +41,7 @@ class PersonaContractTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(request=request):
                 provider = ScriptedProvider([ProviderTurn(text=proposed_reply)])
                 reply = await self.agent._handle_with_model('fixture-'+str(index),request,provider,request_id='contract-'+str(index))
-                self.assertEqual(reply.text, NO_VERIFIED_OUTCOME) # Free prose has no operation evidence.
+                self.assertEqual(reply.text, proposed_reply)
                 self.assertEqual(len(provider.requests),1)
                 messages,instructions,tools = provider.requests[0]
                 self.assertEqual(messages,[{'role':'user','content':request}])

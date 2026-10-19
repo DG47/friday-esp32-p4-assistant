@@ -132,7 +132,7 @@ class UnobservedOutcomeAcceptance(unittest.IsolatedAsyncioTestCase):
                     reply=await agent.handle('synthetic-owner','Please take care of my existing reminder as we discussed.',request_id='synthetic-no-tool-claim')
                 self.assertIsNotNone(store.active_by_id(reminder.id,'synthetic-owner'))
                 self.assertIsNone(reply.tool);self.assertNotIn(claim,reply.text)
-                self.assertIn('not',reply.text.lower());self.assertNotIn(claim,json.dumps(store.conversation('synthetic-owner')))
+                self.assertIn('No action was performed',reply.text);self.assertNotIn(claim,json.dumps(store.conversation('synthetic-owner')))
             finally:await agent.calendar.close()
 
 class ObservedReceiptAcceptance(unittest.IsolatedAsyncioTestCase):
