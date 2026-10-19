@@ -31,7 +31,7 @@ effects retain explicit receipts. Proposed tool-call narrative is not stored as 
 completed effect. Existing permission, confirmation and context fences remain.
 
 The narrowed action contract is explicit English directives at clause starts
-(optional "please" or "could you"), using a supported operation construction and
+(optional "please", "could you", "I need/want/would like you to" or "I'd like you to"), using a supported operation construction and
 an operational target such as reminder, timer, playback, event, report or file.
 This recognizes requests, not truth from generated words. On a covered request,
 the final action response comes only from structured adapter outcomes. With no
@@ -51,7 +51,12 @@ Unrecognized implicit commands, other languages, complex conditional scopes and
 model claims made during ordinary conversation are not proven safe by it. Model
 conversation and the isolated chat answer can still be wrong, including unexpected
 action prose; neither is evidence of execution. Prompt instructions do not prove
-otherwise. Mixed conditional input beginning with if/unless/when/suppose/imagine
+otherwise. Straight/curly/nested/escaped quoted spans are masked at their original offsets
+while finding boundaries; unclosed quotations keep their tail conversational.
+Conjunctions in attributed-history and negated clauses remain in that scope until
+an explicit sentence/semicolon boundary. A separate unquoted directive can still
+form an action lane. This is bounded parsing, not general linguistic analysis.
+Mixed conditional input beginning with if/unless/when/suppose/imagine
 is treated as conversation. Independent chat deliberately lacks prior context;
 complex mixed requests should be split into separate turns. Chat following a
 pending confirmation or the four-round limit is not separately generated in that
@@ -78,6 +83,19 @@ results and raw-log locations. Actual Chrome fixtures cover memory68, Calendar15
 Stop13 and interrupted-result15 checks. Native host capture compiles the production
 LVGL renderer with synthetic content. Mocks, intercepted account transports and
 stubbed DSP are explicitly not real provider, model, phone or acoustic acceptance.
+
+The optional manual `scripts/test_natural_local_actions.py` runs ten natural
+requests through unchanged production instructions and registered tools on an
+existing cloud-disabled local model, with fresh synthetic SQLite per case. It
+checks creation, explicit confirmation/completion/cancellation, quote/history/
+negation nonexecution, ambiguous clarification and mixed action/chat. It never
+pulls a model or uses accounts/providers other than loopback Ollama. This small
+sample is natural tool-selection acceptance, not an error-rate/latency/soak or
+universal language-safety guarantee; record its exact-head output separately.
+An initial natural run also produced an incorrect no-active-reminders statement
+in historical conversation despite one active synthetic reminder. No mutation
+ran, but this is a concrete remaining factuality defect, not a safe inference
+from the operation checks. Do not claim general reminder-fact correctness.
 
 No runtime/device, credentials, source folders, permissions, account access or
 integration activation is included. Keep report/real-project/Telegram switches off
