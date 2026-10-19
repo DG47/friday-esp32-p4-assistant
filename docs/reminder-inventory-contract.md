@@ -32,7 +32,9 @@ negative-instruction scopes, current existential/possessive constructions such a
 "there are no/zero/digit active/pending reminders" and "you have no/zero/digit
 active/pending reminders" become "the current reminder inventory has not been
 checked" if no actual list result supplies the final receipt. Surrounding prose
-is retained. This is not a reminder-word ban or a semantic truth oracle. No model
+is retained. If mixed chat contains a covered claim after a verified final list
+read, the covered span instead states that actual checked count; it must not
+falsely say inventory was unchecked when the response already supplies evidence. This is not a reminder-word ban or a semantic truth oracle. No model
 label or absence of tool calls is accepted as evidence of an empty list.
 
 The output recognizer is not broadened to arbitrary paraphrases: "Your reminder

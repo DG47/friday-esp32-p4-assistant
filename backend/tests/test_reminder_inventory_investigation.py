@@ -166,3 +166,27 @@ class InventoryInvestigation(unittest.IsolatedAsyncioTestCase):
         self.assertIn('No completion is confirmed.',reply.text)
         self.assertEqual(reply.surface.kind,'message')
         self.assertNotIn(self.reminder.text,str(reply.surface))
+
+    async def test_mixed_chat_inventory_uses_verified_count_instead_of_false_unchecked(self):
+        reply,_=await self.reply('Complete my reminder and explain active reminders.',[
+            ProviderTurn(tool_calls=[ToolCall('read','list_reminders',{})]),
+            ProviderTurn(text='Completed.'),
+            ProviderTurn(text='An active reminder is pending. There are no active reminders. We can discuss your plans.')])
+        self.assertTrue(reply.text.startswith('1 active reminder.'))
+        self.assertIn('checked inventory contains 1 active reminder',reply.text)
+        self.assertNotIn('inventory has not been checked',reply.text)
+        self.assertNotIn('There are no active reminders',reply.text)
+        self.assertTrue(reply.text.endswith('We can discuss your plans.'))
+
+    async def test_malformed_or_failed_list_does_not_establish_empty_inventory(self):
+        from app.agent import ToolOutcome
+        from app.models import Surface
+        for content,success in [('not-json',True),('[]',True),('{"ok":true,"reminders":null}',True),
+                                ('{"ok":false,"reminders":[]}',True),('{"ok":true,"reminders":[]}',False)]:
+            with self.subTest(content=content,success=success):
+                outcome=ToolOutcome(content,Surface(kind='reminder',title='Stale inventory',subtitle='No reminders'),success)
+                with patch.object(self.agent,'_execute_tool',return_value=outcome):
+                    reply=await self.agent.handle('owner','Do I have any active reminders?','malformed-'+content+str(success))
+                self.assertEqual(reply.text,'The active reminders could not be verified.')
+                self.assertNotIn('Stale inventory',str(reply.surface))
+                self.assertNotIn('0 active reminders',reply.text)

@@ -13,7 +13,7 @@ def current_inventory_question(text):
     return bool(_QUERY.fullmatch(text.strip()))
 
 
-def inventory_not_checked(text):
+def inventory_not_checked(text, *, verified_count=None):
     """Replace covered unsolicited current claims, preserving surrounding prose.
 
     Conversation scope can be wrong or expressed outside this grammar; do not
@@ -30,6 +30,8 @@ def inventory_not_checked(text):
         replacements.append((match.start(),match.end()))
     for start,end in reversed(replacements):
         replacement=NOT_CHECKED
+        if type(verified_count) is int and verified_count >= 0:
+            replacement=f"the checked inventory contains {verified_count} active reminder"+('s' if verified_count!=1 else '')
         if start==0 or text[start-1:start] in '.\n':replacement=replacement[0].upper()+replacement[1:]
         text=text[:start]+replacement+text[end:]
     return text
