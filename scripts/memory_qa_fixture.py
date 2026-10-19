@@ -62,6 +62,8 @@ html=(root/'backend/app/static/index.html').read_text()
 css=(root/'backend/app/static/styles.css').read_text()
 js=(root/'backend/app/static/app.js').read_text().replace('connect();','/* fixture has no network connection */')
 html=re.sub(r'<link[^>]+href="[^"]*styles.css"[^>]*>',lambda _:f'<style>{css}</style>',html)
+stop=(root/'backend/app/static/execution_stop.js').read_text()
+html=html.replace('<script src="/static/execution_stop.js"></script>','<script>'+stop+'</script>')
 html=re.sub(r'<script[^>]+src="[^"]*app.js"[^>]*></script>',lambda _:f'<script>{js}</script>',html)
 checks='''<script>
 const scenes=SCENES;
@@ -71,7 +73,7 @@ const sent=[];
 let nextResponse;
 function check(name,passed){results.push({name,passed})};
 authenticated=true;
-socket={readyState:WebSocket.OPEN,send(raw){const message=JSON.parse(raw);sent.push(message);if(nextResponse){renderSurface(nextResponse);nextResponse=null;}}};
+socket={readyState:WebSocket.OPEN,send(raw){const message=JSON.parse(raw);sent.push(message);if(nextResponse){handleMessage({type:'surface',surface:nextResponse});nextResponse=null;}}};
 function clickAction(start,label,response,name){renderSurface(scenes[start]);nextResponse=scenes[response];const index=scenes[start].actions.findIndex(action=>action.label===label);document.querySelectorAll('#scene-actions button')[index].click();check(name,sent.at(-1).action===scenes[start].actions[index].id);}
 renderSurface(scenes.list);
 check('subtitle preserves explicit line breaks and spaces',getComputedStyle(subtitle).whiteSpace==='pre-wrap');
@@ -121,6 +123,7 @@ renderSurface(scenes.list);
 const result=document.createElement('pre');result.id='qa-result';result.textContent=JSON.stringify(results);document.body.append(result);
 </script>'''.replace('SCENES',encode(scenes)).replace('LONGPAGES',encode(long_pages))
 html=html.replace('</body>',checks+'</body>')
+(root/'outputs/memory-qa').mkdir(parents=True,exist_ok=True)
 (root/'outputs/memory-qa/fixture.html').write_text(html)
 # Separate snapshots allow inspecting detail and both confirmation pixels.
 for name in ['detail','edit_confirm','forget_confirm','stale','disabled','long_first','long_last']:

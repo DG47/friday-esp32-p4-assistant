@@ -41,7 +41,7 @@ class PersonaContractTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(request=request):
                 provider = ScriptedProvider([ProviderTurn(text=proposed_reply)])
                 reply = await self.agent._handle_with_model('fixture-'+str(index),request,provider,request_id='contract-'+str(index))
-                self.assertEqual(reply.text, proposed_reply) # Verifies delivery, not model tone.
+                self.assertEqual(reply.text, proposed_reply)
                 self.assertEqual(len(provider.requests),1)
                 messages,instructions,tools = provider.requests[0]
                 self.assertEqual(messages,[{'role':'user','content':request}])

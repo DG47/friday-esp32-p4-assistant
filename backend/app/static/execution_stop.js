@@ -5,7 +5,7 @@
   class ExecutionStopClient {
     constructor(send, now = () => performance.now()) {
       this.send = send; this.now = now; this.target = null; this.pending = null;
-      this.query = null; this.phase = 'idle'; this.notice = ''; this.finished = new Set();
+      this.query = null; this.presentationFenced = false; this.phase = 'idle'; this.notice = ''; this.finished = new Set();
     }
     blocked() { return ['pending', 'unconfirmed', 'uncertain'].includes(this.phase); }
     capture(job, execution) {
@@ -16,12 +16,14 @@
       if (!target || !id(target.job_id) || !incarnation(target.execution_id)) return false;
       if (this.blocked() && this.target && (this.target.job_id !== target.job_id || this.target.execution_id !== target.execution_id)) return false;
       this.target = {job_id: target.job_id, execution_id: target.execution_id};
+      this.presentationFenced = true;
       this.phase = 'uncertain'; this.notice = 'Earlier execution outcome is uncertain; review it on the Mac. No automatic replay.'; return true;
     }
     request(request) {
       if (!this.target || !id(request)) return false;
       // Explicit retry uses the same action identity and target, never a replacement.
       const action = this.pending?.request_id || request;
+      this.presentationFenced = true;
       this.pending = {...this.target, request_id: action}; this.phase = 'pending';
       this.deadline = this.now() + 1000; this.notice = 'Stop requested; acknowledgement pending.';
       if (!this.send({type: 'execution.stop', ...this.pending})) this.unknown();
@@ -60,6 +62,12 @@
         return true;
       }
       return false;
+    }
+    mayPresentResult(job, execution) {
+      // Interruption is a local presentation fence, independent of durable ACK.
+      // After any Stop, only a newly admitted, non-interrupted current target
+      // may present a result. Old history cannot regain authority by cache aging.
+      return !this.presentationFenced || (!this.blocked() && this.target?.job_id === job && this.target.execution_id === execution);
     }
     result(job, execution) {
       if (!incarnation(execution)) return;

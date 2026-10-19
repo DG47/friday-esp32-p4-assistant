@@ -29,7 +29,7 @@ from .discovery import FridayDiscoveryProtocol
 from .reminder_scheduler import ReminderScheduler
 from .stt import TranscriptionError, create_transcriber
 from .stt.capture_metadata import CaptureMetadataLog
-from .stt.diagnostics import FailureReason, Phase, TranscriptionDiagnostics, observe, log_failure
+from .stt.diagnostics import FailureReason, Phase, TranscriptionDiagnostics, observe, log_failure, public_transcription_message
 from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
 from .scenes import local_scene
 from .tools.google_calendar import next_event
@@ -819,7 +819,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                     revision = state.revision
                                     outcome = await agent._execute_read_tool("get_weather", {"location":state.location}, device_id, message.get("request_id") or "touch-context", 0)
                                     if (not weather_navigation_current(device_id, navigation)
-                                        or agent.working_context.state(device_id) is not state
+                                        or agent.working_context.devices.get(device_id) is not state
                                         or revision != state.revision):
                                         continue
                                     require_weather_navigation(device_id)
@@ -847,10 +847,14 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             elif action.startswith(("calendar", "event:")):
                                 await publish_tool_progress(device_id, "get_calendar", "working")
                                 if negotiated and not action.startswith("event:"):
-                                    agent.working_context.begin(device_id,message.get("request_id") or "touch-calendar")
+                                    calendar_request=message.get("request_id") or "touch-calendar"
+                                    agent.working_context.begin(device_id,calendar_request)
+                                    calendar_context=agent.working_context.devices[device_id]
                                     snapshot=await agent.calendar.snapshot("next" if action=="calendar_next" else "today",force=action=="calendar_refresh")
                                     surface=await agent.calendar.scene(action,device_id,snapshot=snapshot)
-                                    if not weather_navigation_current(device_id,navigation):continue
+                                    if (not weather_navigation_current(device_id,navigation) or
+                                        agent.working_context.devices.get(device_id) is not calendar_context or
+                                        not agent.working_context.current(device_id,calendar_request)):continue
                                     require_weather_navigation(device_id)
                                     payload=snapshot.payload()
                                     if action=="calendar_next":
@@ -1073,7 +1077,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                 elif isinstance(error, TranscriptionError) and isinstance(error.reason, FailureReason):
                                     reason = error.reason
                                 log_failure(logging.getLogger("uvicorn.error"), diagnostics, reason)
-                                await send_error(websocket, "transcription_failed", "Speech transcription timed out" if isinstance(error, TimeoutError) else str(error))
+                                await send_error(websocket, "transcription_failed", str(error) if isinstance(error, AudioSessionError) else public_transcription_message(reason))
                                 await hub.broadcast(device_id, {"type": "state", "state": "idle"})
                                 continue
                         await hub.broadcast(

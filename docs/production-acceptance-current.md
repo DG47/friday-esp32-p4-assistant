@@ -1,91 +1,122 @@
-# Friday production acceptance — 2026-10-16
+# Friday feature acceptance — October 19, 2026
 
-This checklist supersedes historical configuration claims in production-readiness.md.
-Baseline: main 745bdf41. Scope: one local-only personal assistant spanning the device
-and Mac. This is a release gate, not a declaration that passing tests establish readiness.
-No live state, credentials, folders, permissions or device writes are included here.
+Baseline:ca9eed79d23dd8029ad9997c62bc1d0628731972. This document replaces the
+older745bdf41 checklist. The audit candidate is not deployed. Source tests and
+synthetic integrations do not establish full production acceptance, literal
+sentience or absence of defects. Actual deployment flags/account validity are
+owner data; the private handoff records the owner's separate current inventory.
 
-| Requirement | Status | Evidence and acceptance gap |
+| Feature | Source/default scope | Acceptance state and evidence |
 | --- | --- | --- |
-| Installed recovery/peer source preserved | Passed | PR11–13 main retains installed cd58 recovery/peer changes. Wi-Fi repair is merged; owner reports app-only installation. |
-| Stale worker outcomes cannot replace current claims | Failed on baseline; repaired in this candidate | Actual workers reproduce obsolete success, failure, timeout and local-model failure overwriting newer state/presentation. Atomic status/attempt/delivery-incarnation fences suppress obsolete store writes and terminal callbacks. Tests also cover uncertainty and reused request IDs. Exact release/CI belongs in the PR. |
-| Conservative cancellation/restart | Passed, bounded scope | Existing regressions retain uncertainty markers and do not replay shielded effects after cancellation/restart. A resistant handler can outlive the timeout; this is not a hard execution deadline or proof remote effects stopped. Repeated cancellation, process loss before persistence and multiworker execution are not universally established. |
-| Reconnect/result ownership | Passed offline; physical untested | Durable result IDs/ACK replay and experience epoch/request/sequence tests protect negotiated presentations. Legacy clients have weaker delivery semantics. Actual device authentication is still unverified after Wi-Fi settings were found absent by the owner. |
-| Continuous contextual device/Mac experience | Partial; end-to-end untested | Existing tests cover scoped event/place corrections, TTL, protected views, stale ownership, dismissal and native reentry. WorkingContext is bounded volatile state keyed per device; Experience ownership is also process-local. Durable conversation/jobs/memory do not establish one automatically shared, restart-persistent workspace across distinct client identities. After restart, expired/current tool facts must be reread. Do not persist private context or unify identities without an explicit design. |
-| Calendar clocks and current-read provenance | Passed for bounded deterministic paths; general reliability failed/unresolved | Prior actual-local acceptance captured 18:55 UTC incorrectly paraphrased as 13:55 EDT (correct 14:55 EDT), then stale history/reread failures. ZoneInfo clock facts and fresh-read routing passed later synthetic/real-local reruns including midnight and DST. One passing rerun does not erase earlier failures. Unsupported named/date selectors clarify; arbitrary model paraphrases are not comprehensively gated. |
-| Weather corrections and truthful source state | Passed offline; model prose unproven | Existing working-context tests preserve approved ZIP corrections, invalidate changed source/expired facts and honor local-only Calendar sharing. Direct Weather response uses observed readings. Broader model-authored synthesis can still be wrong; current actual-service/read/model acceptance is not rerun here. |
-| Free-only operation | Passed configuration/tests; deployment separately owned | Local-only policy fails closed and paid-provider constructors are guarded in tests. No new model download or inference was performed for this audit; model daemon cancellation/resource caps are not proved by coroutine cancellation. |
-| Report/Telegram | Deferred/off | Default flags stay false; no real project enrollment, bot setup or external account call. Prior real-local dispatcher acceptance used synthetic files and mock Telegram. This does not establish live bot/phone acceptance. |
-| Physical voice/display/touch/Stop/soak | Untested here | Native captures and C tests are not acoustic, touch, authentication or panel acceptance. Owner controls hardware and runtime checks. |
-| General Mac automation | Deferred | No broad permissions, folders, shell execution, new credentials or automation enrollment added. |
+| Unified native context | Same-device Calendar/event/Weather relation, shared presence/content well; context/Stop firmware options default off | **Passed** host LVGL bounds, glyphs, protected facts and reentry. **Blocked** actual panel/touch, source/provider and installed-configuration acceptance. A backend update does not enable or flash native support. |
+| Browser interruption | Negotiated target-bound Stop, ACK/dedup, local deadline and status | **Failed baseline; repaired candidate**: in-flight results restarted speech/replaced a stopped view. Candidate separates delivery ACK from presentation and preserves unrelated alerts/read-only views/new tasks. Actual Chrome/silent-spy fixtures; not acoustic proof. |
+| Context ownership/restart | Bounded32 workspaces; opaque24h restart intent; source facts reread | **Failed baseline; repaired candidate**: eviction recreated ownerless authority and late Calendar returned stale success. Non-creating checks and workspace-instance fences cover replacement/eviction/same-ID reuse, including native navigation. **Not implemented** automatic bridging of distinct identities/shared universal workspace. |
+| Explicit memory | Default off; local CRUD,500 ASCII characters, sequential full-page review, per-device scope; soft deletion | **Passed** SQL/restart/owner tests and68 actual Chrome checks. **Failed baseline browser latch; repaired candidate**. Memory is not automatically extracted or supplied to model reasoning. **Not implemented** provider-sharing approval, hard-purge/export UI or general autobiographical recall. |
+| Voice/STT/TTS | Backend local Whisper/optional macOS speech; browser uses separate browser speech engines | **Failed baseline private STT exception disclosure; repaired candidate** with fixed public copy/reason codes. **Passed** synthetic thread ownership/cancel/metadata and browser interruption. **Blocked** real model availability/recognition, speaker/AEC, hardware interruption and soak. Ready/health are not those observations. Browser ASR/TTS locality/availability is not proved by backend local-only reasoning; typed browser input remains supported. |
+| Tool outcome truth | Explicit English operation directives with operational targets use evidence-only action responses; ordinary conversation restored | **Passed bounded regressions**: original no-tool reminder claim and adversarial paraphrases cannot become action receipts/history for covered requests. No execution returns explicit no-action status. Mixed requests isolate tool-free chat. **Not established** universal action-intent recognition or semantic truthfulness of arbitrary conversational prose; see contract below. |
+| Direct Calendar/Weather | Providers default none; Google read-only, approved Weather ZIPs; model sharing off by default | **Passed** synthetic freshness, units/clocks/DST, privacy, unavailable/stale and correction tests. **Blocked** real account/source validity and local-model end-to-end semantic acceptance in this audit. No Calendar write capability. |
+| Music/timed lyrics/artwork | Default none; explicit Spotify opt-in; existing-device controls; conversational control default off | **Passed** mocked adapter/ownership/replay/lease/glyph tests. **Blocked** actual account/playback/lyrics/artwork acceptance. No invented artwork or unrestricted music search/selection. Opt-in conversational control is not established by a touch-control pass. |
+| Bounded Mac reports | Default off, explicit nonsecret file allowlist, enum plan, fixed read-only renderer, exact scope approval | **Disabled** unless deliberately configured. Synthetic executor/fencing/artifact evidence passes; no real folder enrollment here. **Not implemented** general shell, arbitrary Mac app control or remote worker execution; worker presence is not an executor. |
+| Phone/Telegram | Report connector default off, dedicated bot/numeric owner binding | **Disabled/deferred**. Mock HTTPS/poll/approval/delivery/recovery tests do not establish a live phone/bot path. **Not implemented** general phone companion/mobile app or reviewed Internet-facing deployment. |
+| Auth/identity | Existing pairing/strict TLS, loopback admin, exact device/job/incarnation controls | **Passed** synthetic adversarial isolation/epoch/replay/invalid-auth tests. **Blocked** fresh physical authentication/owner setup. No implicit cross-device/account mapping or new permissions. |
+| Stop/recovery | Durable admission revocation, immutable result IDs, same-device quarantine; native client default off | **Passed** bounded commit/failed storage/lost ACK/restart/resistant handler fixtures. **Blocked** universal process/remote-effect termination and physical one-second SLO. Reconciliation remains read-only; no clear/replay/attestation policy. Typed effect evidence remains required. |
+| Backup/rollback | Manual exclusive0600 online SQLite backup/integrity check and isolated restore; no overwrite | **Passed** synthetic restore/ownership/quarantine regressions. Owner's separate installed acceptance records a13-table roundtrip. **Blocked** actual personal-state restoration and operational rollout acceptance. **Not implemented** automatic backup scheduling/restore UI. |
+| Operations/free policy | Content-free diagnostics, readiness, supervisor/container checks; Settings auto is not a free-only policy | **Passed** bounded tests; free installations must explicitly keep local-only reasoning and local/disabled TTS. **Blocked** current real-model semantic/latency/resource and sustained service/physical soak. Optional paid modes are not enabled by this audit. Hosted CI is blocked until zero cost is established. |
 
-## Current repair semantics
+## Candidate repairs and product limitation
 
-An asynchronous completion/failure must atomically match the running claim's ID,
-attempt count and existing result_delivery_id, and must not replace an uncertainty
-marker. A timeout marks uncertainty only if its claim still owns that row. An obsolete
-handler cannot deliver its result, reset idle or invoke on_finished. Prune/recreate
-with the same request ID gets a different delivery ID. No schema migration is needed.
-Trusted legacy by-ID complete remains a fixture/admin compatibility path; all actual
-AgentJobWorker completions supply the claim. This is not external exactly-once
-execution, a cross-process scheduler lock or protection against restoring the same
-old claim incarnation from a backup. Ordinary authorized current-claim retries remain.
-Persistence failure retains the existing in-memory non-replay fence; it cannot ensure
-that fence survives process loss.
+Model-only text is not an operation receipt. Supported Calendar/Weather/reminder/
+playback tools supply observed responses; failed/partial and round-limit admitted
+effects retain explicit receipts. Proposed tool-call narrative is not stored as a
+completed effect. Existing permission, confirmation and context fences remain.
 
-## Release/operation sequence
+The narrowed action contract is explicit English directives at clause starts
+(optional "please", "could you", "I need/want/would like you to" or "I'd like you to"), using a supported operation construction and
+an operational target such as reminder, timer, playback, event, report or file.
+This recognizes requests, not truth from generated words. On a covered request,
+the final action response comes only from structured adapter outcomes. With no
+observed execution it says "No action was performed"; raw model acknowledgment is
+neither displayed nor stored. A read does not establish a requested mutation.
+An unsupported operation still cannot acquire authority through this parser.
 
-Require exact-head aggregate backend tests, native workflow checks and CI before merge.
-Record exact commit and CI to the coordinating owner before merging. After merge,
-verify exact-main CI and send the source SHA plus migration/rollback notes. Only that
-owner deploys. Preserve the absolute DB, local-only policy, model/TTS configuration,
-trust material, pairing/NVS and report flags. Do not clear uncertain rows to make the
-queue responsive. This backend-only fix needs no firmware flash. Physical and factual
-model acceptance remain gates even when source CI passes.
+Ordinary greetings, explanations, clarifications, attributed history, hypotheticals
+and negation retain model prose. Explicit mixed input such as "Complete my reminder
+and explain why the sky looks blue" gets a separate tool-free conversational call
+for the independent question. It receives no action arguments, outcomes, private
+history or working references. Failure of that optional call cannot hide an
+admitted action. Cancellation/Stop checks precede and follow model calls.
+
+This is **a bounded action contract, not a universal hallucination detector**.
+Unrecognized implicit commands, other languages, complex conditional scopes and
+model claims made during ordinary conversation are not proven safe by it. Model
+conversation and the isolated chat answer can still be wrong, including unexpected
+action prose; neither is evidence of execution. Prompt instructions do not prove
+otherwise. Straight/curly/nested/escaped quoted spans are masked at their original offsets
+while finding boundaries; unclosed quotations keep their tail conversational.
+Conjunctions in attributed-history and negated clauses remain in that scope until
+an explicit sentence/semicolon boundary. A separate unquoted directive can still
+form an action lane. This is bounded parsing, not general linguistic analysis.
+Mixed conditional input beginning with if/unless/when/suppose/imagine
+is treated as conversation. Independent chat deliberately lacks prior context;
+complex mixed requests should be split into separate turns. Chat following a
+pending confirmation or the four-round limit is not separately generated in that
+turn. General semantic acceptance remains open. The prior broad suppression is
+removed, and the failed verb-based output filter is not shipped. Old conversation
+history is not retroactively scrubbed.
+
+Local Stop intent independently fences the interrupted target's visible/audible
+result. Delivery can still be acknowledged without replaying output or clearing
+uncertainty. Later explicitly admitted tasks remain usable. Memory decisions use
+their existing single-use token/sequential cursor instead of a browser job-result
+latch that their normal surface responses cannot clear. No consent is inferred.
+
+Context freshness checks never recreate a missing workspace or load a checkpoint.
+In-flight reads bind the actual workspace instance; the same textual request ID
+cannot resurrect an evicted read. Fresh explicit admission/read is required after
+eviction. Private facts are not made durable by this repair. STT error bodies and
+paths are replaced by fixed device-visible copy while diagnostic categories remain.
+
+## Evidence and release boundary
+
+The PR/private handoff records exact candidate SHA, local aggregate/adversarial
+results and raw-log locations. Actual Chrome fixtures cover memory68, Calendar15,
+Stop13 and interrupted-result15 checks. Native host capture compiles the production
+LVGL renderer with synthetic content. Mocks, intercepted account transports and
+stubbed DSP are explicitly not real provider, model, phone or acoustic acceptance.
+
+The optional manual `scripts/test_natural_local_actions.py` runs ten natural
+requests through unchanged production instructions and registered tools on an
+existing cloud-disabled local model, with fresh synthetic SQLite per case. It
+checks creation, explicit confirmation/completion/cancellation, quote/history/
+negation nonexecution, ambiguous clarification and mixed action/chat. It never
+pulls a model or uses accounts/providers other than loopback Ollama. This small
+sample is natural tool-selection acceptance, not an error-rate/latency/soak or
+universal language-safety guarantee; record its exact-head output separately.
+An initial natural run also produced an incorrect no-active-reminders statement
+in historical conversation despite one active synthetic reminder. No mutation
+ran, but this is a concrete remaining factuality defect, not a safe inference
+from the operation checks. Do not claim general reminder-fact correctness.
+
+No runtime/device, credentials, source folders, permissions, account access or
+integration activation is included. Keep report/real-project/Telegram switches off
+unless separately configured. Calendar model sharing and conversational music can
+remain disabled; this audit does not enable them. Preserve TLS/CA, pairing/NVS,
+local-only configuration, current DB and uncertain rows. No firmware change is
+required for these repairs. Source publication is a draft with automatic hosted
+CI skipped under the no-paid constraint; no merge/deployment before coordinated
+review. Read-only reconciliation stays read-only until typed evidence is designed.
+
+The whole product remains **not fully production accepted**. Outstanding gates
+include actual local-model/source semantics, physical Wi-Fi/panel/touch/voice/AEC/
+Stop/reconnect/soak, and deliberately missing general memory/worker/phone capabilities.
+The owner's physical checklist is an acceptance plan, not completed evidence.
 
 
-## Observed-read prose candidate
+## Separate inventory review candidate
 
-The scripted-provider regressions in test_observed_read_prose.py reproduce wrong
-clock/unit, false empty Calendar and invented Weather after tool calls. This candidate
-replaces final Calendar/Weather paraphrases with observed source facts and passes 626
-aggregate tests. See observed-read-prose.md. This improves the supported read boundary;
-prior general real-model factual failures and no-tool synthesis remain unresolved.
-
-
-## Same-device restart-intent candidate
-
-The controlled restart regression reproduces loss of the selected Calendar/Weather ZIP
-relation on main. The candidate persists only bounded opaque resume intent in the local
-SQLite store and forces fresh Calendar/Weather reads before facts are displayed. See
-context-restart-checkpoints.md for TTL, privacy, source-change and rollback rules. This
-repairs the same authenticated device relation, not merging different Mac/device
-identities or reviving approval/tasks/screens. General seamless workspace acceptance
-and actual model/device routing remain open.
-
-
-## Uncertain-task restart visibility candidate
-
-Reconnect now offers a fixed honest uncertainty review and refuses new same-device
-admission instead of showing work as accepted behind an unresolved claim. No marker is
-cleared or effect replayed. Text/voice/controller regressions cover this boundary; see
-uncertain-task-recovery.md. Throughput remains deliberately blocked until private owner
-reconciliation; this is not universal cancellation or automatic task completion.
-
-
-The same admission candidate rejects terminal request-ID replay before claiming busy/
-thinking state. A route regression covers ACK and subsequent Reminders navigation while
-preserving one timer, attempt and delivery identity. Historical result redaction remains;
-no old result is rebound as current. This addresses the owner's concrete retry failure,
-not a hard deadline for cancellation-resistant handlers or broad factual-model reliability.
-
-
-## Separate bounded report Stop observer candidate
-
-The report server can observe durable revocation for1s and handler drainage for250ms,
-returning explicit unconfirmed/stopping information while retaining tasks and quarantined
-bytes.650 standalone aggregate tests pass, including9 resistant/failure/restart/authority cases.
-See bounded-report-stop-observer.md. This is not a full Stop SLO: existing synchronous
-pairing authorization, peer delivery, disconnected-client pending UI, generic worker Stop
-and physical/native/remote termination remain architectural/acceptance gaps. No report,
-Telegram, bot, real project, identity bridge or permission is activated.
+The inventory extension is described in [reminder-inventory-contract.md](reminder-inventory-contract.md).
+It deterministically renders bounded explicit inventory queries from actual
+owner-scoped list facts, refreshes model-selected lists after waits, and replaces
+only covered unsupported inventory constructions with not-checked guidance.
+It is a separately committed review candidate; the ca671a1 PR23 head is unchanged.
+Arbitrary inventory/chat paraphrases remain outside its proof.
