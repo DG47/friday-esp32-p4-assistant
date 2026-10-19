@@ -110,3 +110,13 @@ The whole product remains **not fully production accepted**. Outstanding gates
 include actual local-model/source semantics, physical Wi-Fi/panel/touch/voice/AEC/
 Stop/reconnect/soak, and deliberately missing general memory/worker/phone capabilities.
 The owner's physical checklist is an acceptance plan, not completed evidence.
+
+
+## Separate inventory review candidate
+
+The inventory extension is described in [reminder-inventory-contract.md](reminder-inventory-contract.md).
+It deterministically renders bounded explicit inventory queries from actual
+owner-scoped list facts, refreshes model-selected lists after waits, and replaces
+only covered unsupported inventory constructions with not-checked guidance.
+It is a separately committed review candidate; the ca671a1 PR23 head is unchanged.
+Arbitrary inventory/chat paraphrases remain outside its proof.
