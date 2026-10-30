@@ -114,7 +114,7 @@ The owner's physical checklist is an acceptance plan, not completed evidence.
 
 ## Separate inventory review candidate
 
-The inventory extension is described in [reminder-inventory-contract.md](reminder-inventory-contract.md).
+The inventory extension is described in [reminder-inventory-contract.md](notes/reminder-inventory-contract.md).
 It deterministically renders bounded explicit inventory queries from actual
 owner-scoped list facts, refreshes model-selected lists after waits, and replaces
 only covered unsupported inventory constructions with not-checked guidance.

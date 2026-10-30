@@ -104,7 +104,7 @@ P3A has been tested.
 
 ## 2026-09-30 release candidate
 
-See [readiness evidence and remaining gates](docs/production-readiness.md).
+See [readiness evidence and remaining gates](docs/notes/production-readiness.md).
 
 - [x] Add contextual scene card primitives, scoped reminder actions, local
   status and durable reminder-backed timers; compile P4 firmware.

@@ -148,7 +148,7 @@ kinds currently implemented by the simulator are `ambient`, `timeline`,
 
 ## Adaptive scene actions
 
-See [the scene/action contract and release limits](production-readiness.md#protocol-additions-and-bounds).
+See [the scene/action contract and release limits](notes/production-readiness.md#protocol-additions-and-bounds).
 Authenticated `scene.action` messages request local views or operate on one
 device-scoped reminder through the existing durable agent/confirmation path.
 Surface `actions` are bounded, allowlisted `{id,label}` values; item `action`

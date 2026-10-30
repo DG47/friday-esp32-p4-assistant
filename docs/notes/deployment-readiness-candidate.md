@@ -29,7 +29,7 @@ Report execution is a separate implemented capability: a locally approved file
 allowlist, enum-only plan, fixed read-only report renderer, private artifact verification
 and durable task fences. It is not an arbitrary shell or remote file executor. See
 [project reports](project-report-vertical-slice.md) and
-[Telegram setup](report-telegram-setup.md).
+[Telegram setup](../report-telegram-setup.md).
 
 Remaining physical gates include quiet/spoken recognition and audible response on the
 actual device, acoustic AEC, real in-flight native cancellation, and resource/latency
