@@ -4,9 +4,10 @@
 
 Say "Friday", pause, and ask what is next. A 4-inch touch screen on the desk
 shows the answer, and a reminder you set from it still fires after the backend
-has been restarted. That is the whole idea: a voice assistant
-that lives on a Waveshare ESP32-P4 board and a backend on the Mac next to it,
-with nothing leaving the LAN unless you turn a cloud provider on.
+has been restarted, the Wi-Fi has dropped, and the board has rebooted. That is
+the whole idea: a voice assistant that lives on a Waveshare ESP32-P4 board and
+a backend on the Mac next to it, with nothing leaving the LAN unless you turn a
+cloud provider on.
 
 The board is the face and the ears. The backend owns the conversation, the
 tools, the reminders and the model routing, and the same backend drives a
@@ -15,18 +16,18 @@ browser simulator so you can work on all of it without hardware.
 ## What it does
 
 - Listens for the wake word, records until you pause, transcribes locally with
-  faster-whisper, answers with a local Ollama model by default.
-- Reminders and timers that are stored in SQLite and delivered to the screen,
-  with retries through disconnects and acknowledgement by touch. Cancelling or
-  completing one asks for confirmation; snoozing and creating do not.
+  faster-whisper, and answers with a local Ollama model by default. GPT and
+  Claude are available as opt-in providers with your own keys.
+- Reminders and timers stored in SQLite and delivered to the screen, retried
+  through disconnects, acknowledged by touch. Cancelling or completing one asks
+  for confirmation; snoozing and creating do not.
 - Status and reminder scenes rendered natively on the board with LVGL and
   mirrored in the browser. Calendar and weather scenes exist behind a firmware
-  option that is off by default; they are verified on the host renderer, not
-  yet on the panel.
+  option that is off by default and are verified on the host renderer, not yet
+  on the panel.
 - Read-only Google Calendar, two-location weather, and Spotify playback
   controls with timed lyrics, each off until you connect it.
-- A device protocol over `wss://` with a device-pinned local CA, on-device
-  identity, and an explicit pairing window for first enrollment.
+- Backups, metrics, alerts and a health check, so it can be left running.
 
 ## What it does not do yet
 
@@ -34,12 +35,71 @@ browser simulator so you can work on all of it without hardware.
   barge-in are not wired up, so answers are read on the screen.
 - Hear the wake word on the board. Detection runs on the backend; the firmware
   gates uploads with an energy VAD.
-- Run on the internet. It is built for one LAN, and the acceptance notes say
-  so in detail: [production acceptance](docs/production-acceptance-current.md).
+- Run on the internet. It is built for one LAN, and the acceptance table says
+  exactly what has and has not been checked:
+  [production acceptance](docs/production-acceptance-current.md).
 
-Echo cancellation on the board is an experiment that is off by default. The
-Telegram connector and the Mac file reports exist behind flags and are
-documented, but they are not part of the default build.
+## Why you can trust it with your reminders
+
+Every claim below points at something in this repository.
+
+**It is tested like a service, not a demo.** 728 tests run on every push, with
+no model provider and no hardware. They cover restart in the middle of a job,
+retry after a provider failure, a slow WebSocket peer next to a healthy one,
+a fifth device connection being refused, 96 queued jobs keeping per-device
+order under a concurrency cap of four, and a reminder that must not fire twice
+after the process comes back. Start with `backend/tests/test_readiness.py` and
+`backend/tests/test_agent_jobs.py`.
+
+**Nothing important lives only in memory.** Agent jobs, reminders, pending
+confirmations and device identities are rows in SQLite. A turn is accepted into
+a durable queue before any model work starts, retried with backoff, and its
+result is held until the device that asked for it reconnects. Every mutation
+carries the request ID that caused it, so a retried "yes" returns the original
+result instead of acting twice. Results older than
+`ASSISTANT_JOB_MAX_AGE_SECONDS` are dropped rather than shown as current.
+
+**Destructive actions ask first, and the question expires.** Cancelling or
+completing a reminder requires a confirmation that must be the whole reply, so
+a longer sentence starting with "yes" cannot trigger it. An unrelated request
+cancels the pending confirmation and Friday says which action it dropped.
+Confirmations survive restarts and expire after
+`ASSISTANT_CONFIRMATION_TIMEOUT_SECONDS`.
+
+**Model text is not a receipt.** When you ask for an operation, the final
+response comes from the tool's observed outcome, not from the model's prose.
+With no execution it says "No action was performed". The contract and its
+limits are written down in the acceptance document rather than implied.
+
+**The transport is pinned, not merely encrypted.** The board trusts one local
+CA compiled into its firmware and talks `wss://` only. A device generates its
+own identity on first pairing; the backend stores a hash of it and opens a
+two-minute pairing window only on an explicit admin request from the Mac. A
+server presenting an untrusted certificate was rejected on the physical board,
+and a full identity rotation and re-enrollment has been run end to end. Admin
+and private read endpoints are loopback-only with constant-time token checks.
+Production mode fails closed: without two distinct 64-hex tokens, `wss://`, and
+an explicitly chosen real provider, the backend refuses to start.
+
+**It is private by default.** Speech recognition and reasoning run on the Mac.
+Calendar facts are not sent to a model unless you set a separate flag. Logs
+record events, not conversation. `/metrics` exposes counts, never text. Every
+cloud provider, Spotify, weather source and Telegram connector is off until you
+turn it on.
+
+**It can be left alone.** The backend writes a verified SQLite backup once a
+day and keeps 14 files or 30 days, whichever prunes first, never deleting the
+newest. `/metrics` reports worker health, queue depth, pending reminders and
+backup state in Prometheus format. A watchdog raises an alert when a worker
+stops, and a failed backup raises another; alerts go to the log and, if you
+configure it, to a local command of your choice. A readiness probe can restart
+the LaunchAgent after consecutive failures, which is the hung-process case
+`KeepAlive` cannot see. Restore is documented, always into a new path. See
+[operations](docs/operations.md).
+
+What is not covered by any of that: a speaker, on-device wake word, a long soak
+on the hardware, and live checks against real Calendar, Spotify and weather
+accounts. The README says so because the tests cannot.
 
 ## Run it without hardware
 
@@ -110,12 +170,12 @@ setup and board bring-up are in [`firmware/README.md`](firmware/README.md).
 After that the browser and the board share one session. Say `Friday`, pause,
 and speak; a tap on the orb submits early or works as a fallback.
 
-What has been checked on a physical board: display and touch, Wi-Fi
-provisioning, microphone capture, the full reminder lifecycle including a
-snooze and a retry, the tap-to-talk and automatic-endpoint voice turns through
-Whisper and Ollama, LAN discovery and first pairing, reconnection after a
-backend restart, a rejected rogue certificate, and a device identity rotation.
-What has not: the speaker path, echo cancellation, and any long soak.
+Checked on a physical board: display and touch, Wi-Fi provisioning, microphone
+capture, the full reminder lifecycle including a snooze and a retry, tap-to-talk
+and automatic-endpoint voice turns through Whisper and Ollama, LAN discovery and
+first pairing, reconnection after a backend restart, a rejected rogue
+certificate, and a device identity rotation. Not checked: the speaker path,
+echo cancellation, and any long soak.
 
 ## Configuration
 
@@ -123,33 +183,34 @@ Providers are `mock`, `ollama`, `openai`, `anthropic` or `auto`; with both
 cloud keys present, `ASSISTANT_AUTO_PROVIDER_PREFERENCE` picks one instead of
 guessing. Speech recognition is `STT_PROVIDER=faster-whisper` with `base.en`
 by default and `none` to disable it. Reminder polling, retry, job timeout,
-concurrency and confirmation timeout all have `ASSISTANT_*` variables, and
-`.env.example` lists every one with its default. Never commit `.env`.
+concurrency, confirmation timeout, backup schedule and alert command all have
+`ASSISTANT_*` variables, and `.env.example` lists every one with its default.
+Never commit `.env`.
 
-Optional integrations each have a setup document:
-[Google Calendar](docs/google-calendar.md),
-[weather](docs/weather.md),
+Setup documents: [operations](docs/operations.md),
+[Google Calendar](docs/google-calendar.md), [weather](docs/weather.md),
 [Spotify runtime](docs/spotify-runtime.md) and
-[authentication](docs/spotify-auth.md),
-[local Mac speech](docs/local-voice.md),
+[authentication](docs/spotify-auth.md), [local Mac speech](docs/local-voice.md),
 [explicit memory](docs/explicit-memory.md),
 [Telegram reports](docs/report-telegram-setup.md).
 
 ## Verify
 
 `make test-local` runs the backend suite without providers, or `make test`
-does it in Docker. With the service up, `ASSISTANT_READ_TOKEN="$ASSISTANT_SIMULATOR_TOKEN" make smoke`
-exercises it end to end. `make firmware-build` reproduces the firmware build
-with the repository-local ESP-IDF 5.5.5 toolchain.
+does it in Docker. With the service up,
+`ASSISTANT_READ_TOKEN="$ASSISTANT_SIMULATOR_TOKEN" make smoke` exercises it end
+to end, and `.venv/bin/python scripts/check_backend_health.py` probes readiness
+over the pinned CA. `make firmware-build` reproduces the firmware build with the
+repository-local ESP-IDF 5.5.5 toolchain.
 
 ## Repository map
 
 ```text
 backend/     FastAPI gateway, agent loop, tools, providers, simulator
 firmware/    ESP-IDF project for the P4 board
-docs/        architecture, device protocol, integration setup
+docs/        architecture, device protocol, integration setup, operations
 docs/notes/  dated engineering notes and acceptance audits
-scripts/     TLS setup, smoke checks, calendar and Spotify connectors
+scripts/     TLS setup, backups, health check, smoke checks, connectors
 ```
 
 Start with [architecture](docs/architecture.md) and the
