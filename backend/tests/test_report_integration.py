@@ -147,7 +147,9 @@ class IntegratedReports(unittest.TestCase):
     def test_repeated_recovery_reuses_stop_control(self):
         with self.client.websocket_connect('/ws/device/synthetic-p4') as ws:
             self.authenticate(ws);task=self.create(ws);self.review(task)
-            controls=[main.report_runtime.bridge.scene('synthetic-p4',task).actions[0].id for _ in range(100)]
+            # The bridge is owned by the event loop; render on that thread so the runtime's
+            # periodic publish cannot interleave with this loop and rotate the token.
+            controls=self.client.portal.call(lambda:[main.report_runtime.bridge.scene('synthetic-p4',task).actions[0].id for _ in range(100)])
             self.assertEqual(len(set(controls)),1)
             self.assertEqual(len(main.report_runtime.bridge.tokens),1)
             self.assertTrue(main.report_runtime.ready)
