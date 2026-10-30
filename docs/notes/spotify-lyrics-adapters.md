@@ -1,7 +1,7 @@
 # Bounded line-by-line provider prototype
 
 The optional official Spotify runtime is documented in
-[spotify-runtime.md](spotify-runtime.md). Automatic tests use original synthetic
+[spotify-runtime.md](../spotify-runtime.md). Automatic tests use original synthetic
 metadata and lyrics. Live lyric lookups require explicit metadata-sharing opt-in;
 account grants do not establish lyric rights. Spotify synchronization terms remain
 a separate contractual question.

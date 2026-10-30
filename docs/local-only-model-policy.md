@@ -40,7 +40,7 @@ semantics and acoustic/physical voice acceptance remain unproved.
 
 No account credentials, personal source files, raw model transcripts, machine logs,
 model binaries or local private Git history are published. See
-[publication validation](current-updates-validation.md) for the sanitized result summary.
+[publication validation](notes/current-updates-validation.md) for the sanitized result summary.
 
 ## Primary references
 

@@ -84,7 +84,7 @@ diagnostics. Weather data:
 5. Rollback by restoring `WEATHER_PROVIDER=none` and restarting after approval;
    neither credential changes nor database migration are needed.
 
-Candidate touch-only hold-menu access and firmware rollout gate: [weather-touch.md](weather-touch.md).
+Candidate touch-only hold-menu access and firmware rollout gate: [weather-touch.md](notes/weather-touch.md).
 
 ## City-label and native presentation refinement
 
