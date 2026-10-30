@@ -19,8 +19,10 @@ browser simulator so you can work on all of it without hardware.
 - Reminders and timers that are stored in SQLite and delivered to the screen,
   with retries through disconnects and acknowledgement by touch. Cancelling or
   completing one asks for confirmation; snoozing and creating do not.
-- Context scenes for status, reminders, calendar and weather, rendered natively
-  on the board with LVGL and mirrored in the browser.
+- Status and reminder scenes rendered natively on the board with LVGL and
+  mirrored in the browser. Calendar and weather scenes exist behind a firmware
+  option that is off by default; they are verified on the host renderer, not
+  yet on the panel.
 - Read-only Google Calendar, two-location weather, and Spotify playback
   controls with timed lyrics, each off until you connect it.
 - A device protocol over `wss://` with a device-pinned local CA, on-device
@@ -50,8 +52,12 @@ You need Docker, or Python 3.12 with a `.venv` holding
    `ASSISTANT_SIMULATOR_TOKEN`.
 2. `make tls-local` creates the local CA and a server certificate for your
    Mac's LAN address (pass `LAN_IP=...` if it guesses wrong). The backend only
-   speaks HTTPS, even to the browser.
-3. `make dev` (Docker) or `make dev-local` (the `.venv`). The mock provider
+   speaks HTTPS, even to the browser. This also rewrites the committed
+   `firmware/main/friday_backend_ca.pem` with your CA, which is what the
+   firmware pins.
+3. `make dev` (Docker) or `make dev-local` (the `.venv`). Both listen on
+   port 8000, so if this Mac already runs Friday as a LaunchAgent, boot that
+   out first ([macOS operations](docs/macos-operations.md)). The mock provider
    needs no API key. For real answers, start Ollama, pull a model, and set:
 
    ```env
