@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     assistant_simulator_token: str = ""
     assistant_simulator_device_id: str = "friday-p3a"
     assistant_admin_token: str = ""
+    assistant_backup_interval_seconds: float = Field(default=86400.0, ge=0, le=604800)
+    assistant_backup_directory: Path = Path("data/backups")
+    assistant_backup_keep_count: int = Field(default=14, ge=1, le=365)
+    assistant_backup_keep_days: int = Field(default=30, ge=1, le=3650)
+    assistant_alert_command: str = Field(default="", max_length=1000)
+    assistant_alert_cooldown_seconds: float = Field(default=3600.0, ge=60, le=86400)
 
     openai_api_key: str = ""
     anthropic_api_key: str = ""
@@ -111,6 +117,8 @@ class Settings(BaseSettings):
             or not self.lyrics_client_identifier or len(self.lyrics_client_identifier)>200 or not self.lyrics_client_identifier.isascii()
             or any(ord(c)<32 or ord(c)==127 for c in self.lyrics_client_identifier)):
             raise ValueError('Timed lyrics require Spotify and approved metadata sharing with a truthful client identifier')
+        if self.assistant_backup_directory.resolve() == self.assistant_database_path.resolve():
+            raise ValueError("Backup directory cannot be the database file")
         if len({location.label for location in self.weather_locations}) != len(self.weather_locations):
             raise ValueError("Weather location labels must be unique")
         if self.weather_locations and (self.weather_latitude is not None or self.weather_longitude is not None):
