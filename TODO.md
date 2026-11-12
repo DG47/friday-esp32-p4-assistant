@@ -100,11 +100,14 @@ P3A has been tested.
   keyword recognition.
 - [ ] Attach the external speaker, add TTS, and support interruption/barge-in.
 - [ ] Add a streaming STT option if lower latency is needed.
-- [ ] Add metrics, alerting, backups/retention, and load/failure testing.
+- [x] Add metrics, alerting, backups/retention, and load/failure testing
+  (`/metrics`, `ASSISTANT_ALERT_COMMAND`, scheduled backups, health probe; see
+  docs/operations.md. Bounded synthetic load and recovery tests exist; physical
+  soak remains below).
 
 ## 2026-09-30 release candidate
 
-See [readiness evidence and remaining gates](docs/production-readiness.md).
+See [readiness evidence and remaining gates](docs/notes/production-readiness.md).
 
 - [x] Add contextual scene card primitives, scoped reminder actions, local
   status and durable reminder-backed timers; compile P4 firmware.

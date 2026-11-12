@@ -23,6 +23,18 @@ class FailureReason(str, Enum):
     STT_ERROR = "stt_error"
 
 
+def public_transcription_message(reason):
+    """Device-visible copy is fixed; provider exception bodies are not UI data."""
+    return {
+        FailureReason.MODEL_LOAD: "Local speech model is unavailable. Check Friday on the Mac.",
+        FailureReason.INPUT_PREPARE: "Could not prepare speech audio. Please try again.",
+        FailureReason.DECODE: "Local speech decoding failed. Please try again.",
+        FailureReason.STT_DISABLED: "Speech transcription is disabled",
+        FailureReason.EMPTY: "No speech was recognized",
+        FailureReason.TIMEOUT: "Speech transcription timed out",
+    }.get(reason, "Speech recognition failed. Please try again.")
+
+
 class Phase(str, Enum):
     CAPTURE = "capture"
     MODEL_LOAD = "model_load"

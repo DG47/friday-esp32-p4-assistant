@@ -3,7 +3,7 @@
 Current lyrics are selected line by line from recording-bound timed documents.
 Manual/static text does not supply timing. The optional runtime integrates the
 engine with official Spotify observations and an explicitly configured provider;
-see [spotify-runtime.md](spotify-runtime.md). Provider-free tests use original text.
+see [spotify-runtime.md](../spotify-runtime.md). Provider-free tests use original text.
 
 `LyricsSyncEngine` is disabled by default and independent of any provider. It
 accepts recording-bound `TimedDocument` values and ordered `PlaybackObservation`

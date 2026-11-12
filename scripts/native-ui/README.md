@@ -4,7 +4,7 @@ Run `python3 scripts/native-ui/build.py --lvgl <pinned LVGL 9.3 source directory
 
 The test uses static host display buffers and a 16 MiB allocator arena so desktop assertions cannot hang while rendering; it reports actual LVGL heap use rather than treating arena size as used memory. This is not a firmware heap configuration change. Candidate assertions check bounds and 48-pixel clickable targets; synthetic actions and ESP/BSP functions are stubbed. Device FPS, transport effects, and calibrated physical touches require a separately approved device test.
 
-See `docs/native-device-ui-candidate.md` for validation and deployment limits. PNG conversion can use macOS `sips -s format png file.ppm --out file.png` or any lossless PPM converter.
+See `docs/notes/native-device-ui-candidate.md` for validation and deployment limits. PNG conversion can use macOS `sips -s format png file.ppm --out file.png` or any lossless PPM converter.
 
 The candidate harness also models a 211 ms busy display lock and verifies that the periodic microphone meter skips the busy update with zero lock wait, then resumes after release. It compiles the production UI function and needs no audio or device.
 

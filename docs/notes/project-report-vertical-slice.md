@@ -39,7 +39,7 @@ Startup obtains task-supervisor ownership, then a private Telegram config-direct
 consumer lock before binding mutation. Transport/runtime failure blocks new admission
 and approval. The production connector is implemented and default off; the rehearsal
 transport remains mock-only. Source/report bodies remain local. See
-[secure local setup](report-telegram-setup.md) for dedicated bot, protected token entry,
+[secure local setup](../report-telegram-setup.md) for dedicated bot, protected token entry,
 verified numeric owner identity, durable offsets, uncertain sending and bounded retry.
 
 [Validation summary](current-updates-validation.md) distinguishes actual local-model and

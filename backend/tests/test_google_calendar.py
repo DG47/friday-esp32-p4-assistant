@@ -246,11 +246,13 @@ class GoogleCalendarIntegrationTests(unittest.IsolatedAsyncioTestCase):
             history=json.dumps(store.conversation('device'))
             self.assertNotIn('Fixture private planning',history)
             with patch.object(agent.calendar,'snapshot',return_value=snapshot):
+                agent.working_context.begin('device','fixture-model')
                 outcome=await agent._execute_read_tool('get_calendar',{'range':'today'},'device','fixture-model',0,for_model=True)
                 self.assertEqual(json.loads(outcome.content)['status'],'sharing_disabled')
                 self.assertNotIn('Fixture private planning',outcome.content)
                 self.assertIn('Fixture private planning',str(outcome.surface.items))
                 settings.calendar_model_context=True
+                agent.working_context.begin('device','fixture-model-allowed')
                 allowed=await agent._execute_read_tool('get_calendar',{'range':'today'},'device','fixture-model-allowed',0,for_model=True)
                 self.assertIn('Fixture private planning',allowed.content)
             await agent.calendar.close()

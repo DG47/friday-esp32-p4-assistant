@@ -12,7 +12,7 @@ from app import main
 from app.audio_session import AudioSession
 from app.stt.base import AudioFormat, TranscriptionError
 from app.stt.diagnostics import (FailureReason, Phase, TranscriptionDiagnostics,
-                                 log_failure, measure, observe)
+                                 log_failure, measure, observe, public_transcription_message)
 from app.stt.faster_whisper_provider import FasterWhisperTranscriber
 import test_device_socket as socket_fixture
 
@@ -118,10 +118,10 @@ class SocketDiagnosticsTests(unittest.TestCase):
     def test_classified_provider_errors_and_recovery(self):
         for reason in [FailureReason.MODEL_LOAD, FailureReason.INPUT_PREPARE, FailureReason.DECODE]:
             with self.subTest(reason=reason):
-                self.failure_then_recovery(TranscriptionError(SECRET, reason=reason), reason.value, SECRET)
+                self.failure_then_recovery(TranscriptionError(SECRET, reason=reason), reason.value, public_transcription_message(reason))
 
     def test_unclassified_error_cannot_inject_log_reason(self):
-        self.failure_then_recovery(TranscriptionError(SECRET, reason=SECRET), "stt_error", SECRET)
+        self.failure_then_recovery(TranscriptionError(SECRET, reason=SECRET), "stt_error", "Speech recognition failed. Please try again.")
 
     def test_empty_result_and_recovery(self):
         self.failure_then_recovery("  ", "empty", "No speech was recognized")
@@ -151,13 +151,13 @@ class ProviderDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
     def provider(self):
         return FasterWhisperTranscriber("fixture", "cpu", "int8", "en")
 
-    async def test_model_load_failure_preserves_message_and_reason(self):
+    async def test_model_load_failure_redacts_message_preserves_reason(self):
         p = self.provider()
         d = TranscriptionDiagnostics(4800, 12000, 1)
         with observe(d), patch.object(p, "_get_model", AsyncMock(side_effect=RuntimeError(SECRET))):
             with self.assertRaises(TranscriptionError) as caught:
                 await p.transcribe(b"\0\0" * 2400, AudioFormat("pcm_s16le", 12000, 1))
-        self.assertEqual(str(caught.exception), "Could not load the local Whisper model: " + SECRET)
+        self.assertEqual(str(caught.exception), public_transcription_message(FailureReason.MODEL_LOAD))
         self.assertEqual(caught.exception.reason, FailureReason.MODEL_LOAD)
         self.assertEqual(d.snapshot()["phase"], "model_load")
 
@@ -172,7 +172,7 @@ class ProviderDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(TranscriptionError) as caught:
                 await p.transcribe(b"\0\0" * 2400, AudioFormat("pcm_s16le", 12000, 1))
         self.assertEqual(caught.exception.reason, FailureReason.DECODE)
-        self.assertEqual(str(caught.exception), "Local transcription failed: " + SECRET)
+        self.assertEqual(str(caught.exception), public_transcription_message(FailureReason.DECODE))
         self.assertEqual(d.snapshot()["phase"], "decode")
         with self.assertLogs("diagnostic-fixture", level="WARNING") as captured:
             log_failure(logging.getLogger("diagnostic-fixture"), d, caught.exception.reason)
