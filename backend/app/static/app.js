@@ -105,12 +105,22 @@ function handleMessage(message) {
   if (message.type === 'job.accepted' && message.job_id === latestSubmitted) {
     executionControl.capture(message.job_id, message.execution_id); executionRender();
   }
-  if (["agent.result", "reminder.alert", "assistant.text", "ready", "error"].includes(message.type) ||
+  if (["reminder.alert", "assistant.text", "ready", "error"].includes(message.type) ||
       (message.type === "state" && ["listening", "thinking", "speaking"].includes(message.state)) ||
       (message.type === "tool.activity" && message.status === "working")) clearMediaOwner();
   if (message.type === "agent.result") {
     if (typeof message.delivery_id !== "string" || !/^[0-9a-f]{32}$/.test(message.delivery_id) || typeof message.job_id !== "string" || !message.job_id || message.job_id.length > 128 || typeof message.text !== "string" || !message.surface || !["completed", "failed", "expired", "late"].includes(message.status)) return;
+    if (!executionControl.mayPresentResult(message.job_id, message.delivery_id)) {
+      // Delivery acceptance and visible/audible presentation are independent.
+      // Preserve the interruption/read-only/alert view and acknowledge the exact
+      // tuple without treating its arrival as a successful Stop or reversal.
+      executionControl.result(message.job_id, message.delivery_id); executionRender();
+      acceptedResults.add(message.delivery_id);
+      if (acceptedResults.size > 64) acceptedResults.delete(acceptedResults.values().next().value);
+      acknowledgeResult(message); return;
+    }
     if (!acceptedResults.has(message.delivery_id)) {
+      clearMediaOwner();
       // Remember only after synchronous DOM acceptance; exceptions leave it retryable.
       renderSurface(message.surface);
       transcript.textContent = message.text;
@@ -340,14 +350,18 @@ function sendSceneAction(action) {
     return;
   }
   if (action === "music") musicDismissed = false;
-  const mutation = /^(snooze|complete|cancel|musicctl|memyes):|^confirm$/.test(action);
-  if (mutation && executionControl.blocked()) { executionRender(); return; }
+  const mutation = /^(snooze|complete|cancel|musicctl):/.test(action);
+  // Memory decisions return ordinary surfaces, not a job-result latch ACK.
+  // Their exact single-use tokens and sequential cursor are enforced by server.
+  const dependentMutation = mutation || action.startsWith('memyes:') || action === 'confirm';
+  if (dependentMutation && executionControl.blocked()) { executionRender(); return; }
   if (mutation && actionPending) return;
   if (mutation) {
     actionPending = true;
     setState("thinking");
   }
   const requestId = crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  if (mutation || action === 'confirm' || action === 'decline') latestSubmitted = requestId;
   if (action === "music" || action.startsWith("musicctl:")) {
     mediaRequest = requestId; mediaSession = null; mediaSequence = 0;
   }

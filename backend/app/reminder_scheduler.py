@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from . import metrics
 from .db import ReminderStore
 from .device_hub import DeviceHub
 from .models import Reminder, Surface
@@ -62,6 +63,7 @@ class ReminderScheduler:
             )
             if recipients > 0:
                 delivered += 1
+                metrics.increment("friday_reminders_delivered_total")
                 logger.info(
                     "Sent reminder %s to %s; awaiting acknowledgement",
                     reminder.id,

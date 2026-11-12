@@ -7,15 +7,19 @@ import json
 import logging
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager, closing, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from . import metrics
 from .agent import FridayAgent
+from .alerts import AlertSink, watch_tasks
+from .backup import BackupScheduler
 from .conversation_media import ConversationMedia
 from .agent_jobs import AgentJobStore, AgentJobWorker, JobAdmissionError, CompletedRequestReplay, UncertainExecutionPending
 from .audio_session import AudioSession, AudioSessionError
@@ -29,7 +33,7 @@ from .discovery import FridayDiscoveryProtocol
 from .reminder_scheduler import ReminderScheduler
 from .stt import TranscriptionError, create_transcriber
 from .stt.capture_metadata import CaptureMetadataLog
-from .stt.diagnostics import FailureReason, Phase, TranscriptionDiagnostics, observe, log_failure
+from .stt.diagnostics import FailureReason, Phase, TranscriptionDiagnostics, observe, log_failure, public_transcription_message
 from .wake_session import WakeAudioSession, contains_wake_word, pcm_peak
 from .scenes import local_scene
 from .tools.google_calendar import next_event
@@ -98,6 +102,15 @@ job_worker = AgentJobWorker(
     max_age_seconds=settings.assistant_job_max_age_seconds,
     concurrency=settings.assistant_job_concurrency,
 )
+alert_sink = AlertSink(settings.assistant_alert_command, settings.assistant_alert_cooldown_seconds)
+backup_scheduler = BackupScheduler(
+    settings.assistant_database_path,
+    settings.assistant_backup_directory,
+    settings.assistant_backup_interval_seconds,
+    keep_count=settings.assistant_backup_keep_count,
+    keep_days=settings.assistant_backup_keep_days,
+    on_failure=alert_sink.notify,
+)
 speech_provider = create_speech_provider(settings)
 speech = SpeechDirector(hub, speech_provider)
 job_worker.on_reply = speech.speak
@@ -149,6 +162,9 @@ async def lifespan(_: FastAPI):
     ]
     if report_runtime is not None:
         tasks.append(asyncio.create_task(report_runtime.run(), name="friday-project-report-worker"))
+    if backup_scheduler.enabled:
+        tasks.append(asyncio.create_task(backup_scheduler.run(), name="friday-backup-scheduler"))
+    tasks.append(asyncio.create_task(watch_tasks(tasks, alert_sink), name="friday-worker-watchdog"))
     app.state.background_tasks = tasks
     try:
         yield
@@ -423,6 +439,53 @@ async def readiness() -> dict[str, str]:
     return {"status": "ready"}
 
 
+def metrics_snapshot() -> str:
+    """Operational counts only: no reminder text, conversation or device identity is exposed."""
+    tasks = getattr(app.state, "background_tasks", [])
+    healthy = bool(tasks) and all(not task.done() for task in tasks)
+    gauges: list[metrics.Sample] = [
+        ("friday_up", {}, 1),
+        ("friday_uptime_seconds", {}, time.time() - metrics.STARTED_AT),
+        ("friday_background_workers_healthy", {}, 1 if healthy else 0),
+        ("friday_background_workers", {}, len(tasks)),
+        ("friday_connected_devices", {}, len(hub.device_ids())),
+        ("friday_reminders_pending", {}, len(store.pending())),
+    ]
+    try:
+        with closing(job_store._connect()) as connection:
+            for status, count in connection.execute(
+                "SELECT status, COUNT(*) FROM agent_jobs GROUP BY status"
+            ).fetchall():
+                gauges.append(("friday_agent_jobs", {"status": str(status)}, count))
+    except Exception:
+        gauges.append(("friday_database_available", {}, 0))
+    else:
+        gauges.append(("friday_database_available", {}, 1))
+    backup = backup_scheduler.status
+    gauges.append(("friday_backup_enabled", {}, 1 if backup.enabled else 0))
+    gauges.append(("friday_backups_retained", {}, backup.retained))
+    gauges.append(("friday_backup_consecutive_failures", {}, backup.consecutive_failures))
+    for name, stamp in (("friday_backup_last_success_timestamp_seconds", backup.last_success_at),
+                        ("friday_backup_last_failure_timestamp_seconds", backup.last_failure_at)):
+        if stamp:
+            gauges.append((name, {}, datetime.fromisoformat(stamp).timestamp()))
+    return metrics.render(gauges, {
+        "friday_up": "1 while the backend process answers requests.",
+        "friday_background_workers_healthy": "1 when every background task is still running.",
+        "friday_agent_jobs": "Agent jobs by status in the local queue.",
+        "friday_reminders_pending": "Reminders waiting for delivery across all devices.",
+        "friday_backups_retained": "Backup files currently kept on disk.",
+        "friday_reminders_delivered_total": "Reminder alerts sent to a device since start.",
+        "friday_alerts_total": "Operator alerts raised since start, by kind.",
+    })
+
+
+@app.get("/metrics")
+async def metrics_endpoint(request: Request) -> Response:
+    require_local_read_access(request)
+    return Response(metrics_snapshot(), media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
 @app.get("/api/calendar/today")
 async def calendar_today(request: Request) -> dict:
     require_local_read_access(request)
@@ -438,7 +501,8 @@ async def diagnostics(request: Request) -> dict:
         ).fetchall())
     return {"jobs": counts, "connected_devices": len(hub.device_ids()),
             "workers_healthy": bool(getattr(app.state, "background_tasks", [])) and all(not task.done() for task in getattr(app.state, "background_tasks", [])),
-            "speech": speech_availability(speech.provider)}
+            "speech": speech_availability(speech.provider),
+            "backup": backup_scheduler.status.as_dict()}
 
 
 @app.get("/api/reminders")
@@ -819,7 +883,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                     revision = state.revision
                                     outcome = await agent._execute_read_tool("get_weather", {"location":state.location}, device_id, message.get("request_id") or "touch-context", 0)
                                     if (not weather_navigation_current(device_id, navigation)
-                                        or agent.working_context.state(device_id) is not state
+                                        or agent.working_context.devices.get(device_id) is not state
                                         or revision != state.revision):
                                         continue
                                     require_weather_navigation(device_id)
@@ -847,10 +911,14 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                             elif action.startswith(("calendar", "event:")):
                                 await publish_tool_progress(device_id, "get_calendar", "working")
                                 if negotiated and not action.startswith("event:"):
-                                    agent.working_context.begin(device_id,message.get("request_id") or "touch-calendar")
+                                    calendar_request=message.get("request_id") or "touch-calendar"
+                                    agent.working_context.begin(device_id,calendar_request)
+                                    calendar_context=agent.working_context.devices[device_id]
                                     snapshot=await agent.calendar.snapshot("next" if action=="calendar_next" else "today",force=action=="calendar_refresh")
                                     surface=await agent.calendar.scene(action,device_id,snapshot=snapshot)
-                                    if not weather_navigation_current(device_id,navigation):continue
+                                    if (not weather_navigation_current(device_id,navigation) or
+                                        agent.working_context.devices.get(device_id) is not calendar_context or
+                                        not agent.working_context.current(device_id,calendar_request)):continue
                                     require_weather_navigation(device_id)
                                     payload=snapshot.payload()
                                     if action=="calendar_next":
@@ -1073,7 +1141,7 @@ async def device_socket(websocket: WebSocket, device_id: str) -> None:
                                 elif isinstance(error, TranscriptionError) and isinstance(error.reason, FailureReason):
                                     reason = error.reason
                                 log_failure(logging.getLogger("uvicorn.error"), diagnostics, reason)
-                                await send_error(websocket, "transcription_failed", "Speech transcription timed out" if isinstance(error, TimeoutError) else str(error))
+                                await send_error(websocket, "transcription_failed", str(error) if isinstance(error, AudioSessionError) else public_transcription_message(reason))
                                 await hub.broadcast(device_id, {"type": "state", "state": "idle"})
                                 continue
                         await hub.broadcast(

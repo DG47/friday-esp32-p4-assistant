@@ -140,7 +140,7 @@ class ConversationSocketScenario(unittest.TestCase):
             self.assertTrue(results[-1]["retain_context"])
             self.assertEqual(sum(method=="PUT" for method,path in transport.calls),1)
             self.assertEqual(results[2]["surface"]["kind"],"media")
-            self.assertIn("Shall I?",results[2]["text"])
+            self.assertIn("Shall I resume the existing queue?",results[2]["text"])
             second=json.dumps(provider.requests[2]["messages"]);self.assertIn("original-evening",second);self.assertIn("07306",second)
             final=json.dumps(provider.requests[6]["messages"]);self.assertIn("get_calendar",final);self.assertIn("get_weather",final);self.assertIn("get_music_state",final)
             self.assertNotIn("Quiet Satellites",final);self.assertNotIn("syntheticSpeaker",final)
@@ -162,7 +162,7 @@ class ConversationContracts(unittest.IsolatedAsyncioTestCase):
     async def test_empty_response_does_not_imply_action_succeeded(self):
         self.agent.providers.select=lambda text:ScriptedProvider([ProviderTurn()])
         reply=await self.agent.handle("device","Help me think","empty")
-        self.assertNotEqual(reply.text,"Done.");self.assertIn("couldn't",reply.text)
+        self.assertIn("couldn't",reply.text)
 
     async def test_resume_failure_uncertainty_no_retry_and_truthful_reply(self):
         for index,(code,observe,status) in enumerate([(403,True,"rejected"),(204,False,"accepted_unobserved"),(TimeoutError(),True,"uncertain")]):

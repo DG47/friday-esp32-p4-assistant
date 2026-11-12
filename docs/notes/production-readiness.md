@@ -1,4 +1,4 @@
-> Current release gates: [production-acceptance-current.md](production-acceptance-current.md).
+> Current release gates: [production-acceptance-current.md](../production-acceptance-current.md).
 > The provider/configuration descriptions below are historical and must not be used
 > to enable paid providers or infer current live acceptance.
 
@@ -241,7 +241,7 @@ credit. The named ZIP scene shows either or both ZIPs with separate failures and
 no technical metadata. `WEATHER_PROVIDER=none` remains the default. Opt-in requires
 explicit coordinates and permission to send them to the provider. The approved
 two-ZIP candidate has bounded live validation; activation/restart is still gated.
-See [weather configuration and provenance](weather.md). Review the provider's
+See [weather configuration and provenance](../weather.md). Review the provider's
 [usage terms](https://open-meteo.com/en/terms) before commercial release.
 
 | Gate | Exact remaining blocker |

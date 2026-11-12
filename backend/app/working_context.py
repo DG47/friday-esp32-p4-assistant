@@ -58,7 +58,10 @@ class WorkingContext:
         self.state(device).owner = request
 
     def current(self, device, request):
-        return self.state(device).owner in {'', request}
+        # A freshness check must never load a checkpoint or recreate authority.
+        # Eviction/disconnect/dismissal require a new explicit begin().
+        state = self.devices.get(device)
+        return state is not None and state.owner == request
 
     def disconnect(self, device):
         # Keep a non-current owner tombstone: popping the row would let a late
