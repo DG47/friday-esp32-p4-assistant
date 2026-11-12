@@ -1,12 +1,30 @@
 name: Friday regression tests
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ubuntu2604:
+        description: Run the same full checks explicitly on Ubuntu 26.04
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.ubuntu2604 == true && 'ubuntu-26.04' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
+      - name: Runner image evidence
+        env:
+          EXPECTED_OS: ${{ github.event_name == 'workflow_dispatch' && inputs.ubuntu2604 == true && '26.04' || '' }}
+        run: |
+          cat /etc/os-release
+          printf 'ImageOS=%s ImageVersion=%s Arch=%s\n' "$ImageOS" "$ImageVersion" "$RUNNER_ARCH"
+          if [ -n "$EXPECTED_OS" ]; then
+            . /etc/os-release
+            test "$VERSION_ID" = "$EXPECTED_OS"
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -32,9 +50,19 @@ jobs:
           python -m compileall -q backend/app scripts
           git diff --check
   firmware-error-policy:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.ubuntu2604 == true && 'ubuntu-26.04' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
+      - name: Runner image evidence
+        env:
+          EXPECTED_OS: ${{ github.event_name == 'workflow_dispatch' && inputs.ubuntu2604 == true && '26.04' || '' }}
+        run: |
+          cat /etc/os-release
+          printf 'ImageOS=%s ImageVersion=%s Arch=%s\n' "$ImageOS" "$ImageVersion" "$RUNNER_ARCH"
+          if [ -n "$EXPECTED_OS" ]; then
+            . /etc/os-release
+            test "$VERSION_ID" = "$EXPECTED_OS"
+          fi
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libcjson-dev
       - name: Native recoverable-error policy regression
