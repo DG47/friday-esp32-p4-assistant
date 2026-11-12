@@ -24,7 +24,9 @@ jobs:
           TTS_PROVIDER: none
           WEATHER_PROVIDER: none
           STT_PROVIDER: none
-        run: timeout --signal=SIGABRT --kill-after=10s 120s python -X faulthandler -m unittest discover -s backend/tests -v
+        run: |
+          mkdir -p outputs
+          timeout --signal=SIGABRT --kill-after=10s 120s python -X faulthandler -m unittest discover -s backend/tests -v
       - name: Synthetic real-loopback Spotify callback regression
         run: python scripts/test_spotify_loopback.py
       - name: Python syntax and whitespace
@@ -65,3 +67,34 @@ jobs:
           /tmp/friday-capture-test
           cc -std=c11 -Wall -Wextra -Werror -I firmware/main -I /usr/include/cjson firmware/tests/test_experience_guard.c firmware/main/friday_experience_guard.c -lcjson -o /tmp/friday-experience-test
           /tmp/friday-experience-test
+
+  task-prototype-macos:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Homebrew Python 3.12 runtime and isolated test dependencies
+        # faster-whisper pins ctranslate2, which publishes no wheels for the newest Homebrew python3,
+        # so use the same 3.12 line as the Linux job.
+        run: |
+          brew install python@3.12 >/dev/null
+          PY=/opt/homebrew/opt/python@3.12/bin/python3.12
+          test -x "$PY"
+          "$PY" --version
+          "$PY" -m venv .venv
+          .venv/bin/python -m pip install -r backend/requirements.txt
+      - name: Disconnected task and trusted local fixture regressions
+        env:
+          PYTHONPATH: backend
+          ASSISTANT_PROVIDER: mock
+          TTS_PROVIDER: none
+          WEATHER_PROVIDER: none
+          STT_PROVIDER: none
+        run: |
+          mkdir -p outputs
+          .venv/bin/python -m unittest discover -s backend/tests -p 'test_task_*.py' -v
+          node scripts/test_task_phone.js
+          FRIDAY_TEST_PYTHON="$PWD/.venv/bin/python" node scripts/test_task_phone_service.js
